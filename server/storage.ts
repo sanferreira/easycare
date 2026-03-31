@@ -29,7 +29,8 @@ export interface IStorage {
   deleteOrganization(id: number): Promise<void>;
 
   // Users
-  getUserByUsername(username: string): Promise<User | undefined>;
+  getSuperAdminByUsername(username: string): Promise<User | undefined>;
+  getUserByUsernameAndOrganization(username: string, organizationId: number): Promise<User | undefined>;
   getUsersByOrganization(orgId: number): Promise<User[]>;
   createUser(user: InsertUser): Promise<User>;
   updateUser(id: number, updates: Partial<InsertUser>): Promise<User>;
@@ -128,8 +129,16 @@ export class DatabaseStorage implements IStorage {
   }
 
   // --- Users ---
-  async getUserByUsername(username: string): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.username, username));
+  async getSuperAdminByUsername(username: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(and(eq(users.username, username), eq(users.isSuperAdmin, true)));
+    return user;
+  }
+  async getUserByUsernameAndOrganization(username: string, organizationId: number): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(and(
+      eq(users.username, username),
+      eq(users.organizationId, organizationId),
+      eq(users.isSuperAdmin, false),
+    ));
     return user;
   }
   async getUsersByOrganization(orgId: number): Promise<User[]> {

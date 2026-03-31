@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, boolean, timestamp, date, real } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, date, real, uniqueIndex } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -20,7 +20,7 @@ export const organizations = pgTable("organizations", {
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
   organizationId: integer("organization_id"),
-  username: text("username").notNull().unique(),
+  username: text("username").notNull(),
   password: text("password").notNull(),
   // roles: admin, nurse (enfermeiro), caregiver (cuidador), receptionist (recepção)
   role: text("role").notNull().default("staff"),
@@ -29,7 +29,9 @@ export const users = pgTable("users", {
   phone: text("phone"),
   active: boolean("active").default(true),
   isSuperAdmin: boolean("is_super_admin").default(false),
-});
+}, (table) => ({
+  orgUsernameUnique: uniqueIndex("users_org_username_unique").on(table.organizationId, table.username),
+}));
 
 // ===== RESIDENTS (expanded) =====
 export const residents = pgTable("residents", {

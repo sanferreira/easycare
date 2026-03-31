@@ -129,16 +129,6 @@ function NavContent({ onClose }: { onClose?: () => void }) {
           <LogOut className="h-4 w-4" />
           Sair
         </button>
-        <a
-          href="https://instagram.com/devserosan"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="block w-full px-2 pt-2 text-[11px] leading-tight hover:underline"
-          style={{ color: "rgba(255,255,255,0.35)" }}
-          data-testid="signature-sanferreira"
-        >
-          Assinado por sanferreira • @devserosan
-        </a>
       </div>
     </div>
   );

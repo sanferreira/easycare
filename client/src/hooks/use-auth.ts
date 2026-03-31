@@ -31,7 +31,8 @@ export function useAuth() {
       });
 
       if (!res.ok) {
-        throw new Error("Credenciais inválidas");
+        const payload = await res.json().catch(() => null);
+        throw new Error(payload?.message || "Credenciais invalidas");
       }
       return res.json();
     },

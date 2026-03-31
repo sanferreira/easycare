@@ -32,12 +32,23 @@ export const api = {
       method: 'POST' as const,
       path: '/api/auth/login',
       input: z.object({
+        organizationId: z.number().int().positive().optional(),
         username: z.string(),
         password: z.string(),
       }),
       responses: {
         200: z.object({ success: z.boolean(), user: z.any() }),
         401: z.object({ message: z.string() }),
+      },
+    },
+    organizations: {
+      method: 'GET' as const,
+      path: '/api/auth/organizations',
+      responses: {
+        200: z.array(z.object({
+          id: z.number(),
+          name: z.string(),
+        })),
       },
     },
     logout: {

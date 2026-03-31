@@ -114,27 +114,74 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   };
 
   // ===== AUTH =====
+  app.get("/api/auth/organizations", async (_req, res) => {
+    const organizations = await storage.getOrganizations();
+    res.json(
+      organizations
+        .filter((org) => org.active !== false)
+        .map((org) => ({ id: org.id, name: org.name })),
+    );
+  });
+
   app.post("/api/auth/login", loginRateLimiter, async (req, res) => {
-    const { username, password } = req.body;
+    const { username, password, organizationId } = req.body;
     if (typeof username !== "string" || typeof password !== "string" || !username || !password) {
       return res.status(400).json({ message: "UsuÃ¡rio e senha obrigatÃ³rios" });
     }
-    const user = await storage.getUserByUsername(username);
-    if (!user) return res.status(401).json({ message: "Usuário ou senha incorretos" });
 
-    const passwordCheck = verifyPassword(password, user.password);
+    const normalizedUsername = username.trim();
+    const rawOrganizationId =
+      typeof organizationId === "string" ? Number(organizationId) : organizationId;
+    const parsedOrganizationId =
+      Number.isInteger(rawOrganizationId) && rawOrganizationId > 0 ? rawOrganizationId : undefined;
+
+    if (parsedOrganizationId) {
+      const user = await storage.getUserByUsernameAndOrganization(normalizedUsername, parsedOrganizationId);
+      if (!user) return res.status(401).json({ message: "Usuário ou senha incorretos" });
+
+      const passwordCheck = verifyPassword(password, user.password);
+      if (!passwordCheck.valid) return res.status(401).json({ message: "Usuário ou senha incorretos" });
+      if (passwordCheck.needsRehash) {
+        await storage.updateUser(user.id, { password });
+      }
+
+      const org = await storage.getOrganization(parsedOrganizationId);
+      if (!org) return res.status(401).json({ message: "Usuário ou senha incorretos" });
+
+      await regenerateSession(req);
+      req.session.user = {
+        id: user.id,
+        username: user.username,
+        name: user.name,
+        role: user.role,
+        organizationId: parsedOrganizationId,
+        organizationName: org.name,
+        isSuperAdmin: false,
+      };
+      return res.json({ success: true, user: req.session.user });
+    }
+
+    const superAdmin = await storage.getSuperAdminByUsername(normalizedUsername);
+    if (!superAdmin) {
+      return res.status(400).json({ message: "Selecione a organização para entrar." });
+    }
+
+    const passwordCheck = verifyPassword(password, superAdmin.password);
     if (!passwordCheck.valid) return res.status(401).json({ message: "Usuário ou senha incorretos" });
     if (passwordCheck.needsRehash) {
-      await storage.updateUser(user.id, { password });
-    }
-    let organizationName: string | undefined;
-    if (user.organizationId) {
-      const org = await storage.getOrganization(user.organizationId);
-      organizationName = org?.name;
+      await storage.updateUser(superAdmin.id, { password });
     }
 
     await regenerateSession(req);
-    req.session.user = { id: user.id, username: user.username, name: user.name, role: user.role, organizationId: user.organizationId ?? undefined, organizationName, isSuperAdmin: user.isSuperAdmin ?? false };
+    req.session.user = {
+      id: superAdmin.id,
+      username: superAdmin.username,
+      name: superAdmin.name,
+      role: superAdmin.role,
+      organizationId: undefined,
+      organizationName: undefined,
+      isSuperAdmin: true,
+    };
     res.json({ success: true, user: req.session.user });
   });
 
@@ -269,7 +316,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const user = await storage.createUser({ organizationId: Number(req.params.id), username, password, name, role: role || "staff", isSuperAdmin: false });
       res.status(201).json(sanitizeUser(user));
     } catch (err: any) {
-      if (err?.code === "23505") return res.status(400).json({ message: "Nome de usuÃ¡rio jÃ¡ existe" });
+      if (err?.code === "23505") return res.status(400).json({ message: "Nome de usuÃ¡rio jÃ¡ existe nesta organizaÃ§Ã£o" });
       res.status(500).json({ message: "Erro ao criar usuÃ¡rio" });
     }
   });
@@ -561,7 +608,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 }
 
 async function seedDatabase() {
-  const superAdmin = await storage.getUserByUsername("superadmin");
+  const superAdmin = await storage.getSuperAdminByUsername("superadmin");
 
   // Always run new-module seeding if data is missing (even on existing DBs)
   await seedNewModules();
