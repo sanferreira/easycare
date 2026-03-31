@@ -40,6 +40,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { residentFormSchema, type ResidentFormInput, type Resident } from "@shared/schema";
 import { format } from "date-fns";
+import { maskPhoneBR } from "@/lib/masks";
 
 export default function Residents() {
   const [search, setSearch] = useState("");
@@ -145,7 +146,7 @@ export default function Residents() {
                       <p className="font-medium">{resident.contactName}</p>
                       <div className="flex items-center gap-1 text-muted-foreground">
                         <Phone className="h-3 w-3" />
-                        {resident.contactPhone}
+                        {maskPhoneBR(resident.contactPhone)}
                       </div>
                     </div>
                   </TableCell>
@@ -325,7 +326,12 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
                   <FormItem>
                     <FormLabel>Telefone Responsável</FormLabel>
                     <FormControl>
-                      <Input {...field} />
+                      <Input
+                        {...field}
+                        maxLength={15}
+                        value={field.value ?? ""}
+                        onChange={(e) => field.onChange(maskPhoneBR(e.target.value))}
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>

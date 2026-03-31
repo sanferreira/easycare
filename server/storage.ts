@@ -20,10 +20,13 @@ import {
 import { eq, like, desc, sql, and, gte, lte, ilike } from "drizzle-orm";
 import { hashPassword, isPasswordHash } from "./security";
 
+const normalizePortalUsername = (username: string) => username.trim().toLowerCase();
+
 export interface IStorage {
   // Organizations
   getOrganizations(): Promise<Organization[]>;
   getOrganization(id: number): Promise<Organization | undefined>;
+  getOrganizationByCnpj(cnpj: string): Promise<Organization | undefined>;
   createOrganization(org: InsertOrganization): Promise<Organization>;
   updateOrganization(id: number, updates: Partial<InsertOrganization>): Promise<Organization>;
   deleteOrganization(id: number): Promise<void>;
@@ -46,6 +49,7 @@ export interface IStorage {
   // Family Members
   getFamilyMembers(orgId: number, residentId: number): Promise<FamilyMember[]>;
   getFamilyMemberByPortalUsername(username: string): Promise<FamilyMember | undefined>;
+  getFamilyMembersByPortalUsername(username: string): Promise<FamilyMember[]>;
   createFamilyMember(member: InsertFamilyMember): Promise<FamilyMember>;
   updateFamilyMember(orgId: number, id: number, updates: Partial<InsertFamilyMember>): Promise<FamilyMember>;
   deleteFamilyMember(orgId: number, id: number): Promise<void>;
@@ -115,6 +119,23 @@ export class DatabaseStorage implements IStorage {
   async getOrganization(id: number): Promise<Organization | undefined> {
     const [org] = await db.select().from(organizations).where(eq(organizations.id, id));
     return org;
+  }
+  async getOrganizationByCnpj(cnpj: string): Promise<Organization | undefined> {
+    const trimmed = cnpj.trim();
+    if (!trimmed) return undefined;
+
+    const [directMatch] = await db.select().from(organizations).where(eq(organizations.cnpj, trimmed));
+    if (directMatch) return directMatch;
+
+    const normalized = trimmed.replace(/\D/g, "");
+    if (!normalized) return undefined;
+
+    const [normalizedMatch] = await db
+      .select()
+      .from(organizations)
+      .where(sql`regexp_replace(coalesce(${organizations.cnpj}, ''), '\D', '', 'g') = ${normalized}`);
+
+    return normalizedMatch;
   }
   async createOrganization(org: InsertOrganization): Promise<Organization> {
     const [newOrg] = await db.insert(organizations).values(org).returning();
@@ -205,13 +226,28 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(familyMembers.organizationId, orgId), eq(familyMembers.residentId, residentId)))
       .orderBy(desc(familyMembers.isPrimary), familyMembers.name);
   }
+  async getFamilyMembersByPortalUsername(username: string): Promise<FamilyMember[]> {
+    const normalized = normalizePortalUsername(username);
+    if (!normalized) return [];
+
+    return await db
+      .select()
+      .from(familyMembers)
+      .where(and(
+        sql`lower(coalesce(${familyMembers.portalUsername}, '')) = ${normalized}`,
+        eq(familyMembers.portalAccess, true),
+      ));
+  }
   async getFamilyMemberByPortalUsername(username: string): Promise<FamilyMember | undefined> {
-    const [member] = await db.select().from(familyMembers)
-      .where(and(eq(familyMembers.portalUsername, username), eq(familyMembers.portalAccess, true)));
+    const [member] = await this.getFamilyMembersByPortalUsername(username);
     return member;
   }
   async createFamilyMember(member: InsertFamilyMember): Promise<FamilyMember> {
     const payload: InsertFamilyMember = { ...member };
+    if (typeof payload.portalUsername === "string") {
+      const normalizedUsername = normalizePortalUsername(payload.portalUsername);
+      payload.portalUsername = normalizedUsername || null;
+    }
     if (typeof payload.portalPassword === "string") {
       const normalizedPassword = payload.portalPassword.trim();
       payload.portalPassword = normalizedPassword ? hashPassword(normalizedPassword) : null;
@@ -222,6 +258,10 @@ export class DatabaseStorage implements IStorage {
   }
   async updateFamilyMember(orgId: number, id: number, updates: Partial<InsertFamilyMember>): Promise<FamilyMember> {
     const payload: Partial<InsertFamilyMember> = { ...updates };
+    if (typeof payload.portalUsername === "string") {
+      const normalizedUsername = normalizePortalUsername(payload.portalUsername);
+      payload.portalUsername = normalizedUsername || null;
+    }
     if (typeof payload.portalPassword === "string") {
       const normalizedPassword = payload.portalPassword.trim();
       payload.portalPassword = normalizedPassword ? hashPassword(normalizedPassword) : null;

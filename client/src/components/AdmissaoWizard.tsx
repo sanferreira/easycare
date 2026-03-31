@@ -20,6 +20,7 @@ import {
   User, Users, FileText, CheckCircle2, ChevronRight, ChevronLeft,
   UserPlus, Phone, Calendar, Bed, Heart, DollarSign, CreditCard,
 } from "lucide-react";
+import { maskCpf, maskPhoneBR } from "@/lib/masks";
 
 // ─── Schemas ────────────────────────────────────────────────────────────────
 
@@ -289,7 +290,16 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
             <FormField control={form.control} name="cpf" render={({ field }) => (
               <FormItem>
                 <FormLabel>CPF</FormLabel>
-                <FormControl><Input placeholder="000.000.000-00" {...field} data-testid="wizard-cpf" /></FormControl>
+                <FormControl>
+                  <Input
+                    placeholder="000.000.000-00"
+                    maxLength={14}
+                    {...field}
+                    value={field.value ?? ""}
+                    onChange={(e) => field.onChange(maskCpf(e.target.value))}
+                    data-testid="wizard-cpf"
+                  />
+                </FormControl>
               </FormItem>
             )} />
             <FormField control={form.control} name="nationality" render={({ field }) => (
@@ -307,7 +317,16 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
             <FormField control={form.control} name="contactPhone" render={({ field }) => (
               <FormItem>
                 <FormLabel>Telefone do contato</FormLabel>
-                <FormControl><Input placeholder="(11) 99999-0000" {...field} data-testid="wizard-contact-phone" /></FormControl>
+                <FormControl>
+                  <Input
+                    placeholder="(11) 99999-0000"
+                    maxLength={15}
+                    {...field}
+                    value={field.value ?? ""}
+                    onChange={(e) => field.onChange(maskPhoneBR(e.target.value))}
+                    data-testid="wizard-contact-phone"
+                  />
+                </FormControl>
               </FormItem>
             )} />
             <FormField control={form.control} name="healthNotes" render={({ field }) => (
@@ -401,7 +420,16 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
               <FormField control={form.control} name="phone" render={({ field }) => (
                 <FormItem>
                   <FormLabel>Telefone *</FormLabel>
-                  <FormControl><Input placeholder="(11) 99999-0000" {...field} data-testid="wizard-family-phone" /></FormControl>
+                  <FormControl>
+                    <Input
+                      placeholder="(11) 99999-0000"
+                      maxLength={15}
+                      {...field}
+                      value={field.value ?? ""}
+                      onChange={(e) => field.onChange(maskPhoneBR(e.target.value))}
+                      data-testid="wizard-family-phone"
+                    />
+                  </FormControl>
                   <FormMessage />
                 </FormItem>
               )} />

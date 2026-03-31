@@ -1,102 +1,33 @@
 import { useAuth } from "@/hooks/use-auth";
-import { useQuery } from "@tanstack/react-query";
-import { api } from "@shared/routes";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { maskCnpj } from "@/lib/masks";
 import {
   Form, FormControl, FormField, FormItem, FormLabel, FormMessage,
 } from "@/components/ui/form";
-import { Building2, ShieldAlert, ArrowRight } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 
 const loginSchema = z.object({
-  organizationId: z.number().int().positive().optional(),
+  organizationCnpj: z.string().optional(),
   username: z.string().min(1, "Informe o usuário"),
   password: z.string().min(1, "Informe a senha"),
 });
 
-type DemoAccount = {
-  id: string;
-  label: string;
-  user: string;
-  pass: string;
-  icon: "building" | "shield";
-  desc: string;
-  organizationName?: string;
-};
-
-const DEMO_ACCOUNTS: DemoAccount[] = [
-  {
-    id: "bem-viver",
-    label: "Bem Viver ILPI",
-    user: "admin",
-    pass: "admin",
-    icon: "building",
-    desc: "Acesso administrativo da unidade",
-    organizationName: "Bem Viver ILPI",
-  },
-  {
-    label: "Lar Esperança",
-    id: "lar-esperanca",
-    user: "admin2",
-    pass: "admin2",
-    icon: "building",
-    organizationName: "Lar Esperanca",
-    desc: "Ambiente de demonstração da unidade",
-  },
-  {
-    label: "Super Admin",
-    id: "super-admin",
-    user: "superadmin",
-    pass: "superadmin",
-    icon: "shield",
-    desc: "Acesso total à plataforma",
-  },
-];
-
 export default function Login() {
   const { login, isLoggingIn } = useAuth();
-  const organizationsQuery = useQuery({
-    queryKey: ["auth-organizations"],
-    queryFn: async () => {
-      const res = await fetch(api.auth.organizations.path, { credentials: "include" });
-      if (!res.ok) throw new Error("Falha ao carregar organizacoes");
-      return res.json() as Promise<Array<{ id: number; name: string }>>;
-    },
-    staleTime: 60_000,
-    retry: false,
-  });
 
   const form = useForm<z.infer<typeof loginSchema>>({
     resolver: zodResolver(loginSchema),
-    defaultValues: { organizationId: undefined, username: "", password: "" },
+    defaultValues: { organizationCnpj: "", username: "", password: "" },
   });
 
   function onSubmit(values: z.infer<typeof loginSchema>) {
     login(values);
   }
 
-  function fillCredentials(account: DemoAccount) {
-    form.setValue("username", account.user);
-    form.setValue("password", account.pass);
-
-    if (!account.organizationName) {
-      form.setValue("organizationId", undefined);
-      form.clearErrors("organizationId");
-      return;
-    }
-
-    const normalizeText = (value: string) =>
-      value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-    const expectedName = normalizeText(account.organizationName);
-    const organization = organizationsQuery.data?.find(
-      (org) => normalizeText(org.name) === expectedName,
-    );
-    form.setValue("organizationId", organization?.id);
-    form.clearErrors();
-  }
 
   return (
     <div
@@ -280,50 +211,30 @@ export default function Login() {
               <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
                 <FormField
                   control={form.control}
-                  name="organizationId"
+                  name="organizationCnpj"
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel
                         className="text-sm font-medium"
                         style={{ color: "rgba(255,255,255,0.7)" }}
                       >
-                        Organizacao
+                        CNPJ da organização
                       </FormLabel>
                       <FormControl>
-                        <select
-                          value={field.value ? String(field.value) : ""}
-                          onChange={(event) => {
-                            const value = event.target.value;
-                            field.onChange(value ? Number(value) : undefined);
-                          }}
-                          className="h-11 w-full rounded-md border border-white/10 px-3 text-sm text-white"
+                        <Input
+                          placeholder="00.000.000/0000-00"
+                          maxLength={18}
+                          {...field}
+                          value={field.value ?? ""}
+                          onChange={(e) => field.onChange(maskCnpj(e.target.value))}
                           style={{ background: "rgba(255,255,255,0.06)" }}
-                          data-testid="select-organization"
-                        >
-                          <option value="" style={{ color: "#0A0F2C" }}>
-                            Super Admin (sem organizacao)
-                          </option>
-                          {(organizationsQuery.data || []).map((organization) => (
-                            <option
-                              key={organization.id}
-                              value={organization.id}
-                              style={{ color: "#0A0F2C" }}
-                            >
-                              {organization.name}
-                            </option>
-                          ))}
-                        </select>
+                          className="h-11 border-white/10 text-white placeholder:text-white/25"
+                          data-testid="input-organization-cnpj"
+                        />
                       </FormControl>
-                      {organizationsQuery.isLoading ? (
-                        <p className="text-xs" style={{ color: "rgba(255,255,255,0.4)" }}>
-                          Carregando organizacoes...
-                        </p>
-                      ) : null}
-                      {organizationsQuery.isError ? (
-                        <p className="text-xs" style={{ color: "rgba(255,255,255,0.4)" }}>
-                          Nao foi possivel carregar a lista de organizacoes.
-                        </p>
-                      ) : null}
+                      <p className="text-xs" style={{ color: "rgba(255,255,255,0.4)" }}>
+                        Para super-admin, deixe este campo em branco.
+                      </p>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -412,79 +323,6 @@ export default function Login() {
                 </Button>
               </form>
             </Form>
-          </div>
-
-          {/* Demo accounts */}
-          <div
-            className="rounded-2xl p-5 border border-white/[0.07]"
-            style={{ background: "rgba(255,255,255,0.02)" }}
-          >
-            <p
-              className="text-[11px] uppercase tracking-widest font-semibold mb-1"
-              style={{ color: "rgba(255,255,255,0.3)" }}
-            >
-              Acesso rápido para teste
-            </p>
-
-            <p
-              className="text-xs mb-3"
-              style={{ color: "rgba(255,255,255,0.38)" }}
-            >
-              Clique em uma conta abaixo para preencher o login automaticamente.
-            </p>
-
-            <div className="space-y-2">
-              {DEMO_ACCOUNTS.map((acc) => (
-                <button
-                  key={acc.id}
-                  type="button"
-                  onClick={() => fillCredentials(acc)}
-                  data-testid={`demo-account-${acc.id}`}
-                  className="w-full flex items-center gap-3 px-3.5 py-3 rounded-xl border border-white/[0.07] hover:border-white/20 transition-all text-left group"
-                  style={{ background: "rgba(255,255,255,0.03)" }}
-                >
-                  <div
-                    className="h-8 w-8 rounded-lg flex items-center justify-center shrink-0"
-                    style={{
-                      background:
-                        acc.icon === "shield"
-                          ? "rgba(251,191,36,0.15)"
-                          : "rgba(31,111,235,0.2)",
-                    }}
-                  >
-                    {acc.icon === "shield" ? (
-                      <ShieldAlert className="h-4 w-4 text-amber-400" />
-                    ) : (
-                      <Building2 className="h-4 w-4" style={{ color: "#22D3EE" }} />
-                    )}
-                  </div>
-
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-white leading-tight">
-                      {acc.label}
-                    </p>
-                    <p
-                      className="text-xs mt-0.5"
-                      style={{ color: "rgba(255,255,255,0.35)" }}
-                    >
-                      {acc.desc}
-                    </p>
-                    <p
-                      className="text-[11px] mt-1"
-                      style={{ color: "rgba(255,255,255,0.28)" }}
-                    >
-                      {acc.organizationName ? `${acc.organizationName} - ` : ""}
-                      {acc.user} / {acc.pass}
-                    </p>
-                  </div>
-
-                  <ArrowRight
-                    className="h-3.5 w-3.5 opacity-0 group-hover:opacity-60 transition-opacity shrink-0"
-                    style={{ color: "#22D3EE" }}
-                  />
-                </button>
-              ))}
-            </div>
           </div>
         </div>
       </div>

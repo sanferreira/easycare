@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { MedicalRecord, Comorbidity, FamilyMember } from "@shared/schema";
+import { maskCpf, maskPhoneBR } from "@/lib/masks";
 
 const evolutionSchema = z.object({
   date: z.string().min(1, "Data obrigatória"),
@@ -716,7 +717,15 @@ export default function Prontuario() {
                           <FormField control={familyForm.control} name="phone" render={({ field }) => (
                             <FormItem>
                               <FormLabel>Telefone *</FormLabel>
-                              <FormControl><Input placeholder="(11) 9xxxx-xxxx" {...field} /></FormControl>
+                              <FormControl>
+                                <Input
+                                  placeholder="(11) 9xxxx-xxxx"
+                                  maxLength={15}
+                                  {...field}
+                                  value={field.value ?? ""}
+                                  onChange={(e) => field.onChange(maskPhoneBR(e.target.value))}
+                                />
+                              </FormControl>
                               <FormMessage />
                             </FormItem>
                           )} />
@@ -725,7 +734,15 @@ export default function Prontuario() {
                           <FormField control={familyForm.control} name="phone2" render={({ field }) => (
                             <FormItem>
                               <FormLabel>Telefone 2</FormLabel>
-                              <FormControl><Input placeholder="Alternativo" {...field} /></FormControl>
+                              <FormControl>
+                                <Input
+                                  placeholder="Alternativo"
+                                  maxLength={15}
+                                  {...field}
+                                  value={field.value ?? ""}
+                                  onChange={(e) => field.onChange(maskPhoneBR(e.target.value))}
+                                />
+                              </FormControl>
                             </FormItem>
                           )} />
                           <FormField control={familyForm.control} name="email" render={({ field }) => (
@@ -738,7 +755,15 @@ export default function Prontuario() {
                         <FormField control={familyForm.control} name="cpf" render={({ field }) => (
                           <FormItem>
                             <FormLabel>CPF</FormLabel>
-                            <FormControl><Input placeholder="000.000.000-00" {...field} /></FormControl>
+                            <FormControl>
+                              <Input
+                                placeholder="000.000.000-00"
+                                maxLength={14}
+                                {...field}
+                                value={field.value ?? ""}
+                                onChange={(e) => field.onChange(maskCpf(e.target.value))}
+                              />
+                            </FormControl>
                           </FormItem>
                         )} />
                         <FormField control={familyForm.control} name="address" render={({ field }) => (
@@ -856,10 +881,10 @@ export default function Prontuario() {
                               familyForm.reset({
                                 name: f.name,
                                 relationship: f.relationship,
-                                phone: f.phone,
-                                phone2: f.phone2 ?? "",
+                                phone: maskPhoneBR(f.phone),
+                                phone2: f.phone2 ? maskPhoneBR(f.phone2) : "",
                                 email: f.email ?? "",
-                                cpf: f.cpf ?? "",
+                                cpf: f.cpf ? maskCpf(f.cpf) : "",
                                 address: f.address ?? "",
                                 isPrimary: f.isPrimary ?? false,
                                 portalAccess: f.portalAccess ?? false,
@@ -886,8 +911,8 @@ export default function Prontuario() {
                         </div>
                       </div>
                       <div className="space-y-0.5 text-xs text-muted-foreground">
-                        <p>📞 {f.phone}</p>
-                        {f.phone2 && <p>📞 {f.phone2}</p>}
+                        <p>📞 {maskPhoneBR(f.phone)}</p>
+                        {f.phone2 && <p>📞 {maskPhoneBR(f.phone2)}</p>}
                         {f.email && <p>✉️ {f.email}</p>}
                       </div>
                       {f.portalAccess && (

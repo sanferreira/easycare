@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { ROLE_LABELS } from "@/lib/permissions";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,22 +18,76 @@ import {
 import {
   Building2, Plus, Trash2, Users, ChevronDown, ChevronRight, UserPlus, Eye, EyeOff, Pencil,
 } from "lucide-react";
+import { digitsOnly, maskCep, maskCnpj, maskPhoneBR } from "@/lib/masks";
 
 interface Organization {
   id: number;
   name: string;
   address?: string;
   phone?: string;
+  cnpj?: string;
   capacity?: number;
   active: boolean;
   createdAt: string;
 }
-
 interface OrgUser {
   id: number;
   name: string;
   username: string;
   role: string;
+}
+
+type ViaCepPayload = {
+  cep?: string;
+  logradouro?: string;
+  bairro?: string;
+  localidade?: string;
+  uf?: string;
+  erro?: boolean;
+};
+
+function extractCepFromAddress(address?: string): string {
+  if (!address) return "";
+  const match = address.match(/\b\d{5}-?\d{3}\b/);
+  return match ? maskCep(match[0]) : "";
+}
+
+function removeCepPrefixFromAddress(address?: string): string {
+  if (!address) return "";
+  return address.replace(/^CEP\s*\d{5}-?\d{3}\s*-?\s*/i, "").trim();
+}
+
+function composeAddress(cep: string, address: string): string {
+  const normalizedCep = maskCep(cep);
+  const cleanAddress = removeCepPrefixFromAddress(address);
+  if (!normalizedCep) return cleanAddress;
+  if (!cleanAddress) return `CEP ${normalizedCep}`;
+  return `CEP ${normalizedCep} - ${cleanAddress}`;
+}
+
+function isValidCnpj(value: string): boolean {
+  return digitsOnly(value).length === 14;
+}
+
+async function fetchAddressByCep(cep: string): Promise<{ cep: string; address: string }> {
+  const normalizedCep = digitsOnly(cep);
+  if (normalizedCep.length !== 8) {
+    throw new Error("Informe um CEP válido com 8 dígitos.");
+  }
+
+  const response = await fetch(`https://viacep.com.br/ws/${normalizedCep}/json/`);
+  if (!response.ok) throw new Error("Não foi possível consultar o ViaCEP.");
+
+  const data: ViaCepPayload = await response.json();
+  if (data.erro) throw new Error("CEP não encontrado.");
+
+  const cityAndUf = [data.localidade, data.uf].filter(Boolean).join("/");
+  const addressParts = [data.logradouro, data.bairro, cityAndUf].filter(Boolean);
+
+  return {
+    cep: maskCep(data.cep || normalizedCep),
+    address: addressParts.join(" - "),
+  };
 }
 
 function OrgCard({ org }: { org: Organization }) {
@@ -46,13 +100,17 @@ function OrgCard({ org }: { org: Organization }) {
   const [editForm, setEditForm] = useState({ name: "", username: "", password: "", role: "staff" });
   const [editOrgForm, setEditOrgForm] = useState({
     name: org.name,
-    address: org.address ?? "",
-    phone: org.phone ?? "",
+    address: removeCepPrefixFromAddress(org.address),
+    cep: extractCepFromAddress(org.address),
+    phone: maskPhoneBR(org.phone ?? ""),
+    cnpj: maskCnpj(org.cnpj ?? ""),
     capacity: String(org.capacity ?? 50),
   });
+  const [isLookingUpEditCep, setIsLookingUpEditCep] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showEditPassword, setShowEditPassword] = useState(false);
   const { toast } = useToast();
+  const hasValidEditCnpj = isValidCnpj(editOrgForm.cnpj);
 
   const { data: orgUsers = [], refetch: refetchUsers } = useQuery<OrgUser[]>({
     queryKey: [`/api/organizations/${org.id}/users`],
@@ -76,10 +134,17 @@ function OrgCard({ org }: { org: Organization }) {
 
   const updateOrgMutation = useMutation({
     mutationFn: async () => {
+      const composedAddress = composeAddress(editOrgForm.cep, editOrgForm.address);
       const res = await fetch(`/api/organizations/${org.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...editOrgForm, capacity: Number(editOrgForm.capacity) || 50 }),
+        body: JSON.stringify({
+          name: editOrgForm.name.trim(),
+          address: composedAddress,
+          phone: editOrgForm.phone.trim(),
+          cnpj: editOrgForm.cnpj.trim(),
+          capacity: Number(editOrgForm.capacity) || 50,
+        }),
       });
       if (!res.ok) {
         const data = await res.json();
@@ -163,6 +228,27 @@ function OrgCard({ org }: { org: Organization }) {
     setShowEditUser(true);
   }
 
+  async function handleLookupEditCep() {
+    try {
+      setIsLookingUpEditCep(true);
+      const result = await fetchAddressByCep(editOrgForm.cep);
+      setEditOrgForm((prev) => ({
+        ...prev,
+        cep: result.cep,
+        address: result.address || prev.address,
+      }));
+      toast({ title: "Endereço preenchido pelo CEP" });
+    } catch (err) {
+      toast({
+        title: "CEP inválido",
+        description: err instanceof Error ? err.message : "Não foi possível buscar o CEP.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLookingUpEditCep(false);
+    }
+  }
+
   return (
     <Card className="overflow-hidden">
       <CardHeader className="pb-3">
@@ -179,7 +265,8 @@ function OrgCard({ org }: { org: Organization }) {
                 </Badge>
               </div>
               {org.address && <p className="text-xs text-muted-foreground mt-0.5">{org.address}</p>}
-              {org.phone && <p className="text-xs text-muted-foreground">{org.phone}</p>}
+              {org.phone && <p className="text-xs text-muted-foreground">{maskPhoneBR(org.phone)}</p>}
+              {org.cnpj && <p className="text-xs text-muted-foreground">CNPJ: {maskCnpj(org.cnpj)}</p>}
               <p className="text-xs text-muted-foreground mt-0.5">
                 <span className="font-medium text-foreground">{org.capacity ?? 50}</span> vagas disponíveis
               </p>
@@ -199,7 +286,14 @@ function OrgCard({ org }: { org: Organization }) {
             <Button
               variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary"
               onClick={() => {
-                setEditOrgForm({ name: org.name, address: org.address ?? "", phone: org.phone ?? "", capacity: String(org.capacity ?? 50) });
+                setEditOrgForm({
+                  name: org.name,
+                  address: removeCepPrefixFromAddress(org.address),
+                  cep: extractCepFromAddress(org.address),
+                  phone: maskPhoneBR(org.phone ?? ""),
+                  cnpj: maskCnpj(org.cnpj ?? ""),
+                  capacity: String(org.capacity ?? 50),
+                });
                 setShowEditOrg(true);
               }}
               data-testid={`button-edit-org-${org.id}`}
@@ -413,16 +507,44 @@ function OrgCard({ org }: { org: Organization }) {
                 data-testid="input-edit-org-name" />
             </div>
             <div>
+              <Label className="text-sm font-medium">CEP</Label>
+              <div className="mt-1.5 flex gap-2">
+                <Input
+                  placeholder="00000-000"
+                  maxLength={9}
+                  value={editOrgForm.cep}
+                  onChange={(e) => setEditOrgForm({ ...editOrgForm, cep: maskCep(e.target.value) })}
+                  data-testid="input-edit-org-cep"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={handleLookupEditCep}
+                  disabled={isLookingUpEditCep}
+                  data-testid="button-edit-org-cep-lookup"
+                >
+                  {isLookingUpEditCep ? "Buscando..." : "Buscar CEP"}
+                </Button>
+              </div>
+            </div>
+            <div>
               <Label className="text-sm font-medium">Endereço</Label>
-              <Input className="mt-1.5" placeholder="Rua, número - Cidade/UF"
+              <Input className="mt-1.5" placeholder="Rua, número - Bairro - Cidade/UF"
                 value={editOrgForm.address} onChange={(e) => setEditOrgForm({ ...editOrgForm, address: e.target.value })}
                 data-testid="input-edit-org-address" />
             </div>
             <div>
               <Label className="text-sm font-medium">Telefone</Label>
-              <Input className="mt-1.5" placeholder="(00) 0000-0000"
-                value={editOrgForm.phone} onChange={(e) => setEditOrgForm({ ...editOrgForm, phone: e.target.value })}
+              <Input className="mt-1.5" placeholder="(00) 00000-0000" maxLength={15}
+                value={editOrgForm.phone} onChange={(e) => setEditOrgForm({ ...editOrgForm, phone: maskPhoneBR(e.target.value) })}
                 data-testid="input-edit-org-phone" />
+            </div>
+            <div>
+              <Label className="text-sm font-medium">CNPJ *</Label>
+              <Input className="mt-1.5" placeholder="00.000.000/0000-00" maxLength={18}
+                value={editOrgForm.cnpj} onChange={(e) => setEditOrgForm({ ...editOrgForm, cnpj: maskCnpj(e.target.value) })}
+                data-testid="input-edit-org-cnpj" />
             </div>
             <div>
               <Label className="text-sm font-medium">Capacidade de Vagas</Label>
@@ -433,7 +555,7 @@ function OrgCard({ org }: { org: Organization }) {
             </div>
             <div className="flex gap-3 pt-1">
               <Button variant="outline" className="flex-1" onClick={() => setShowEditOrg(false)}>Cancelar</Button>
-              <Button className="flex-1" disabled={updateOrgMutation.isPending || !editOrgForm.name}
+              <Button className="flex-1" disabled={updateOrgMutation.isPending || !editOrgForm.name.trim() || !hasValidEditCnpj}
                 onClick={() => updateOrgMutation.mutate()} data-testid="button-confirm-edit-org">
                 {updateOrgMutation.isPending ? "Salvando..." : "Salvar Alterações"}
               </Button>
@@ -447,8 +569,10 @@ function OrgCard({ org }: { org: Organization }) {
 
 export default function Admin() {
   const [showAddOrg, setShowAddOrg] = useState(false);
-  const [orgForm, setOrgForm] = useState({ name: "", address: "", phone: "", capacity: "50" });
+  const [orgForm, setOrgForm] = useState({ name: "", cep: "", address: "", phone: "", cnpj: "", capacity: "50" });
+  const [isLookingUpOrgCep, setIsLookingUpOrgCep] = useState(false);
   const { toast } = useToast();
+  const hasValidOrgCnpj = isValidCnpj(orgForm.cnpj);
 
   const { data: organizations = [], isLoading } = useQuery<Organization[]>({
     queryKey: ["/api/organizations"],
@@ -461,10 +585,17 @@ export default function Admin() {
 
   const createOrgMutation = useMutation({
     mutationFn: async () => {
+      const composedAddress = composeAddress(orgForm.cep, orgForm.address);
       const res = await fetch("/api/organizations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...orgForm, capacity: Number(orgForm.capacity) || 50 }),
+        body: JSON.stringify({
+          name: orgForm.name.trim(),
+          address: composedAddress,
+          phone: orgForm.phone.trim(),
+          cnpj: orgForm.cnpj.trim(),
+          capacity: Number(orgForm.capacity) || 50,
+        }),
       });
       if (!res.ok) {
         const data = await res.json();
@@ -475,13 +606,34 @@ export default function Admin() {
     onSuccess: () => {
       toast({ title: "Organização criada com sucesso!" });
       setShowAddOrg(false);
-      setOrgForm({ name: "", address: "", phone: "", capacity: "50" });
+      setOrgForm({ name: "", cep: "", address: "", phone: "", cnpj: "", capacity: "50" });
       queryClient.invalidateQueries({ queryKey: ["/api/organizations"] });
     },
     onError: (err: Error) => {
       toast({ title: "Erro", description: err.message, variant: "destructive" });
     },
   });
+
+  async function handleLookupOrgCep() {
+    try {
+      setIsLookingUpOrgCep(true);
+      const result = await fetchAddressByCep(orgForm.cep);
+      setOrgForm((prev) => ({
+        ...prev,
+        cep: result.cep,
+        address: result.address || prev.address,
+      }));
+      toast({ title: "Endereço preenchido pelo CEP" });
+    } catch (err) {
+      toast({
+        title: "CEP inválido",
+        description: err instanceof Error ? err.message : "Não foi possível buscar o CEP.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLookingUpOrgCep(false);
+    }
+  }
 
   return (
     <div className="space-y-8">
@@ -532,16 +684,44 @@ export default function Admin() {
                 data-testid="input-org-name" />
             </div>
             <div>
+              <Label className="text-sm font-medium">CEP</Label>
+              <div className="mt-1.5 flex gap-2">
+                <Input
+                  placeholder="00000-000"
+                  maxLength={9}
+                  value={orgForm.cep}
+                  onChange={(e) => setOrgForm({ ...orgForm, cep: maskCep(e.target.value) })}
+                  data-testid="input-org-cep"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={handleLookupOrgCep}
+                  disabled={isLookingUpOrgCep}
+                  data-testid="button-org-cep-lookup"
+                >
+                  {isLookingUpOrgCep ? "Buscando..." : "Buscar CEP"}
+                </Button>
+              </div>
+            </div>
+            <div>
               <Label className="text-sm font-medium">Endereço</Label>
-              <Input className="mt-1.5" placeholder="Rua, número - Cidade/UF"
+              <Input className="mt-1.5" placeholder="Rua, número - Bairro - Cidade/UF"
                 value={orgForm.address} onChange={(e) => setOrgForm({ ...orgForm, address: e.target.value })}
                 data-testid="input-org-address" />
             </div>
             <div>
               <Label className="text-sm font-medium">Telefone</Label>
-              <Input className="mt-1.5" placeholder="(00) 0000-0000"
-                value={orgForm.phone} onChange={(e) => setOrgForm({ ...orgForm, phone: e.target.value })}
+              <Input className="mt-1.5" placeholder="(00) 00000-0000" maxLength={15}
+                value={orgForm.phone} onChange={(e) => setOrgForm({ ...orgForm, phone: maskPhoneBR(e.target.value) })}
                 data-testid="input-org-phone" />
+            </div>
+            <div>
+              <Label className="text-sm font-medium">CNPJ *</Label>
+              <Input className="mt-1.5" placeholder="00.000.000/0000-00" maxLength={18}
+                value={orgForm.cnpj} onChange={(e) => setOrgForm({ ...orgForm, cnpj: maskCnpj(e.target.value) })}
+                data-testid="input-org-cnpj" />
             </div>
             <div>
               <Label className="text-sm font-medium">Capacidade de Vagas *</Label>
@@ -552,7 +732,7 @@ export default function Admin() {
             </div>
             <div className="flex gap-3 pt-1">
               <Button variant="outline" className="flex-1" onClick={() => setShowAddOrg(false)}>Cancelar</Button>
-              <Button className="flex-1" disabled={createOrgMutation.isPending}
+              <Button className="flex-1" disabled={createOrgMutation.isPending || !orgForm.name.trim() || !hasValidOrgCnpj}
                 onClick={() => createOrgMutation.mutate()} data-testid="button-confirm-add-org">
                 {createOrgMutation.isPending ? "Criando..." : "Criar"}
               </Button>
