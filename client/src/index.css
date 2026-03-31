@@ -1,0 +1,160 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&family=Inter:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-display: 'Plus Jakarta Sans', sans-serif;
+  --font-body: 'Inter', sans-serif;
+
+  /* ===== EasyCare Brand Palette =====
+   * Deep Blue:    #0A0F2C → sidebar/dark
+   * Primary Blue: #1F6FEB → actions
+   * Cyan:         #22D3EE → accent
+   * Green:        #22C55E → success
+   * White:        #F8FAFC → surface
+   */
+
+  /* Content area */
+  --background: 216 33% 97%;
+  --foreground: 232 63% 11%;
+
+  --card: 0 0% 100%;
+  --card-foreground: 232 63% 11%;
+
+  --popover: 0 0% 100%;
+  --popover-foreground: 232 63% 11%;
+
+  /* Primary = #1F6FEB */
+  --primary: 218 83% 52%;
+  --primary-foreground: 0 0% 100%;
+
+  /* Secondary = soft blue */
+  --secondary: 218 60% 94%;
+  --secondary-foreground: 218 83% 40%;
+
+  --muted: 216 25% 94%;
+  --muted-foreground: 218 20% 48%;
+
+  /* Accent = #22D3EE cyan */
+  --accent: 188 83% 53%;
+  --accent-foreground: 232 63% 11%;
+
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+
+  --border: 218 30% 88%;
+  --input: 218 30% 88%;
+  --ring: 218 83% 52%;
+
+  /* Sidebar = #0A0F2C deep blue */
+  --sidebar: 232 63% 11%;
+  --sidebar-foreground: 210 30% 88%;
+  --sidebar-border: 232 50% 17%;
+  --sidebar-ring: 218 83% 52%;
+  --sidebar-primary: 218 83% 52%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 232 50% 17%;
+  --sidebar-accent-foreground: 210 30% 88%;
+
+  /* Chart colors */
+  --chart-1: 218 83% 52%;
+  --chart-2: 188 83% 53%;
+  --chart-3: 142 69% 45%;
+  --chart-4: 43 96% 56%;
+  --chart-5: 0 84% 60%;
+
+  --radius: 0.75rem;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+    @apply font-bold tracking-tight text-foreground;
+  }
+
+  ::selection {
+    @apply bg-primary/20;
+  }
+}
+
+@layer components {
+  /* === Sidebar dark theme === */
+  .sidebar-nav-item {
+    @apply flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 cursor-pointer select-none;
+    color: hsl(var(--sidebar-foreground));
+  }
+
+  .sidebar-nav-item:hover {
+    background: hsl(var(--sidebar-accent));
+    color: #fff;
+  }
+
+  .sidebar-nav-item.active {
+    background: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(188 83% 48%) 100%);
+    color: #fff;
+    box-shadow: 0 4px 15px hsl(var(--primary) / 0.35);
+  }
+
+  /* === Cards === */
+  .ec-card {
+    @apply bg-card rounded-2xl border border-border/60 shadow-sm;
+  }
+
+  .ec-kpi-card {
+    @apply ec-card relative overflow-hidden p-5;
+  }
+
+  /* === Gradient text === */
+  .gradient-text {
+    background: linear-gradient(135deg, #1F6FEB 0%, #22D3EE 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .gradient-text-green {
+    background: linear-gradient(135deg, #22D3EE 0%, #22C55E 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* === Glowing primary button === */
+  .btn-glow {
+    box-shadow: 0 4px 20px hsl(var(--primary) / 0.4);
+    transition: box-shadow 0.2s, transform 0.15s;
+  }
+  .btn-glow:hover {
+    box-shadow: 0 6px 28px hsl(var(--primary) / 0.55);
+    transform: translateY(-1px);
+  }
+}
+
+/* === Custom Scrollbar === */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 99px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.4);
+}

@@ -1,0 +1,204 @@
+Permissões de usuário
+
+O ideal é não deixar todo mundo ver tudo.
+Num sistema desse tipo, eu pensaria em perfis.
+
+Perfis principais
+Super Admin
+
+Você ou a empresa dona do sistema.
+
+Pode:
+
+gerenciar tenants
+ver configurações gerais
+controlar planos
+suporte técnico
+auditoria geral
+Administrador da unidade / empresa
+
+Cliente que contratou o sistema.
+
+Pode:
+
+cadastrar pacientes
+cadastrar usuários
+definir permissões
+ver relatórios
+gerenciar financeiro
+acompanhar prontuários e escalas
+Enfermeiro / responsável técnico
+
+Pode:
+
+acessar prontuário
+atualizar evolução
+registrar medicação
+ver intercorrências
+validar informações clínicas
+Cuidador
+
+Pode:
+
+ver apenas pacientes vinculados a ele
+registrar atendimento
+preencher checklist
+registrar observações
+anexar foto ou evidência, se fizer sentido
+
+Não deveria poder:
+
+excluir prontuário
+ver financeiro
+alterar configurações sensíveis
+Recepção / administrativo
+
+Pode:
+
+cadastro básico
+agenda
+contratos
+boletos/pagamentos
+relatórios administrativos
+Responsável / familiar
+
+Esse é o ambiente que você falou.
+
+Pode:
+
+acessar somente o paciente vinculado
+acompanhar atualizações
+ver registros autorizados
+receber avisos
+falar com a unidade, se você quiser implementar mensagens
+
+Não deveria poder:
+
+alterar prontuário técnico
+ver dados internos da equipe
+ver dados de outros pacientes
+Portal do responsável
+
+Isso aqui é muito bom como diferencial.
+
+Você pode criar uma área separada, tipo:
+
+login do responsável
+painel com nome do paciente
+resumo do dia/semana
+últimas observações liberadas
+medicações administradas
+agenda de atendimentos
+intercorrências, quando permitido
+fotos ou atualizações, se a unidade quiser compartilhar
+O que mostrar nesse portal
+
+Eu sugiro algo assim:
+
+Visão geral
+nome do paciente
+status do dia
+último atendimento
+próxima visita ou procedimento
+observações recentes
+Histórico
+registros diários
+evolução simplificada
+alimentação
+medicação aplicada
+sinais importantes, se fizer sentido
+Comunicados
+mensagens da unidade
+avisos importantes
+documentos compartilhados
+Contato
+telefone da unidade
+canal de suporte
+solicitação de retorno
+Muito importante: níveis de visibilidade
+
+Nem tudo que a equipe registra deve ir pro responsável automaticamente.
+
+Você pode colocar no sistema um campo tipo:
+
+interno
+compartilhável com responsável
+
+Assim:
+
+a equipe faz anotações internas
+só o que for apropriado aparece no portal da família
+
+Isso evita problema e dá mais controle.
+
+Modelo de permissão que eu recomendo
+
+Ao invés de só perfil fixo, usa:
+
+perfil
+permissões específicas
+
+Exemplo:
+
+Um usuário pode ser “enfermeiro”, mas você ainda controla se ele pode:
+
+editar medicação
+excluir evolução
+exportar relatório
+ver financeiro
+cadastrar usuário
+
+Ou seja:
+
+RBAC: controle por papéis
+com permissões extras por ação
+
+Isso te dá muito mais flexibilidade.
+
+Exemplo de permissões
+
+Você pode ter permissões como:
+
+patient.view
+patient.create
+patient.update
+medical_record.view
+medical_record.update
+schedule.view
+schedule.manage
+medication.manage
+financial.view
+user.manage
+family_portal.access
+reports.view
+Regras importantes de segurança
+
+Pro teu caso, eu faria essas regras desde o início:
+
+cada usuário pertence a um tenant
+cada responsável só acessa o próprio paciente vinculado
+logs de tudo que foi acessado
+histórico de alterações
+2FA pelo menos para admins, se der
+bloqueio por tentativas de login
+sessão expira após inatividade
+Estrutura prática do familiar/responsável
+
+Você pode modelar assim:
+
+patients
+responsibles
+responsible_patient
+users
+roles
+permissions
+
+E no responsável:
+
+nome
+CPF
+telefone
+e-mail
+grau de parentesco
+vínculo com o paciente
+status de acesso ao portal

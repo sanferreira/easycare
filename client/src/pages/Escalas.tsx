@@ -1,0 +1,725 @@
+import { useState, useMemo } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import {
+  format, startOfMonth, endOfMonth, eachDayOfInterval,
+  startOfWeek, endOfWeek, isSameMonth, isToday, isSameDay, addDays, startOfDay,
+} from "date-fns";
+import { ptBR } from "date-fns/locale";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Separator } from "@/components/ui/separator";
+import {
+  ChevronLeft, ChevronRight, Plus, X, Clock, User,
+  CalendarDays, AlertCircle, Sun, Moon, Timer, ClipboardList, Pencil
+} from "lucide-react";
+import { queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import type { ShiftAssignment } from "@shared/schema";
+
+type ShiftType = "12h_manha" | "12h_noite" | "24h" | "avulso";
+
+interface ShiftWithDetails extends ShiftAssignment {
+  staffName?: string;
+  staffRole?: string;
+  residentName?: string;
+}
+
+// Shift type metadata
+const SHIFT_TYPES: Record<ShiftType, {
+  label: string;
+  short: string;
+  icon: React.ComponentType<{ className?: string }>;
+  bg: string;
+  text: string;
+  border: string;
+}> = {
+  "12h_manha": {
+    label: "12h Manhã",
+    short: "12h D",
+    icon: Sun,
+    bg: "bg-sky-100 dark:bg-sky-900/40",
+    text: "text-sky-800 dark:text-sky-200",
+    border: "border-sky-200 dark:border-sky-700",
+  },
+  "12h_noite": {
+    label: "12h Noite",
+    short: "12h N",
+    icon: Moon,
+    bg: "bg-violet-100 dark:bg-violet-900/40",
+    text: "text-violet-800 dark:text-violet-200",
+    border: "border-violet-200 dark:border-violet-700",
+  },
+  "24h": {
+    label: "Plantão 24h",
+    short: "24h",
+    icon: Timer,
+    bg: "bg-amber-100 dark:bg-amber-900/40",
+    text: "text-amber-800 dark:text-amber-200",
+    border: "border-amber-200 dark:border-amber-700",
+  },
+  "avulso": {
+    label: "Avulso",
+    short: "Avulso",
+    icon: ClipboardList,
+    bg: "bg-emerald-100 dark:bg-emerald-900/40",
+    text: "text-emerald-800 dark:text-emerald-200",
+    border: "border-emerald-200 dark:border-emerald-700",
+  },
+};
+
+// Color palette for staff (by index)
+const STAFF_COLORS = [
+  { pill: "bg-blue-500", light: "bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-200" },
+  { pill: "bg-violet-500", light: "bg-violet-100 dark:bg-violet-900/30 text-violet-800 dark:text-violet-200" },
+  { pill: "bg-emerald-500", light: "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-200" },
+  { pill: "bg-amber-500", light: "bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200" },
+  { pill: "bg-rose-500", light: "bg-rose-100 dark:bg-rose-900/30 text-rose-800 dark:text-rose-200" },
+  { pill: "bg-cyan-500", light: "bg-cyan-100 dark:bg-cyan-900/30 text-cyan-800 dark:text-cyan-200" },
+];
+
+function ShiftTypeBadge({ type }: { type: string }) {
+  const meta = SHIFT_TYPES[type as ShiftType] ?? SHIFT_TYPES.avulso;
+  const Icon = meta.icon;
+  return (
+    <Badge className={`gap-1 text-xs ${meta.bg} ${meta.text} border ${meta.border} font-medium`} variant="outline">
+      <Icon className="h-3 w-3" />
+      {meta.label}
+    </Badge>
+  );
+}
+
+// Calculate default start/end times based on shift type and date
+function getDefaultTimes(type: ShiftType, date: string): { startTime: string; endTime: string } {
+  if (!date) return { startTime: "", endTime: "" };
+  const [y, m, d] = date.split("-");
+  const next = new Date(Number(y), Number(m) - 1, Number(d) + 1);
+  const nextStr = format(next, "yyyy-MM-dd");
+
+  switch (type) {
+    case "12h_manha":
+      return { startTime: `${date}T07:00`, endTime: `${date}T19:00` };
+    case "12h_noite":
+      return { startTime: `${date}T19:00`, endTime: `${nextStr}T07:00` };
+    case "24h":
+      return { startTime: `${date}T07:00`, endTime: `${nextStr}T07:00` };
+    default:
+      return { startTime: `${date}T08:00`, endTime: `${date}T17:00` };
+  }
+}
+
+export default function Escalas() {
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [selectedDay, setSelectedDay] = useState<Date>(new Date());
+  const [openDialog, setOpenDialog] = useState(false);
+  const [editingShiftId, setEditingShiftId] = useState<number | null>(null);
+  const [filterStaff, setFilterStaff] = useState<string>("all");
+  const [form, setForm] = useState({
+    staffId: "",
+    shiftType: "12h_manha" as ShiftType,
+    date: format(new Date(), "yyyy-MM-dd"),
+    startTime: "",
+    endTime: "",
+    notes: "",
+  });
+  const { toast } = useToast();
+
+  const { data: shifts = [], isLoading: shiftsLoading } = useQuery<ShiftWithDetails[]>({
+    queryKey: ["/api/shift-assignments"],
+    queryFn: async () => {
+      const res = await fetch("/api/shift-assignments");
+      if (!res.ok) throw new Error("Erro ao carregar escalas");
+      return res.json();
+    },
+  });
+
+  const { data: staff = [] } = useQuery<any[]>({
+    queryKey: ["/api/staff"],
+    queryFn: async () => {
+      const res = await fetch("/api/staff");
+      if (!res.ok) throw new Error("Erro ao carregar equipe");
+      return res.json();
+    },
+  });
+
+  // Map staffId → color index
+  const staffColorMap = useMemo(() => {
+    const map: Record<number, number> = {};
+    staff.forEach((s, i) => { map[s.id] = i % STAFF_COLORS.length; });
+    return map;
+  }, [staff]);
+
+  const createShiftMutation = useMutation({
+    mutationFn: async () => {
+      const times = form.shiftType !== "avulso"
+        ? getDefaultTimes(form.shiftType, form.date)
+        : { startTime: form.startTime, endTime: form.endTime };
+
+      const res = await fetch("/api/shift-assignments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          staffId: Number(form.staffId),
+          shiftType: form.shiftType,
+          startTime: new Date(times.startTime),
+          endTime: new Date(times.endTime),
+          notes: form.notes || null,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.message || "Erro");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Escala criada com sucesso!" });
+      queryClient.invalidateQueries({ queryKey: ["/api/shift-assignments"] });
+      setOpenDialog(false);
+      setForm({ staffId: "", shiftType: "12h_manha", date: format(new Date(), "yyyy-MM-dd"), startTime: "", endTime: "", notes: "" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Erro", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const updateShiftMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const times = form.shiftType !== "avulso"
+        ? getDefaultTimes(form.shiftType, form.date)
+        : { startTime: form.startTime, endTime: form.endTime };
+
+      const res = await fetch(`/api/shift-assignments/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          staffId: Number(form.staffId),
+          shiftType: form.shiftType,
+          startTime: new Date(times.startTime),
+          endTime: new Date(times.endTime),
+          notes: form.notes || null,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.message || "Erro");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Escala atualizada!" });
+      queryClient.invalidateQueries({ queryKey: ["/api/shift-assignments"] });
+      setOpenDialog(false);
+      setEditingShiftId(null);
+      setForm({ staffId: "", shiftType: "12h_manha", date: format(new Date(), "yyyy-MM-dd"), startTime: "", endTime: "", notes: "" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Erro", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const deleteShiftMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/shift-assignments/${id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Erro ao deletar escala");
+    },
+    onSuccess: () => {
+      toast({ title: "Escala removida" });
+      queryClient.invalidateQueries({ queryKey: ["/api/shift-assignments"] });
+    },
+  });
+
+  const monthStart = startOfMonth(currentDate);
+  const monthEnd = endOfMonth(currentDate);
+  const calendarDays = eachDayOfInterval({
+    start: startOfWeek(monthStart, { weekStartsOn: 0 }),
+    end: endOfWeek(monthEnd, { weekStartsOn: 0 }),
+  });
+
+  const filteredShifts = useMemo(() => {
+    if (filterStaff === "all") return shifts;
+    return shifts.filter((s) => s.staffId === Number(filterStaff));
+  }, [shifts, filterStaff]);
+
+  // Retorna turnos que tocam o dia — tanto turnos de 1 dia quanto multi-dia
+  const shiftCoversDay = (s: ShiftWithDetails, day: Date) => {
+    const d = startOfDay(day).getTime();
+    const start = startOfDay(new Date(s.startTime)).getTime();
+    const end = startOfDay(new Date(s.endTime)).getTime();
+    return d >= start && d <= end;
+  };
+
+  const getShiftsForDay = (day: Date) =>
+    filteredShifts.filter((s) => shiftCoversDay(s, day));
+
+  const selectedDayShifts = useMemo(() =>
+    filteredShifts
+      .filter((s) => shiftCoversDay(s, selectedDay))
+      .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()),
+    [filteredShifts, selectedDay]
+  );
+
+  // Count shifts currently active
+  const now = new Date();
+  const activeCount = shifts.filter((s) => now >= new Date(s.startTime) && now <= new Date(s.endTime)).length;
+
+  // Count how many shifts this month
+  const monthShiftCount = shifts.filter((s) =>
+    isSameMonth(new Date(s.startTime), currentDate)
+  ).length;
+
+  function openCreate(day?: Date) {
+    setEditingShiftId(null);
+    setForm({ staffId: "", shiftType: "12h_manha", date: format(day ?? new Date(), "yyyy-MM-dd"), startTime: "", endTime: "", notes: "" });
+    setOpenDialog(true);
+  }
+
+  function openEdit(shift: ShiftWithDetails) {
+    setEditingShiftId(shift.id);
+    const startDate = new Date(shift.startTime);
+    const endDate = new Date(shift.endTime);
+    const shiftType = (shift.shiftType as ShiftType) || "avulso";
+    setForm({
+      staffId: String(shift.staffId),
+      shiftType,
+      date: format(startDate, "yyyy-MM-dd"),
+      startTime: format(startDate, "yyyy-MM-dd'T'HH:mm"),
+      endTime: format(endDate, "yyyy-MM-dd'T'HH:mm"),
+      notes: shift.notes || "",
+    });
+    setOpenDialog(true);
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight text-foreground font-display">Escalas</h1>
+          <p className="text-muted-foreground mt-1">Plantões e escalas de trabalho da equipe</p>
+        </div>
+        <Button onClick={() => openCreate()} data-testid="button-add-shift" className="gap-2 shrink-0">
+          <Plus className="h-4 w-4" />
+          Novo Plantão
+        </Button>
+      </div>
+
+      {/* Stats row */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="rounded-xl border border-border bg-card px-4 py-3">
+          <p className="text-xs text-muted-foreground">Plantões este mês</p>
+          <p className="text-2xl font-bold text-foreground mt-0.5">{monthShiftCount}</p>
+        </div>
+        <div className={`rounded-xl border px-4 py-3 ${activeCount > 0 ? "border-green-300 bg-green-50 dark:bg-green-950/20" : "border-border bg-card"}`}>
+          <p className="text-xs text-muted-foreground">Em andamento agora</p>
+          <p className={`text-2xl font-bold mt-0.5 ${activeCount > 0 ? "text-green-700 dark:text-green-400" : "text-foreground"}`}>{activeCount}</p>
+        </div>
+        {(["12h_manha", "12h_noite"] as ShiftType[]).map(type => {
+          const meta = SHIFT_TYPES[type];
+          const count = shifts.filter(s => s.shiftType === type && isSameMonth(new Date(s.startTime), currentDate)).length;
+          return (
+            <div key={type} className={`rounded-xl border px-4 py-3 ${meta.bg} ${meta.border} border`}>
+              <p className={`text-xs ${meta.text} opacity-80`}>{meta.label}</p>
+              <p className={`text-2xl font-bold mt-0.5 ${meta.text}`}>{count}</p>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Legend */}
+      <div className="flex flex-wrap gap-2 items-center">
+        <span className="text-xs text-muted-foreground font-medium">Tipos:</span>
+        {Object.entries(SHIFT_TYPES).map(([key, meta]) => {
+          const Icon = meta.icon;
+          return (
+            <span key={key} className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${meta.bg} ${meta.text} border ${meta.border}`}>
+              <Icon className="h-3 w-3" />
+              {meta.label}
+            </span>
+          );
+        })}
+      </div>
+
+      {/* Filter */}
+      <div className="flex items-center gap-3">
+        <Label className="text-sm font-medium shrink-0">Ver cuidador:</Label>
+        <Select value={filterStaff} onValueChange={setFilterStaff}>
+          <SelectTrigger className="w-56" data-testid="select-staff-filter">
+            <SelectValue placeholder="Toda equipe" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Toda equipe</SelectItem>
+            {staff.map((s) => (
+              <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Calendar + Detail */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Calendar */}
+        <Card className="lg:col-span-2">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
+            <CardTitle className="text-base capitalize">
+              {format(currentDate, "MMMM 'de' yyyy", { locale: ptBR })}
+            </CardTitle>
+            <div className="flex gap-1">
+              <Button variant="ghost" size="icon" className="h-8 w-8"
+                onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1))}
+                data-testid="button-prev-month">
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <Button variant="outline" size="sm" className="h-8 text-xs"
+                onClick={() => { setCurrentDate(new Date()); setSelectedDay(new Date()); }}
+                data-testid="button-today">
+                Hoje
+              </Button>
+              <Button variant="ghost" size="icon" className="h-8 w-8"
+                onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1))}
+                data-testid="button-next-month">
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-0">
+            {shiftsLoading ? (
+              <div className="text-center py-12 text-muted-foreground text-sm">Carregando escalas...</div>
+            ) : (
+              <>
+                <div className="grid grid-cols-7 mb-1">
+                  {["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"].map((d) => (
+                    <div key={d} className="text-center text-xs font-semibold text-muted-foreground py-2">{d}</div>
+                  ))}
+                </div>
+                <div className="grid grid-cols-7 gap-px bg-border/50 rounded-xl overflow-hidden border border-border/50">
+                  {calendarDays.map((day, idx) => {
+                    const dayShifts = getShiftsForDay(day);
+                    const inMonth = isSameMonth(day, currentDate);
+                    const isCurrentDay = isToday(day);
+                    const isSelected = isSameDay(day, selectedDay);
+
+                    return (
+                      <div
+                        key={idx}
+                        onClick={() => setSelectedDay(day)}
+                        className={`min-h-[80px] p-1.5 cursor-pointer transition-colors
+                          ${inMonth ? "bg-background hover:bg-muted/50" : "bg-muted/20 hover:bg-muted/30"}
+                          ${isSelected ? "ring-2 ring-primary ring-inset" : ""}
+                          ${isCurrentDay && !isSelected ? "bg-primary/5" : ""}
+                        `}
+                        data-testid={`calendar-day-${format(day, "yyyy-MM-dd")}`}
+                      >
+                        <div className={`w-6 h-6 flex items-center justify-center rounded-full mb-1 font-medium text-xs
+                          ${isCurrentDay ? "bg-primary text-primary-foreground" : ""}
+                          ${!inMonth ? "text-muted-foreground/50" : "text-foreground"}
+                        `}>
+                          {format(day, "d")}
+                        </div>
+                        <div className="space-y-0.5">
+                          {dayShifts.slice(0, 3).map((shift) => {
+                            const meta = SHIFT_TYPES[shift.shiftType as ShiftType] ?? SHIFT_TYPES.avulso;
+                            const colorIdx = staffColorMap[shift.staffId] ?? 0;
+                            const staffColor = STAFF_COLORS[colorIdx];
+                            return (
+                              <div
+                                key={shift.id}
+                                className={`rounded px-1 py-0.5 leading-tight truncate text-[10px] font-medium ${staffColor.light}`}
+                                title={`${shift.staffName} — ${meta.label}`}
+                                data-testid={`shift-pill-${shift.id}`}
+                              >
+                                {shift.staffName?.split(" ")[0]} · {meta.short}
+                              </div>
+                            );
+                          })}
+                          {dayShifts.length > 3 && (
+                            <div className="text-muted-foreground text-[10px] pl-1">
+                              +{dayShifts.length - 3}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Day Detail Panel */}
+        <div className="space-y-4">
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <CalendarDays className="h-4 w-4 text-primary" />
+                  <CardTitle className="text-base">
+                    {isToday(selectedDay) ? "Hoje" : format(selectedDay, "d 'de' MMMM", { locale: ptBR })}
+                  </CardTitle>
+                </div>
+                <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary"
+                  onClick={() => openCreate(selectedDay)} data-testid="button-add-shift-day">
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground capitalize pl-6">
+                {format(selectedDay, "EEEE", { locale: ptBR })}
+              </p>
+            </CardHeader>
+            <CardContent className="pt-0">
+              {selectedDayShifts.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-10 gap-3 text-center">
+                  <AlertCircle className="h-8 w-8 text-muted-foreground/30" />
+                  <p className="text-sm text-muted-foreground">Nenhum plantão neste dia</p>
+                  <Button variant="outline" size="sm" className="gap-1 text-xs"
+                    onClick={() => openCreate(selectedDay)}>
+                    <Plus className="h-3 w-3" />
+                    Adicionar plantão
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-xs text-muted-foreground">
+                    {selectedDayShifts.length} plantão{selectedDayShifts.length > 1 ? "ões" : ""} agendado{selectedDayShifts.length > 1 ? "s" : ""}
+                  </p>
+                  {selectedDayShifts.map((shift, i) => {
+                    const colorIdx = staffColorMap[shift.staffId] ?? 0;
+                    const staffColor = STAFF_COLORS[colorIdx];
+                    const isActive = now >= new Date(shift.startTime) && now <= new Date(shift.endTime);
+
+                    return (
+                      <div key={shift.id}>
+                        {i > 0 && <Separator className="my-3" />}
+                        <div className="space-y-2" data-testid={`shift-detail-${shift.id}`}>
+                          <div className="flex items-start justify-between gap-2">
+                            <ShiftTypeBadge type={shift.shiftType || "avulso"} />
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                onClick={() => openEdit(shift)}
+                                className="text-muted-foreground hover:text-primary transition-colors p-0.5"
+                                data-testid={`button-edit-shift-${shift.id}`}
+                                title="Editar plantão"
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                onClick={() => deleteShiftMutation.mutate(shift.id)}
+                                className="text-muted-foreground hover:text-destructive transition-colors p-0.5"
+                                data-testid={`button-delete-shift-${shift.id}`}
+                                title="Remover plantão"
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <div className={`h-2 w-2 rounded-full shrink-0 ${staffColor.pill}`} />
+                            <div>
+                              <p className="text-sm font-semibold leading-tight">{shift.staffName}</p>
+                              {shift.staffRole && (
+                                <p className="text-xs text-muted-foreground">{shift.staffRole}</p>
+                              )}
+                            </div>
+                            {isActive && (
+                              <Badge className="ml-auto bg-green-500 text-white text-[10px] px-1.5">Em andamento</Badge>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                            <Clock className="h-3.5 w-3.5 shrink-0" />
+                            <span>
+                              {format(new Date(shift.startTime), "HH:mm")} — {format(new Date(shift.endTime), "HH:mm")}
+                              {!isSameDay(new Date(shift.startTime), new Date(shift.endTime)) && (
+                                <span className="ml-1 text-muted-foreground/60">(+1 dia)</span>
+                              )}
+                            </span>
+                          </div>
+
+                          {shift.notes && (
+                            <p className="text-xs text-muted-foreground bg-muted/50 rounded px-2 py-1.5 italic leading-relaxed">
+                              {shift.notes}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Staff legend */}
+          {staff.length > 0 && (
+            <Card>
+              <CardContent className="pt-4 pb-4">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Equipe</p>
+                <div className="space-y-2">
+                  {staff.map((s: any, i: number) => {
+                    const color = STAFF_COLORS[i % STAFF_COLORS.length];
+                    const monthCount = shifts.filter(
+                      sh => sh.staffId === s.id && isSameMonth(new Date(sh.startTime), currentDate)
+                    ).length;
+                    return (
+                      <div key={s.id} className="flex items-center gap-2.5">
+                        <div className={`h-2.5 w-2.5 rounded-full shrink-0 ${color.pill}`} />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium truncate">{s.name}</p>
+                          <p className="text-[10px] text-muted-foreground">{s.role}</p>
+                        </div>
+                        <span className="text-[10px] text-muted-foreground shrink-0">{monthCount}p</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      </div>
+
+      {/* Create / Edit Shift Dialog */}
+      <Dialog open={openDialog} onOpenChange={(open) => {
+        setOpenDialog(open);
+        if (!open) { setEditingShiftId(null); }
+      }}>
+        <DialogContent data-testid="dialog-create-shift">
+          <DialogHeader>
+            <DialogTitle>{editingShiftId ? "Editar Plantão" : "Novo Plantão"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 pt-1">
+            {/* Staff */}
+            <div>
+              <Label className="text-sm font-medium">Cuidador / Funcionário *</Label>
+              <Select value={form.staffId} onValueChange={(v) => setForm({ ...form, staffId: v })}>
+                <SelectTrigger className="mt-1.5" data-testid="select-staff">
+                  <SelectValue placeholder="Selecione o funcionário" />
+                </SelectTrigger>
+                <SelectContent>
+                  {staff.map((s: any) => (
+                    <SelectItem key={s.id} value={String(s.id)}>
+                      <span>{s.name}</span>
+                      <span className="ml-2 text-muted-foreground text-xs">· {s.role}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Shift Type */}
+            <div>
+              <Label className="text-sm font-medium">Tipo de Plantão *</Label>
+              <div className="grid grid-cols-2 gap-2 mt-1.5">
+                {(Object.entries(SHIFT_TYPES) as [ShiftType, typeof SHIFT_TYPES[ShiftType]][]).map(([key, meta]) => {
+                  const Icon = meta.icon;
+                  const isSelected = form.shiftType === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setForm({ ...form, shiftType: key })}
+                      data-testid={`shift-type-${key}`}
+                      className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border text-sm font-medium transition-all text-left
+                        ${isSelected
+                          ? `${meta.bg} ${meta.text} ${meta.border} ring-2 ring-offset-1 ring-current/30`
+                          : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                        }`}
+                    >
+                      <Icon className="h-4 w-4 shrink-0" />
+                      <div>
+                        <p className="leading-none">{meta.label}</p>
+                        {key === "12h_manha" && <p className="text-[10px] opacity-70 mt-0.5">07:00 – 19:00</p>}
+                        {key === "12h_noite" && <p className="text-[10px] opacity-70 mt-0.5">19:00 – 07:00</p>}
+                        {key === "24h" && <p className="text-[10px] opacity-70 mt-0.5">07:00 – 07:00</p>}
+                        {key === "avulso" && <p className="text-[10px] opacity-70 mt-0.5">horário livre</p>}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Date (for 12h / 24h) or datetime (for avulso) */}
+            {form.shiftType !== "avulso" ? (
+              <div>
+                <Label className="text-sm font-medium">Data do Plantão *</Label>
+                <Input
+                  type="date"
+                  className="mt-1.5"
+                  value={form.date}
+                  onChange={(e) => setForm({ ...form, date: e.target.value })}
+                  data-testid="input-date"
+                />
+                {form.date && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {(() => {
+                      const times = getDefaultTimes(form.shiftType, form.date);
+                      return `Das ${times.startTime.split("T")[1]} às ${times.endTime.split("T")[1]} ${form.shiftType !== "12h_manha" ? "(dia seguinte)" : ""}`;
+                    })()}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-sm font-medium">Início *</Label>
+                  <Input type="datetime-local" className="mt-1.5"
+                    value={form.startTime}
+                    onChange={(e) => setForm({ ...form, startTime: e.target.value })}
+                    data-testid="input-start-time" />
+                </div>
+                <div>
+                  <Label className="text-sm font-medium">Fim *</Label>
+                  <Input type="datetime-local" className="mt-1.5"
+                    value={form.endTime}
+                    onChange={(e) => setForm({ ...form, endTime: e.target.value })}
+                    data-testid="input-end-time" />
+                </div>
+              </div>
+            )}
+
+            {/* Notes */}
+            <div>
+              <Label className="text-sm font-medium">Observações</Label>
+              <Textarea className="mt-1.5 resize-none" rows={2}
+                placeholder="Anotações sobre este plantão..."
+                value={form.notes}
+                onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                data-testid="textarea-notes" />
+            </div>
+
+            <div className="flex gap-3 pt-1">
+              <Button variant="outline" className="flex-1" onClick={() => setOpenDialog(false)}>Cancelar</Button>
+              {editingShiftId ? (
+                <Button className="flex-1"
+                  disabled={updateShiftMutation.isPending || !form.staffId}
+                  onClick={() => updateShiftMutation.mutate(editingShiftId)}
+                  data-testid="button-save-shift">
+                  {updateShiftMutation.isPending ? "Salvando..." : "Salvar Alterações"}
+                </Button>
+              ) : (
+                <Button className="flex-1"
+                  disabled={createShiftMutation.isPending || !form.staffId}
+                  onClick={() => createShiftMutation.mutate()}
+                  data-testid="button-create-shift">
+                  {createShiftMutation.isPending ? "Criando..." : "Criar Plantão"}
+                </Button>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

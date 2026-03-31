@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "wc3LLYpLgwokQK27tFlJn"
+uri = "file://easycare.tar.gz"
+type = "unspecified"
+title = "EasyCare — Código Fonte Completo"
