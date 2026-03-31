@@ -130,11 +130,11 @@ export default function Login() {
 
         <div className="relative z-10">
           <div className="flex items-center gap-3 mb-2">
-            <img
+            {/* <img
               src="/easycare-logo.png"
               alt="EasyCare"
               className="h-12 w-12 object-contain rounded-2xl"
-            />
+            /> */}
             <div>
               <p
                 className="text-3xl font-bold tracking-tight"
