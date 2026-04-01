@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   format, startOfMonth, endOfMonth, eachDayOfInterval,
@@ -117,6 +117,18 @@ function getDefaultTimes(type: ShiftType, date: string): { startTime: string; en
   }
 }
 
+function normalizeShiftLabel(value?: string | null): string {
+  return (value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function isTwelveByThirtySixShift(value?: string | null): boolean {
+  return normalizeShiftLabel(value).includes("12x36");
+}
+
 export default function Escalas() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDay, setSelectedDay] = useState<Date>(new Date());
@@ -150,6 +162,27 @@ export default function Escalas() {
       return res.json();
     },
   });
+
+  const selectedStaff = useMemo(
+    () => staff.find((member) => String(member.id) === form.staffId),
+    [staff, form.staffId],
+  );
+  const selectedStaffIs12x36 = useMemo(
+    () => isTwelveByThirtySixShift(selectedStaff?.shift),
+    [selectedStaff],
+  );
+  const availableShiftTypes = useMemo<ShiftType[]>(
+    () => (selectedStaffIs12x36
+      ? ["12h_manha", "12h_noite"]
+      : ["12h_manha", "12h_noite", "24h", "avulso"]),
+    [selectedStaffIs12x36],
+  );
+
+  useEffect(() => {
+    if (selectedStaffIs12x36 && !availableShiftTypes.includes(form.shiftType)) {
+      setForm((prev) => ({ ...prev, shiftType: "12h_manha" }));
+    }
+  }, [availableShiftTypes, form.shiftType, selectedStaffIs12x36]);
 
   // Map staffId → color index
   const staffColorMap = useMemo(() => {
@@ -615,13 +648,19 @@ export default function Escalas() {
                   ))}
                 </SelectContent>
               </Select>
+              {selectedStaffIs12x36 && (
+                <p className="text-xs text-muted-foreground mt-1.5">
+                  Regra 12x36: somente plantões de 12h e descanso mínimo de 36h entre escalas.
+                </p>
+              )}
             </div>
 
             {/* Shift Type */}
             <div>
               <Label className="text-sm font-medium">Tipo de Plantão *</Label>
               <div className="grid grid-cols-2 gap-2 mt-1.5">
-                {(Object.entries(SHIFT_TYPES) as [ShiftType, typeof SHIFT_TYPES[ShiftType]][]).map(([key, meta]) => {
+                {availableShiftTypes.map((key) => {
+                  const meta = SHIFT_TYPES[key];
                   const Icon = meta.icon;
                   const isSelected = form.shiftType === key;
                   return (

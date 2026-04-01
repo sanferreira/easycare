@@ -52,13 +52,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     },
   }));
 
-  const loginRateLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 10,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { message: "Muitas tentativas de login. Tente novamente em alguns minutos." },
-  });
+  const createLoginRateLimiter = () =>
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      max: 10,
+      standardHeaders: true,
+      legacyHeaders: false,
+      skipSuccessfulRequests: true,
+      message: { message: "Muitas tentativas de login. Tente novamente em alguns minutos." },
+    });
+
+  const authLoginRateLimiter = createLoginRateLimiter();
+  const familyLoginRateLimiter = createLoginRateLimiter();
 
   const sanitizeUser = <T extends { password?: unknown }>(user: T) => {
     const { password: _password, ...safe } = user;
@@ -133,7 +138,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   };
 
   // ===== AUTH =====
-  app.post("/api/auth/login", loginRateLimiter, async (req, res) => {
+  app.post("/api/auth/login", authLoginRateLimiter, async (req, res) => {
     const { username, password, organizationCnpj, organizationId } = req.body;
     if (typeof username !== "string" || typeof password !== "string" || !username || !password) {
       return res.status(400).json({ message: "Usuário e senha obrigatórios" });
@@ -224,7 +229,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     next();
   };
 
-  app.post("/api/family-portal/login", loginRateLimiter, async (req, res) => {
+  app.post("/api/family-portal/login", familyLoginRateLimiter, async (req, res) => {
     const { username, password, organizationCnpj } = req.body;
     if (typeof username !== "string" || typeof password !== "string" || !username || !password) {
       return res.status(400).json({ message: "Usuário e senha obrigatórios" });
@@ -589,6 +594,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
     res.json(await storage.updateOccurrence(orgId, Number(req.params.id), body));
   });
+  app.delete("/api/occurrences/:id", requireAuth, async (req, res) => {
+    const orgId = getOrgId(req);
+    const deleted = await storage.deleteOccurrence(orgId, Number(req.params.id));
+    if (!deleted) {
+      return res.status(404).json({ message: "Ocorrência não encontrada." });
+    }
+    res.status(204).send();
+  });
 
   // ===== SHIFT ASSIGNMENTS =====
   const shiftInputSchema = z.object({
@@ -599,6 +612,95 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     endTime: z.coerce.date(),
     notes: z.string().optional().nullable(),
   });
+  class ShiftValidationError extends Error {}
+
+  const SHIFT_12X36_TYPES = new Set(["12h_manha", "12h_noite"]);
+  const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
+  const THIRTY_SIX_HOURS_MS = 36 * 60 * 60 * 1000;
+
+  const normalizeShiftLabel = (value?: string | null) =>
+    (value ?? "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .trim();
+
+  const isTwelveByThirtySixStaff = (shift?: string | null) =>
+    normalizeShiftLabel(shift).includes("12x36");
+
+  const assertShiftWindow = (startTime: Date, endTime: Date) => {
+    if (Number.isNaN(startTime.getTime()) || Number.isNaN(endTime.getTime())) {
+      throw new ShiftValidationError("Data/hora inválida para a escala.");
+    }
+    if (endTime <= startTime) {
+      throw new ShiftValidationError("Horário de fim precisa ser maior que o de início.");
+    }
+  };
+
+  const rangesOverlap = (aStart: Date, aEnd: Date, bStart: Date, bEnd: Date) =>
+    aStart < bEnd && aEnd > bStart;
+
+  const assertShiftAssignmentAllowed = async (input: {
+    orgId: number;
+    staffId: number;
+    shiftType: "12h_manha" | "12h_noite" | "24h" | "avulso";
+    startTime: Date;
+    endTime: Date;
+    excludeShiftId?: number;
+  }) => {
+    const staffMember = await storage.getStaffMember(input.orgId, input.staffId);
+    if (!staffMember) {
+      throw new ShiftValidationError("Funcionário não encontrado.");
+    }
+
+    assertShiftWindow(input.startTime, input.endTime);
+
+    const existingShifts = await storage.getShiftAssignments(input.orgId, { staffId: input.staffId });
+    const otherShifts = existingShifts.filter((shift) => shift.id !== input.excludeShiftId);
+
+    const hasOverlap = otherShifts.some((shift) => {
+      const existingStart = new Date(shift.startTime);
+      const existingEnd = new Date(shift.endTime);
+      return rangesOverlap(input.startTime, input.endTime, existingStart, existingEnd);
+    });
+    if (hasOverlap) {
+      throw new ShiftValidationError("Funcionário já possui escala neste período.");
+    }
+
+    if (!isTwelveByThirtySixStaff(staffMember.shift)) {
+      return;
+    }
+
+    if (!SHIFT_12X36_TYPES.has(input.shiftType)) {
+      throw new ShiftValidationError("Equipe 12x36 só pode receber plantões de 12h (manhã/noite).");
+    }
+
+    const durationMs = input.endTime.getTime() - input.startTime.getTime();
+    const toleranceMs = 5 * 60 * 1000;
+    if (Math.abs(durationMs - TWELVE_HOURS_MS) > toleranceMs) {
+      throw new ShiftValidationError("Equipe 12x36 deve ter plantão de 12 horas.");
+    }
+
+    const violatesRest = otherShifts.some((shift) => {
+      const existingStartMs = new Date(shift.startTime).getTime();
+      const existingEndMs = new Date(shift.endTime).getTime();
+      const startMs = input.startTime.getTime();
+      const endMs = input.endTime.getTime();
+
+      if (startMs >= existingEndMs) {
+        return startMs - existingEndMs < THIRTY_SIX_HOURS_MS;
+      }
+      if (endMs <= existingStartMs) {
+        return existingStartMs - endMs < THIRTY_SIX_HOURS_MS;
+      }
+      return true;
+    });
+
+    if (violatesRest) {
+      throw new ShiftValidationError("Escala 12x36 exige descanso mínimo de 36h entre plantões.");
+    }
+  };
+
   app.get("/api/shift-assignments", requireAuth, async (req, res) => {
     const orgId = getOrgId(req);
     const { residentId, staffId, start, end } = req.query;
@@ -615,15 +717,52 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const orgId = getOrgId(req);
       const input = shiftInputSchema.parse(req.body);
+      await assertShiftAssignmentAllowed({
+        orgId,
+        staffId: input.staffId,
+        shiftType: input.shiftType,
+        startTime: input.startTime,
+        endTime: input.endTime,
+      });
       res.status(201).json(await storage.createShiftAssignment({ ...input, organizationId: orgId }));
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      if (err instanceof ShiftValidationError) return res.status(400).json({ message: err.message });
       throw err;
     }
   });
   app.put("/api/shift-assignments/:id", requireAuth, requireRole(...SHIFT_WRITE_ROLES), async (req, res) => {
-    const orgId = getOrgId(req);
-    res.json(await storage.updateShiftAssignment(orgId, Number(req.params.id), shiftInputSchema.partial().parse(req.body)));
+    try {
+      const orgId = getOrgId(req);
+      const shiftId = Number(req.params.id);
+      const updates = shiftInputSchema.partial().parse(req.body);
+
+      const currentShifts = await storage.getShiftAssignments(orgId);
+      const currentShift = currentShifts.find((shift) => shift.id === shiftId);
+      if (!currentShift) {
+        return res.status(404).json({ message: "Escala não encontrada" });
+      }
+
+      const nextStaffId = updates.staffId ?? currentShift.staffId;
+      const nextShiftType = (updates.shiftType ?? currentShift.shiftType ?? "avulso") as "12h_manha" | "12h_noite" | "24h" | "avulso";
+      const nextStartTime = updates.startTime ?? new Date(currentShift.startTime);
+      const nextEndTime = updates.endTime ?? new Date(currentShift.endTime);
+
+      await assertShiftAssignmentAllowed({
+        orgId,
+        staffId: nextStaffId,
+        shiftType: nextShiftType,
+        startTime: nextStartTime,
+        endTime: nextEndTime,
+        excludeShiftId: shiftId,
+      });
+
+      res.json(await storage.updateShiftAssignment(orgId, shiftId, updates));
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      if (err instanceof ShiftValidationError) return res.status(400).json({ message: err.message });
+      throw err;
+    }
   });
   app.delete("/api/shift-assignments/:id", requireAuth, requireRole(...SHIFT_WRITE_ROLES), async (req, res) => {
     const orgId = getOrgId(req);
@@ -887,10 +1026,5 @@ async function seedPortalCredentials() {
     }
   }
 }
-
-
-
-
-
 
 

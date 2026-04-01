@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useOccurrences, useCreateOccurrence } from "@/hooks/use-occurrences";
+import { useOccurrences, useCreateOccurrence, useDeleteOccurrence } from "@/hooks/use-occurrences";
 import { useResidents } from "@/hooks/use-residents";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -34,7 +34,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Plus, AlertTriangle, CheckCircle2, Trash2 } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { occurrenceFormSchema, type OccurrenceFormInput } from "@shared/schema";
@@ -47,6 +47,7 @@ export default function Occurrences() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const deleteMutation = useDeleteOccurrence();
 
   const resolveMutation = useMutation({
     mutationFn: async ({ id, newStatus }: { id: number; newStatus: string }) => {
@@ -118,16 +119,33 @@ export default function Occurrences() {
                 <p className="text-sm text-foreground mb-4 line-clamp-3">{occ.description}</p>
                 <div className="text-xs text-muted-foreground flex justify-between items-center border-t border-border pt-3">
                   <span>{occ.createdAt && format(new Date(occ.createdAt), "dd/MM/yyyy HH:mm", { locale: ptBR })}</span>
-                  <Button
-                    size="sm" variant="ghost"
-                    className={`h-7 text-xs gap-1 ${occ.status === 'resolved' ? 'text-muted-foreground hover:text-foreground' : 'text-green-700 hover:bg-green-50 hover:text-green-800'}`}
-                    disabled={resolveMutation.isPending}
-                    onClick={() => resolveMutation.mutate({ id: occ.id, newStatus: occ.status === 'resolved' ? 'open' : 'resolved' })}
-                    data-testid={`button-resolve-${occ.id}`}
-                  >
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                    {occ.status === 'resolved' ? "Reabrir" : "Resolver"}
-                  </Button>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      size="sm" variant="ghost"
+                      className={`h-7 text-xs gap-1 ${occ.status === 'resolved' ? 'text-muted-foreground hover:text-foreground' : 'text-green-700 hover:bg-green-50 hover:text-green-800'}`}
+                      disabled={resolveMutation.isPending || deleteMutation.isPending}
+                      onClick={() => resolveMutation.mutate({ id: occ.id, newStatus: occ.status === 'resolved' ? 'open' : 'resolved' })}
+                      data-testid={`button-resolve-${occ.id}`}
+                    >
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      {occ.status === 'resolved' ? "Reabrir" : "Resolver"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 text-xs gap-1 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                      disabled={deleteMutation.isPending || resolveMutation.isPending}
+                      onClick={() => {
+                        if (window.confirm("Tem certeza que deseja excluir esta ocorrência?")) {
+                          deleteMutation.mutate(Number(occ.id));
+                        }
+                      }}
+                      data-testid={`button-delete-occurrence-${occ.id}`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      Excluir
+                    </Button>
+                  </div>
                 </div>
               </CardContent>
             </Card>

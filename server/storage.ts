@@ -79,6 +79,7 @@ export interface IStorage {
 
   // Staff
   getStaff(orgId: number): Promise<StaffMember[]>;
+  getStaffMember(orgId: number, id: number): Promise<StaffMember | undefined>;
   createStaff(member: InsertStaff): Promise<StaffMember>;
   updateStaff(orgId: number, id: number, updates: UpdateStaffRequest): Promise<StaffMember>;
   deleteStaff(orgId: number, id: number): Promise<void>;
@@ -87,6 +88,7 @@ export interface IStorage {
   getOccurrences(orgId: number, residentId?: number): Promise<(Occurrence & { residentName?: string })[]>;
   createOccurrence(occurrence: InsertOccurrence): Promise<Occurrence>;
   updateOccurrence(orgId: number, id: number, updates: UpdateOccurrenceRequest): Promise<Occurrence>;
+  deleteOccurrence(orgId: number, id: number): Promise<boolean>;
 
   // Shift Assignments
   getShiftAssignments(orgId: number, query?: { residentId?: number; staffId?: number; start?: Date; end?: Date }): Promise<(ShiftAssignment & { residentName?: string; staffName?: string })[]>;
@@ -380,6 +382,10 @@ export class DatabaseStorage implements IStorage {
   async getStaff(orgId: number): Promise<StaffMember[]> {
     return await db.select().from(staff).where(eq(staff.organizationId, orgId)).orderBy(staff.name);
   }
+  async getStaffMember(orgId: number, id: number): Promise<StaffMember | undefined> {
+    const [member] = await db.select().from(staff).where(and(eq(staff.id, id), eq(staff.organizationId, orgId)));
+    return member;
+  }
   async createStaff(member: InsertStaff): Promise<StaffMember> {
     const [newStaff] = await db.insert(staff).values(member).returning();
     return newStaff;
@@ -418,6 +424,13 @@ export class DatabaseStorage implements IStorage {
   async updateOccurrence(orgId: number, id: number, updates: UpdateOccurrenceRequest): Promise<Occurrence> {
     const [updated] = await db.update(occurrences).set(updates).where(and(eq(occurrences.id, id), eq(occurrences.organizationId, orgId))).returning();
     return updated;
+  }
+  async deleteOccurrence(orgId: number, id: number): Promise<boolean> {
+    const deleted = await db
+      .delete(occurrences)
+      .where(and(eq(occurrences.id, id), eq(occurrences.organizationId, orgId)))
+      .returning({ id: occurrences.id });
+    return deleted.length > 0;
   }
 
   // --- Shift Assignments ---
