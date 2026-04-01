@@ -41,7 +41,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     store: new SessionStore({
       pool,
       tableName: "user_sessions",
-      createTableIfMissing: true,
       pruneSessionInterval: 60 * 15,
     }),
     cookie: {
@@ -1026,5 +1025,4 @@ async function seedPortalCredentials() {
     }
   }
 }
-
 
