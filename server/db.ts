@@ -47,6 +47,22 @@ export async function ensureDatabaseCompatibility() {
       ADD COLUMN IF NOT EXISTS work_schedule text;
   `);
 
+  await pool.query(`
+    ALTER TABLE staff
+      ADD COLUMN IF NOT EXISTS employment_type text DEFAULT 'clt',
+      ADD COLUMN IF NOT EXISTS cpf text,
+      ADD COLUMN IF NOT EXISTS cnpj text,
+      ADD COLUMN IF NOT EXISTS specialty text,
+      ADD COLUMN IF NOT EXISTS coren text,
+      ADD COLUMN IF NOT EXISTS crm text,
+      ADD COLUMN IF NOT EXISTS cep text,
+      ADD COLUMN IF NOT EXISTS address text,
+      ADD COLUMN IF NOT EXISTS email text,
+      ADD COLUMN IF NOT EXISTS photo_url text,
+      ADD COLUMN IF NOT EXISTS admission_date date,
+      ADD COLUMN IF NOT EXISTS active boolean DEFAULT true;
+  `);
+
   // Compatibility for legacy typo: employument_type <-> employment_type
   await pool.query(`
     DO $$
