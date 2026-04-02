@@ -15,6 +15,34 @@ export const db = drizzle(pool, { schema });
 
 export async function ensureDatabaseCompatibility() {
   await pool.query(`
+    ALTER TABLE organizations
+      ADD COLUMN IF NOT EXISTS active boolean DEFAULT true;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+      ADD COLUMN IF NOT EXISTS status text DEFAULT 'active';
+  `);
+
+  await pool.query(`
+    UPDATE organizations
+    SET status = CASE
+      WHEN COALESCE(active, true) = true THEN 'active'
+      ELSE 'inactive'
+    END
+    WHERE status IS NULL OR btrim(status) = '';
+  `);
+
+  await pool.query(`
+    UPDATE organizations
+    SET active = CASE
+      WHEN status = 'active' THEN true
+      ELSE false
+    END
+    WHERE active IS NULL;
+  `);
+
+  await pool.query(`
     ALTER TABLE staff
       ADD COLUMN IF NOT EXISTS work_schedule text;
   `);
