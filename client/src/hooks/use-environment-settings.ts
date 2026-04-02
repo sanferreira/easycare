@@ -13,7 +13,10 @@ export function useEnvironmentSettings(options?: { enabled?: boolean }) {
     refetchOnWindowFocus: true,
     refetchOnReconnect: true,
     queryFn: async () => {
-      const res = await fetch(api.environmentSettings.get.path, { credentials: "include" });
+      const res = await fetch(api.environmentSettings.get.path, {
+        credentials: "include",
+        cache: "no-store",
+      });
       if (!res.ok) throw new Error("Falha ao carregar configuracoes do ambiente");
       return normalizeEnvironmentSettings(await res.json());
     },
