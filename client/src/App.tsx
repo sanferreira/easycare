@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Sidebar } from "@/components/Sidebar";
 import { useAuth } from "@/hooks/use-auth";
+import { useEnvironmentSettings } from "@/hooks/use-environment-settings";
 import { canAccessRoute } from "@/lib/permissions";
 
 // Pages
@@ -18,6 +19,7 @@ import Escalas from "@/pages/Escalas";
 import Admin from "@/pages/Admin";
 import Prontuario from "@/pages/Prontuario";
 import Financeiro from "@/pages/Financeiro";
+import EnvironmentSettings from "@/pages/EnvironmentSettings";
 import FamilyPortalLogin from "@/pages/FamilyPortalLogin";
 import FamilyPortalHome from "@/pages/FamilyPortalHome";
 import NotFound from "@/pages/not-found";
@@ -46,6 +48,9 @@ interface PrivateRouteProps {
 
 function PrivateRoute({ component: Component, superAdminOnly = false, route }: PrivateRouteProps) {
   const { user, isLoading } = useAuth();
+  const { data: environmentSettings, isLoading: isEnvironmentSettingsLoading } = useEnvironmentSettings({
+    enabled: !!user && !user?.isSuperAdmin,
+  });
 
   if (isLoading) return (
     <div className="min-h-screen flex items-center justify-center text-muted-foreground">
@@ -53,13 +58,18 @@ function PrivateRoute({ component: Component, superAdminOnly = false, route }: P
     </div>
   );
   if (!user) return <Redirect to="/login" />;
+  if (!user.isSuperAdmin && !superAdminOnly && isEnvironmentSettingsLoading) return (
+    <div className="min-h-screen flex items-center justify-center text-muted-foreground">
+      Carregando...
+    </div>
+  );
 
   // Super admin só acessa a área admin
   if (user.isSuperAdmin && !superAdminOnly) return <Redirect to="/admin" />;
   if (superAdminOnly && !user.isSuperAdmin) return <Redirect to="/" />;
 
   // Verificação de permissão por papel
-  if (!superAdminOnly && route && !canAccessRoute(user.role, route)) {
+  if (!superAdminOnly && route && !canAccessRoute(user.role, route, environmentSettings?.roleRoutes)) {
     return (
       <div className="min-h-screen bg-background flex">
         <Sidebar />
@@ -112,6 +122,9 @@ function Router() {
       </Route>
       <Route path="/financeiro">
         <PrivateRoute component={Financeiro} route="/financeiro" />
+      </Route>
+      <Route path="/environment">
+        <PrivateRoute component={EnvironmentSettings} route="/environment" />
       </Route>
       <Route path="/admin">
         <PrivateRoute component={Admin} superAdminOnly />

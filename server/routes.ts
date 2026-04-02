@@ -8,6 +8,17 @@ import rateLimit from "express-rate-limit";
 import type { SessionUser } from "@shared/schema";
 import { verifyPassword } from "./security";
 import { pool } from "./db";
+import {
+  DEFAULT_ENVIRONMENT_SETTINGS,
+  getShiftProfileRule,
+  normalizeShiftProfileKey,
+  normalizeEnvironmentSettings,
+  routeActionIsAllowed,
+  type EnvironmentSettings,
+  type ModulePermissionAction,
+  type ModuleRoute,
+  type ShiftAssignmentType,
+} from "@shared/environment";
 
 const SessionStore = connectPgSimple(session);
 
@@ -101,9 +112,160 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   };
 
-  const requireAuth = (req: Request, res: Response, next: NextFunction) => {
-    if (!req.session.user) return res.status(401).json({ message: "Não autorizado" });
-    next();
+  const ORG_STATUS_VALUES = ["active", "inactive", "restricted"] as const;
+  type OrgStatus = typeof ORG_STATUS_VALUES[number];
+
+  const normalizeOrgStatus = (org?: { status?: unknown; active?: unknown }): OrgStatus => {
+    const raw = typeof org?.status === "string" ? org.status.trim().toLowerCase() : "";
+    if (raw === "active" || raw === "inactive" || raw === "restricted") {
+      return raw;
+    }
+    return org?.active === false ? "inactive" : "active";
+  };
+  const parseOrgStatusInput = (value: unknown): OrgStatus | null => {
+    if (typeof value !== "string") return null;
+    const normalized = value.trim().toLowerCase();
+    return ORG_STATUS_VALUES.includes(normalized as OrgStatus)
+      ? normalized as OrgStatus
+      : null;
+  };
+  const ENV_SETTINGS_API_PATH = "/api/environment-settings";
+  const API_MODULE_ROUTE_RULES: Array<{ pattern: RegExp; route: ModuleRoute }> = [
+    { pattern: /^\/api\/environment-settings(?:\/|$)/, route: "/environment" },
+    { pattern: /^\/api\/stats(?:\/|$)/, route: "/" },
+    { pattern: /^\/api\/residents\/[^/]+\/family(?:\/|$)/, route: "/prontuario" },
+    { pattern: /^\/api\/residents\/[^/]+\/medical-records(?:\/|$)/, route: "/prontuario" },
+    { pattern: /^\/api\/residents\/[^/]+\/comorbidities(?:\/|$)/, route: "/prontuario" },
+    { pattern: /^\/api\/medical-records(?:\/|$)/, route: "/prontuario" },
+    { pattern: /^\/api\/comorbidities(?:\/|$)/, route: "/prontuario" },
+    { pattern: /^\/api\/medication-administrations(?:\/|$)/, route: "/medications" },
+    { pattern: /^\/api\/medications(?:\/|$)/, route: "/medications" },
+    { pattern: /^\/api\/staff(?:\/|$)/, route: "/staff" },
+    { pattern: /^\/api\/shift-assignments(?:\/|$)/, route: "/escalas" },
+    { pattern: /^\/api\/contracts(?:\/|$)/, route: "/financeiro" },
+    { pattern: /^\/api\/monthly-fees(?:\/|$)/, route: "/financeiro" },
+    { pattern: /^\/api\/occurrences(?:\/|$)/, route: "/occurrences" },
+    { pattern: /^\/api\/family(?:\/|$)/, route: "/prontuario" },
+    { pattern: /^\/api\/residents(?:\/|$)/, route: "/residents" },
+  ];
+  const resolveModuleRouteFromApiPath = (path: string): ModuleRoute | null => {
+    const match = API_MODULE_ROUTE_RULES.find((rule) => rule.pattern.test(path));
+    return match?.route ?? null;
+  };
+  const resolveModulePermissionActionFromMethod = (method: string): ModulePermissionAction => {
+    const normalizedMethod = method.trim().toUpperCase();
+    if (normalizedMethod === "GET" || normalizedMethod === "HEAD" || normalizedMethod === "OPTIONS") {
+      return "view";
+    }
+    return "edit";
+  };
+  const parseEnvironmentSettingsFromOrganization = (
+    organization?: { environmentSettings?: unknown } | null,
+  ): EnvironmentSettings => {
+    if (!organization || typeof organization.environmentSettings !== "string") {
+      return DEFAULT_ENVIRONMENT_SETTINGS;
+    }
+    const rawSettings = organization.environmentSettings.trim();
+    if (!rawSettings) return DEFAULT_ENVIRONMENT_SETTINGS;
+    try {
+      return normalizeEnvironmentSettings(JSON.parse(rawSettings));
+    } catch {
+      return DEFAULT_ENVIRONMENT_SETTINGS;
+    }
+  };
+  const getOrganizationEnvironmentSettings = async (orgId: number) => {
+    const organization = await storage.getOrganization(orgId);
+    if (!organization) return null;
+    return {
+      organization,
+      settings: parseEnvironmentSettingsFromOrganization(organization),
+    };
+  };
+  const getAllowedRolesForSettings = (settings: EnvironmentSettings): string[] =>
+    Object.keys(settings.roleRoutes);
+  const getDefaultRoleForSettings = (settings: EnvironmentSettings): string => {
+    const allowedRoles = getAllowedRolesForSettings(settings);
+    if (allowedRoles.includes("staff")) return "staff";
+    return allowedRoles[0] ?? "staff";
+  };
+  const normalizeStaffShiftProfile = (value: unknown): string => {
+    if (typeof value !== "string") return "";
+    return normalizeShiftProfileKey(value);
+  };
+  const normalizeStaffRoleValue = (value: unknown): string => {
+    if (typeof value !== "string") return "";
+    return value
+      .trim()
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+  };
+  const assertShiftProfileAllowedForSettings = (
+    settings: EnvironmentSettings,
+    shiftProfile: string,
+  ) => {
+    if (!shiftProfile || !settings.shiftProfiles.available.includes(shiftProfile)) {
+      throw new Error("Perfil de jornada invalido para esta organizacao.");
+    }
+  };
+  const getBlockedOrganizationMessage = (status: OrgStatus): string =>
+    status === "restricted"
+      ? "Acesso da organização restrito. Entre em contato com o suporte."
+      : "Organização inativa. Acesso bloqueado.";
+  const destroySession = (req: Request) =>
+    new Promise<void>((resolve) => {
+      req.session.destroy(() => resolve());
+    });
+
+  const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
+    const user = req.session.user;
+    if (!user) return res.status(401).json({ message: "Não autorizado" });
+    if (user.isSuperAdmin || !user.organizationId) return next();
+
+    try {
+      const organization = await storage.getOrganization(user.organizationId);
+      if (!organization) {
+        await destroySession(req);
+        res.clearCookie("easycare.sid");
+        return res.status(403).json({ message: "Organização não encontrada. Acesso bloqueado." });
+      }
+
+      const organizationStatus = normalizeOrgStatus(organization);
+      if (organizationStatus !== "active") {
+        await destroySession(req);
+        res.clearCookie("easycare.sid");
+        return res.status(403).json({ message: getBlockedOrganizationMessage(organizationStatus) });
+      }
+
+      const environmentSettings = parseEnvironmentSettingsFromOrganization(organization);
+      res.locals.environmentSettings = environmentSettings;
+      const moduleRoute = resolveModuleRouteFromApiPath(req.path);
+      const permissionAction = resolveModulePermissionActionFromMethod(req.method);
+      const allowEnvironmentSettingsRead =
+        req.path.startsWith(ENV_SETTINGS_API_PATH) && permissionAction === "view";
+      if (
+        !allowEnvironmentSettingsRead
+        && moduleRoute
+        && !routeActionIsAllowed(
+          user.role,
+          moduleRoute,
+          permissionAction,
+          environmentSettings.roleRoutes,
+          environmentSettings.roleEditRoutes,
+        )
+      ) {
+        const deniedMessage = permissionAction === "edit"
+          ? "Acesso negado para edicao neste modulo."
+          : "Acesso negado para visualizacao neste modulo.";
+        return res.status(403).json({ message: deniedMessage });
+      }
+
+      next();
+    } catch (error) {
+      next(error);
+    }
   };
   const requireSuperAdmin = (req: Request, res: Response, next: NextFunction) => {
     if (!req.session.user?.isSuperAdmin) return res.status(403).json({ message: "Acesso restrito ao super-admin" });
@@ -115,10 +277,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const user = req.session.user;
     if (!user) return res.status(401).json({ message: "Não autorizado" });
     if (user.isSuperAdmin) return next(); // super-admin sempre passa
-    if (!roles.includes(user.role)) {
-      return res.status(403).json({ message: `Acesso negado. Papel '${user.role}' não tem permissão para esta ação.` });
+
+    const moduleRoute = resolveModuleRouteFromApiPath(req.path);
+    const environmentSettings = res.locals.environmentSettings as EnvironmentSettings | undefined;
+    const permissionAction = resolveModulePermissionActionFromMethod(req.method);
+    if (moduleRoute && environmentSettings) {
+      const allowedByModulePermission = routeActionIsAllowed(
+        user.role,
+        moduleRoute,
+        permissionAction,
+        environmentSettings.roleRoutes,
+        environmentSettings.roleEditRoutes,
+      );
+      if (!allowedByModulePermission) {
+        const actionLabel = permissionAction === "edit" ? "edicao" : "visualizacao";
+        return res.status(403).json({
+          message: `Acesso negado. Papel '${user.role}' nao tem permissao de ${actionLabel} para esta acao.`,
+        });
+      }
     }
-    next();
+
+    if (roles.includes(user.role)) return next();
+
+    if (moduleRoute && environmentSettings) {
+      return next();
+    }
+
+    const actionLabel = permissionAction === "edit" ? "edicao" : "visualizacao";
+    return res.status(403).json({ message: `Acesso negado. Papel '${user.role}' nao tem permissao de ${actionLabel} para esta acao.` });
   };
 
   // Papéis com acesso clínico
@@ -134,6 +320,67 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const orgId = req.session.user?.organizationId;
     if (!orgId) throw new Error("Organization não encontrada na sessão");
     return orgId;
+  };
+
+  const normalizeComparableText = (value: string | null | undefined) =>
+    (value ?? "")
+      .trim()
+      .toLocaleLowerCase("pt-BR")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "");
+
+  const resolveLinkedStaffForSessionUser = async (
+    orgId: number,
+    user: SessionUser | undefined,
+  ) => {
+    if (!user) return null;
+    const normalizedUserName = normalizeComparableText(user.name);
+    if (!normalizedUserName) return null;
+
+    const staffMembers = await storage.getStaff(orgId);
+    const exactNameMatches = staffMembers.filter(
+      (member) => normalizeComparableText(member.name) === normalizedUserName,
+    );
+
+    if (exactNameMatches.length === 1) return exactNameMatches[0];
+    if (exactNameMatches.length > 1) {
+      const normalizedUserRole = normalizeComparableText(user.role);
+      const roleMatch = exactNameMatches.find(
+        (member) => normalizeComparableText(member.role) === normalizedUserRole,
+      );
+      return roleMatch ?? exactNameMatches[0];
+    }
+
+    const looseMatch = staffMembers.find((member) => {
+      const normalizedStaffName = normalizeComparableText(member.name);
+      return (
+        normalizedStaffName.includes(normalizedUserName)
+        || normalizedUserName.includes(normalizedStaffName)
+      );
+    });
+
+    return looseMatch ?? null;
+  };
+
+  const enforceCaregiverOwnStaffId = async (
+    orgId: number,
+    user: SessionUser | undefined,
+    requestedStaffId?: number | null,
+  ) => {
+    if (!user || user.role !== "cuidador") {
+      return requestedStaffId ?? null;
+    }
+
+    const linkedStaff = await resolveLinkedStaffForSessionUser(orgId, user);
+    if (!linkedStaff) {
+      throw new Error("Seu usuario de cuidador nao esta vinculado a um colaborador da equipe.");
+    }
+
+    if (requestedStaffId && requestedStaffId !== linkedStaff.id) {
+      throw new Error("Cuidador so pode selecionar a si mesmo.");
+    }
+
+    return linkedStaff.id;
   };
 
   // ===== AUTH =====
@@ -163,9 +410,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     if (organization) {
+      const organizationStatus = normalizeOrgStatus(organization);
+      if (organizationStatus !== "active") {
+        return res.status(403).json({ message: getBlockedOrganizationMessage(organizationStatus) });
+      }
 
       const user = await storage.getUserByUsernameAndOrganization(normalizedUsername, organization.id);
       if (!user) return res.status(401).json({ message: "Usuário ou senha incorretos" });
+      if (user.active === false) {
+        return res.status(403).json({ message: "Usuário inativo. Entre em contato com o administrador." });
+      }
 
       const passwordCheck = verifyPassword(password, user.password);
       if (!passwordCheck.valid) return res.status(401).json({ message: "Usuário ou senha incorretos" });
@@ -223,9 +477,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/auth/me", (req, res) => { res.json(req.session.user || null); });
 
   // ===== FAMILY PORTAL AUTH =====
-  const requireFamilyAuth = (req: Request, res: Response, next: NextFunction) => {
-    if (!req.session.familyMember) return res.status(401).json({ message: "Não autorizado" });
-    next();
+  const requireFamilyAuth = async (req: Request, res: Response, next: NextFunction) => {
+    const familyMember = req.session.familyMember;
+    if (!familyMember) return res.status(401).json({ message: "Não autorizado" });
+
+    try {
+      const organization = await storage.getOrganization(familyMember.organizationId);
+      if (!organization) {
+        await destroySession(req);
+        res.clearCookie("easycare.sid");
+        return res.status(403).json({ message: "Organização não encontrada. Acesso bloqueado." });
+      }
+
+      const organizationStatus = normalizeOrgStatus(organization);
+      if (organizationStatus !== "active") {
+        await destroySession(req);
+        res.clearCookie("easycare.sid");
+        return res.status(403).json({ message: getBlockedOrganizationMessage(organizationStatus) });
+      }
+
+      next();
+    } catch (error) {
+      next(error);
+    }
   };
 
   app.post("/api/family-portal/login", familyLoginRateLimiter, async (req, res) => {
@@ -243,6 +517,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const organization = await storage.getOrganizationByCnpj(parsedOrganizationCnpj);
     if (!organization) {
       return res.status(401).json({ message: "Usuário ou senha incorretos" });
+    }
+    const organizationStatus = normalizeOrgStatus(organization);
+    if (organizationStatus !== "active") {
+      return res.status(403).json({ message: getBlockedOrganizationMessage(organizationStatus) });
     }
 
     const candidates = (await storage.getFamilyMembersByPortalUsername(username))
@@ -335,14 +613,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // ===== ORGANIZATIONS =====
-  app.get("/api/organizations", requireAuth, requireSuperAdmin, async (_req, res) => {
-    res.json(await storage.getOrganizations());
+  app.get("/api/organizations", requireAuth, requireSuperAdmin, async (req, res) => {
+    const includeInactive = String(req.query.includeInactive || "").toLowerCase() === "true";
+    res.json(await storage.getOrganizations(includeInactive));
+  });
+  app.get("/api/organizations/:id", requireAuth, requireSuperAdmin, async (req, res) => {
+    const organization = await storage.getOrganization(Number(req.params.id));
+    if (!organization) {
+      return res.status(404).json({ message: "Organização não encontrada" });
+    }
+    res.json(organization);
   });
   app.post("/api/organizations", requireAuth, requireSuperAdmin, async (req, res) => {
     try {
-      const { name, address, phone, email, cnpj, capacity } = req.body;
+      const { name, address, phone, email, cnpj, capacity, status } = req.body;
       if (!name || !cnpj || typeof cnpj !== "string" || !cnpj.trim()) {
         return res.status(400).json({ message: "Nome e CNPJ são obrigatórios" });
+      }
+      const parsedStatus = status === undefined ? "active" : parseOrgStatusInput(status);
+      if (!parsedStatus) {
+        return res.status(400).json({ message: "Status inválido. Use: active, inactive ou restricted." });
       }
       res.status(201).json(await storage.createOrganization({
         name,
@@ -351,18 +641,57 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         email,
         cnpj: cnpj.trim(),
         capacity,
-        active: true,
+        status: parsedStatus,
+        active: parsedStatus === "active",
       }));
     } catch { res.status(500).json({ message: "Erro ao criar organização" }); }
   });
   app.put("/api/organizations/:id", requireAuth, requireSuperAdmin, async (req, res) => {
     const payload = { ...req.body };
     if (typeof payload.cnpj === "string") payload.cnpj = payload.cnpj.trim();
+    const parsedStatus = parseOrgStatusInput(payload.status);
+    if (payload.status !== undefined && !parsedStatus) {
+      return res.status(400).json({ message: "Status inválido. Use: active, inactive ou restricted." });
+    }
+    if (parsedStatus) {
+      payload.status = parsedStatus;
+      payload.active = parsedStatus === "active";
+    } else if (typeof payload.active === "boolean") {
+      payload.status = payload.active ? "active" : "inactive";
+    }
     res.json(await storage.updateOrganization(Number(req.params.id), payload));
   });
   app.delete("/api/organizations/:id", requireAuth, requireSuperAdmin, async (req, res) => {
     await storage.deleteOrganization(Number(req.params.id));
     res.status(204).send();
+  });
+
+  app.get(ENV_SETTINGS_API_PATH, requireAuth, async (req, res) => {
+    const sessionUser = req.session.user;
+    if (!sessionUser) return res.status(401).json({ message: "Não autorizado" });
+    if (sessionUser.isSuperAdmin || !sessionUser.organizationId) {
+      return res.json(DEFAULT_ENVIRONMENT_SETTINGS);
+    }
+
+    const organization = await storage.getOrganization(sessionUser.organizationId);
+    if (!organization) {
+      return res.status(404).json({ message: "Organização não encontrada" });
+    }
+
+    res.json(parseEnvironmentSettingsFromOrganization(organization));
+  });
+
+  app.put(ENV_SETTINGS_API_PATH, requireAuth, requireRole("admin"), async (req, res) => {
+    const sessionUser = req.session.user;
+    if (!sessionUser?.organizationId) {
+      return res.status(400).json({ message: "Usuário sem organização associada." });
+    }
+
+    const settings = normalizeEnvironmentSettings(req.body);
+    await storage.updateOrganization(sessionUser.organizationId, {
+      environmentSettings: JSON.stringify(settings),
+    });
+    res.json(settings);
   });
 
   // ===== ORG USERS =====
@@ -372,9 +701,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
   app.post("/api/organizations/:id/users", requireAuth, requireSuperAdmin, async (req, res) => {
     try {
+      const orgId = Number(req.params.id);
+      const settingsResult = await getOrganizationEnvironmentSettings(orgId);
+      if (!settingsResult) {
+        return res.status(404).json({ message: "Organização não encontrada" });
+      }
+
       const { username, password, name, role } = req.body;
       if (!username || !password || !name) return res.status(400).json({ message: "Campos obrigatórios faltando" });
-      const user = await storage.createUser({ organizationId: Number(req.params.id), username, password, name, role: role || "staff", isSuperAdmin: false });
+      const allowedRoles = getAllowedRolesForSettings(settingsResult.settings);
+      const roleValue = typeof role === "string" && role.trim()
+        ? role.trim()
+        : getDefaultRoleForSettings(settingsResult.settings);
+      if (!allowedRoles.includes(roleValue)) {
+        return res.status(400).json({ message: "Papel inválido para esta organização." });
+      }
+
+      const user = await storage.createUser({
+        organizationId: orgId,
+        username,
+        password,
+        name,
+        role: roleValue,
+        isSuperAdmin: false,
+      });
       res.status(201).json(sanitizeUser(user));
     } catch (err: any) {
       if (err.code === "23505") return res.status(400).json({ message: "Nome de usuário já existe nesta organização" });
@@ -384,12 +734,35 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.patch("/api/users/:id", requireAuth, requireSuperAdmin, async (req, res) => {
     try {
       const { name, username, password, role } = req.body;
+      const userId = Number(req.params.id);
+      const currentUser = await storage.getUserById(userId);
+      if (!currentUser) {
+        return res.status(404).json({ message: "Usuário não encontrado" });
+      }
+      if (!currentUser.organizationId) {
+        return res.status(400).json({ message: "Usuário sem organização associada." });
+      }
+
       const updates: any = {};
       if (name !== undefined) updates.name = name;
       if (username !== undefined) updates.username = username;
-      if (role !== undefined) updates.role = role;
+      if (role !== undefined) {
+        if (typeof role !== "string" || !role.trim()) {
+          return res.status(400).json({ message: "Papel inválido." });
+        }
+        const settingsResult = await getOrganizationEnvironmentSettings(currentUser.organizationId);
+        if (!settingsResult) {
+          return res.status(404).json({ message: "Organização não encontrada" });
+        }
+        const allowedRoles = getAllowedRolesForSettings(settingsResult.settings);
+        const roleValue = role.trim();
+        if (!allowedRoles.includes(roleValue)) {
+          return res.status(400).json({ message: "Papel inválido para esta organização." });
+        }
+        updates.role = roleValue;
+      }
       if (password && password.trim() !== "") updates.password = password;
-      const updated = await storage.updateUser(Number(req.params.id), updates);
+      const updated = await storage.updateUser(userId, updates);
       res.json(sanitizeUser(updated));
     } catch (err: any) {
       res.status(400).json({ message: err.message || "Erro ao atualizar usuário" });
@@ -540,39 +913,327 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // ===== MEDICATION ADMINISTRATIONS =====
-  app.get("/api/medication-administrations", requireAuth, async (req, res) => {
-    const orgId = getOrgId(req);
-    res.json(await storage.getMedicationAdministrations(
-      orgId,
-      req.query.residentId ? Number(req.query.residentId) : undefined,
-      req.query.medicationId ? Number(req.query.medicationId) : undefined,
-    ));
+  const medicationAdministrationInputSchema = z.object({
+    medicationId: z.coerce.number().int().positive("Medicamento invalido."),
+    staffId: z.coerce.number().int().positive().optional().nullable(),
+    status: z.enum(["given", "skipped", "refused", "late"]).default("given"),
+    notes: z.string().optional().nullable(),
+    scheduledFor: z.coerce.date().optional().nullable(),
+    administeredAt: z.coerce.date().optional().nullable(),
   });
-  app.post("/api/medication-administrations", requireAuth, async (req, res) => {
-    const orgId = getOrgId(req);
-    const staffId = req.session.user?.id;
-    res.status(201).json(await storage.createMedicationAdministration({ ...req.body, organizationId: orgId, staffId }));
+
+  app.get("/api/medication-administrations", requireAuth, async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      res.json(await storage.getMedicationAdministrations(
+        orgId,
+        req.query.residentId ? Number(req.query.residentId) : undefined,
+        req.query.medicationId ? Number(req.query.medicationId) : undefined,
+      ));
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.post("/api/medication-administrations", requireAuth, async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      const sessionUser = req.session.user;
+      if (!sessionUser) {
+        return res.status(401).json({ message: "Nao autorizado." });
+      }
+
+      const input = medicationAdministrationInputSchema.parse(req.body);
+      const meds = await storage.getMedications(orgId);
+      const medication = meds.find((item) => item.id === input.medicationId);
+      if (!medication) {
+        return res.status(404).json({ message: "Medicamento nao encontrado." });
+      }
+
+      const linkedStaff = await resolveLinkedStaffForSessionUser(orgId, sessionUser);
+      let effectiveStaffId = await enforceCaregiverOwnStaffId(orgId, sessionUser, input.staffId);
+
+      if (sessionUser.role !== "cuidador") {
+        if (effectiveStaffId) {
+          const selectedStaff = await storage.getStaffMember(orgId, effectiveStaffId);
+          if (!selectedStaff || selectedStaff.active === false) {
+            return res.status(400).json({ message: "Profissional selecionado nao esta disponivel." });
+          }
+        } else if (linkedStaff && linkedStaff.active !== false) {
+          effectiveStaffId = linkedStaff.id;
+        }
+      }
+
+      if (!effectiveStaffId) {
+        return res.status(400).json({ message: "Selecione quem administrou a medicacao." });
+      }
+
+      const created = await storage.createMedicationAdministration({
+        organizationId: orgId,
+        medicationId: medication.id,
+        residentId: medication.residentId,
+        staffId: effectiveStaffId,
+        scheduledFor: input.scheduledFor ?? null,
+        administeredAt: input.administeredAt ?? new Date(),
+        status: input.status,
+        notes: input.notes?.trim() || null,
+      });
+
+      res.status(201).json(created);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+      }
+      if (error instanceof Error) {
+        return res.status(400).json({ message: error.message });
+      }
+      next(error);
+    }
   });
 
   // ===== STAFF =====
+  const resolveLinkedPortalUserForStaff = async (
+    orgId: number,
+    currentStaff?: { portalUserId?: number | null; portalUsername?: string | null },
+  ) => {
+    if (currentStaff?.portalUserId) {
+      const linkedById = await storage.getUserById(currentStaff.portalUserId);
+      if (linkedById && linkedById.organizationId === orgId) {
+        return linkedById;
+      }
+    }
+    const normalizedPortalUsername = normalizePortalUsername(currentStaff?.portalUsername ?? "");
+    if (!normalizedPortalUsername) return undefined;
+    return await storage.getUserByUsernameAndOrganization(normalizedPortalUsername, orgId);
+  };
+
+  const syncPortalUserForStaff = async (input: {
+    orgId: number;
+    currentStaff?: { portalUserId?: number | null; portalUsername?: string | null };
+    portalAccess: boolean;
+    portalUsername: string;
+    portalPassword: string;
+    staffName: string;
+    staffRole: string;
+    staffActive: boolean;
+  }) => {
+    const linkedUser = await resolveLinkedPortalUserForStaff(input.orgId, input.currentStaff);
+
+    if (!input.portalAccess) {
+      if (linkedUser && linkedUser.active !== false) {
+        await storage.updateUser(linkedUser.id, { active: false });
+      }
+      return {
+        portalAccess: false,
+        portalUsername: null,
+        portalUserId: null,
+      };
+    }
+
+    if (!input.portalUsername || input.portalUsername.length < 3) {
+      throw new Error("Informe um usuario de acesso com pelo menos 3 caracteres.");
+    }
+
+    const usernameOwner = await storage.getUserByUsernameAndOrganization(input.portalUsername, input.orgId);
+    if (usernameOwner && (!linkedUser || usernameOwner.id !== linkedUser.id)) {
+      throw new Error("Usuario de acesso ja existe na organizacao.");
+    }
+
+    if (linkedUser) {
+      const userUpdates: Record<string, unknown> = {
+        username: input.portalUsername,
+        name: input.staffName,
+        role: input.staffRole,
+        active: input.staffActive,
+      };
+      if (input.portalPassword) {
+        userUpdates.password = input.portalPassword;
+      }
+      await storage.updateUser(linkedUser.id, userUpdates);
+      return {
+        portalAccess: true,
+        portalUsername: input.portalUsername,
+        portalUserId: linkedUser.id,
+      };
+    }
+
+    if (!input.portalPassword) {
+      throw new Error("Informe a senha para criar o acesso ao portal.");
+    }
+
+    const createdUser = await storage.createUser({
+      organizationId: input.orgId,
+      username: input.portalUsername,
+      password: input.portalPassword,
+      name: input.staffName,
+      role: input.staffRole,
+      active: input.staffActive,
+      isSuperAdmin: false,
+    });
+
+    return {
+      portalAccess: true,
+      portalUsername: input.portalUsername,
+      portalUserId: createdUser.id,
+    };
+  };
+
   // Leitura: admin + enfermeiro (para ver a equipe nas escalas)
-  app.get("/api/staff", requireAuth, requireRole(...STAFF_MGMT_ROLES, "enfermeiro", "tecnico_enfermagem", "recepcionista", "administrativo"), async (req, res) => {
-    const orgId = getOrgId(req);
-    res.json(await storage.getStaff(orgId));
+  app.get("/api/staff", requireAuth, requireRole(...STAFF_MGMT_ROLES, "enfermeiro", "tecnico_enfermagem", "medico", "recepcionista", "administrativo", "cuidador"), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      res.json(await storage.getStaff(orgId));
+    } catch (error) {
+      next(error);
+    }
   });
   // Escrita: somente admin
-  app.post("/api/staff", requireAuth, requireRole(...STAFF_MGMT_ROLES), async (req, res) => {
-    const orgId = getOrgId(req);
-    res.status(201).json(await storage.createStaff({ ...req.body, organizationId: orgId }));
+  app.post("/api/staff", requireAuth, requireRole(...STAFF_MGMT_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      const payload = { ...req.body } as Record<string, unknown>;
+      const environmentSettings =
+        (res.locals.environmentSettings as EnvironmentSettings | undefined)
+        ?? (await getOrganizationEnvironmentSettings(orgId))?.settings
+        ?? DEFAULT_ENVIRONMENT_SETTINGS;
+      const shiftProfile = normalizeStaffShiftProfile(payload.shift);
+      assertShiftProfileAllowedForSettings(environmentSettings, shiftProfile);
+      payload.shift = shiftProfile;
+      const roleValue = normalizeStaffRoleValue(payload.role);
+      if (!roleValue) {
+        return res.status(400).json({ message: "Cargo invalido para o colaborador." });
+      }
+      if (!getAllowedRolesForSettings(environmentSettings).includes(roleValue)) {
+        return res.status(400).json({ message: "Cargo invalido para esta organizacao." });
+      }
+      payload.role = roleValue;
+
+      const staffName = typeof payload.name === "string" ? payload.name.trim() : "";
+      if (!staffName) {
+        return res.status(400).json({ message: "Nome do colaborador obrigatorio." });
+      }
+      payload.name = staffName;
+
+      const portalAccess = payload.portalAccess === true;
+      const portalUsername = typeof payload.portalUsername === "string"
+        ? normalizePortalUsername(payload.portalUsername)
+        : "";
+      const portalPassword = typeof payload.portalPassword === "string"
+        ? payload.portalPassword.trim()
+        : "";
+      delete payload.portalPassword;
+
+      let createdStaff = await storage.createStaff({
+        ...payload,
+        organizationId: orgId,
+        portalAccess,
+        portalUsername: portalAccess ? portalUsername : null,
+        portalUserId: null,
+      } as any);
+
+      try {
+        const portalLink = await syncPortalUserForStaff({
+          orgId,
+          currentStaff: createdStaff,
+          portalAccess,
+          portalUsername,
+          portalPassword,
+          staffName: staffName,
+          staffRole: roleValue,
+          staffActive: createdStaff.active !== false,
+        });
+
+        createdStaff = await storage.updateStaff(orgId, createdStaff.id, portalLink);
+      } catch (error) {
+        await storage.deleteStaff(orgId, createdStaff.id);
+        throw error;
+      }
+
+      res.status(201).json(createdStaff);
+    } catch (error) {
+      if (error instanceof Error) {
+        return res.status(400).json({ message: error.message });
+      }
+      next(error);
+    }
   });
-  app.put("/api/staff/:id", requireAuth, requireRole(...STAFF_MGMT_ROLES), async (req, res) => {
-    const orgId = getOrgId(req);
-    res.json(await storage.updateStaff(orgId, Number(req.params.id), req.body));
+  app.put("/api/staff/:id", requireAuth, requireRole(...STAFF_MGMT_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      const payload = { ...req.body } as Record<string, unknown>;
+      const currentStaff = await storage.getStaffMember(orgId, Number(req.params.id));
+      if (!currentStaff) {
+        return res.status(404).json({ message: "Colaborador nao encontrado." });
+      }
+      const environmentSettings =
+        (res.locals.environmentSettings as EnvironmentSettings | undefined)
+        ?? (await getOrganizationEnvironmentSettings(orgId))?.settings
+        ?? DEFAULT_ENVIRONMENT_SETTINGS;
+      if (payload.shift !== undefined) {
+        const shiftProfile = normalizeStaffShiftProfile(payload.shift);
+        assertShiftProfileAllowedForSettings(environmentSettings, shiftProfile);
+        payload.shift = shiftProfile;
+      }
+
+      const requestedRole = normalizeStaffRoleValue(payload.role);
+      const nextRole = requestedRole || normalizeStaffRoleValue(currentStaff.role);
+      if (!getAllowedRolesForSettings(environmentSettings).includes(nextRole)) {
+        return res.status(400).json({ message: "Cargo invalido para esta organizacao." });
+      }
+      payload.role = nextRole;
+
+      const nextName = typeof payload.name === "string" && payload.name.trim()
+        ? payload.name.trim()
+        : currentStaff.name;
+      payload.name = nextName;
+
+      const portalAccess = payload.portalAccess !== undefined
+        ? payload.portalAccess === true
+        : Boolean(currentStaff.portalAccess);
+      const portalUsernameSource = payload.portalUsername !== undefined
+        ? payload.portalUsername
+        : currentStaff.portalUsername;
+      const portalUsername = typeof portalUsernameSource === "string"
+        ? normalizePortalUsername(portalUsernameSource)
+        : "";
+      const portalPassword = typeof payload.portalPassword === "string"
+        ? payload.portalPassword.trim()
+        : "";
+      delete payload.portalPassword;
+
+      const nextActive = typeof payload.active === "boolean"
+        ? payload.active
+        : currentStaff.active !== false;
+      const portalLink = await syncPortalUserForStaff({
+        orgId,
+        currentStaff,
+        portalAccess,
+        portalUsername,
+        portalPassword,
+        staffName: nextName,
+        staffRole: nextRole,
+        staffActive: nextActive,
+      });
+
+      const updates = {
+        ...payload,
+        ...portalLink,
+      };
+      res.json(await storage.updateStaff(orgId, Number(req.params.id), updates));
+    } catch (error) {
+      if (error instanceof Error) {
+        return res.status(400).json({ message: error.message });
+      }
+      next(error);
+    }
   });
-  app.delete("/api/staff/:id", requireAuth, requireRole(...STAFF_MGMT_ROLES), async (req, res) => {
-    const orgId = getOrgId(req);
-    await storage.deleteStaff(orgId, Number(req.params.id));
-    res.status(204).send();
+  app.delete("/api/staff/:id", requireAuth, requireRole(...STAFF_MGMT_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      await storage.deleteStaff(orgId, Number(req.params.id));
+      res.status(204).send();
+    } catch (error) {
+      next(error);
+    }
   });
 
   // ===== OCCURRENCES =====
@@ -611,21 +1272,254 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     endTime: z.coerce.date(),
     notes: z.string().optional().nullable(),
   });
+  const generateMonthInputSchema = z.object({
+    month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Mes invalido. Use YYYY-MM."),
+    staffId: z.number().optional(),
+    clearGenerated: z.boolean().optional().default(true),
+  });
   class ShiftValidationError extends Error {}
 
-  const SHIFT_12X36_TYPES = new Set(["12h_manha", "12h_noite"]);
-  const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
-  const THIRTY_SIX_HOURS_MS = 36 * 60 * 60 * 1000;
+  type WeekdayKey =
+    | "sunday"
+    | "monday"
+    | "tuesday"
+    | "wednesday"
+    | "thursday"
+    | "friday"
+    | "saturday";
 
-  const normalizeShiftLabel = (value?: string | null) =>
-    (value ?? "")
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase()
-      .trim();
+  type WorkScheduleSlot = { start: string; end: string };
+  type WorkScheduleRule = { enabled?: boolean; slots?: WorkScheduleSlot[] };
+  type ParsedWorkSchedule = {
+    weekly: Record<WeekdayKey, WorkScheduleRule>;
+    oddDays: WorkScheduleRule;
+    evenDays: WorkScheduleRule;
+    blockedDates: string[];
+    profileCycleStart: "12h_manha" | "12h_noite" | null;
+  };
 
-  const isTwelveByThirtySixStaff = (shift?: string | null) =>
-    normalizeShiftLabel(shift).includes("12x36");
+  const AUTO_MONTH_NOTE_PREFIX = "[AUTO-MONTH:";
+  const WEEKDAY_KEYS: WeekdayKey[] = [
+    "sunday",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+  ];
+  const WEEKDAY_LABELS_PT: Record<WeekdayKey, string> = {
+    sunday: "domingo",
+    monday: "segunda",
+    tuesday: "terca",
+    wednesday: "quarta",
+    thursday: "quinta",
+    friday: "sexta",
+    saturday: "sabado",
+  };
+
+  const createDefaultWorkSchedule = (): ParsedWorkSchedule => ({
+    weekly: {
+      sunday: { enabled: false, slots: [] },
+      monday: { enabled: false, slots: [] },
+      tuesday: { enabled: false, slots: [] },
+      wednesday: { enabled: false, slots: [] },
+      thursday: { enabled: false, slots: [] },
+      friday: { enabled: false, slots: [] },
+      saturday: { enabled: false, slots: [] },
+    },
+    oddDays: { enabled: false, slots: [] },
+    evenDays: { enabled: false, slots: [] },
+    blockedDates: [],
+    profileCycleStart: null,
+  });
+
+  const DATE_KEY_REGEX = /^\d{4}-(0[1-9]|1[0-2])-([0][1-9]|[12]\d|3[01])$/;
+  const toDateKey = (value: Date): string => {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, "0");
+    const day = String(value.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
+
+  const normalizeWorkScheduleRule = (raw: unknown): WorkScheduleRule => {
+    if (!raw || typeof raw !== "object") return { enabled: false, slots: [] };
+    const candidate = raw as { enabled?: unknown; slots?: unknown };
+    const slots = Array.isArray(candidate.slots)
+      ? candidate.slots
+          .map((slot) => {
+            if (!slot || typeof slot !== "object") return null;
+            const rawSlot = slot as { start?: unknown; end?: unknown };
+            if (typeof rawSlot.start !== "string" || typeof rawSlot.end !== "string") return null;
+            return { start: rawSlot.start, end: rawSlot.end };
+          })
+          .filter((slot): slot is WorkScheduleSlot => !!slot)
+      : [];
+    return {
+      enabled: Boolean(candidate.enabled),
+      slots,
+    };
+  };
+
+  const parseStaffWorkSchedule = (value: unknown): ParsedWorkSchedule => {
+    const defaultSchedule = createDefaultWorkSchedule();
+    if (typeof value !== "string" || !value.trim()) return defaultSchedule;
+    try {
+      const raw = JSON.parse(value) as Record<string, unknown>;
+      const weeklySource = raw.weekly && typeof raw.weekly === "object"
+        ? (raw.weekly as Record<string, unknown>)
+        : {};
+
+      const weekly = WEEKDAY_KEYS.reduce<Record<WeekdayKey, WorkScheduleRule>>((acc, key) => {
+        acc[key] = normalizeWorkScheduleRule(weeklySource[key]);
+        return acc;
+      }, {} as Record<WeekdayKey, WorkScheduleRule>);
+
+      return {
+        weekly,
+        oddDays: normalizeWorkScheduleRule(raw.oddDays),
+        evenDays: normalizeWorkScheduleRule(raw.evenDays),
+        blockedDates: Array.isArray(raw.blockedDates)
+          ? raw.blockedDates
+              .filter((date): date is string => typeof date === "string" && DATE_KEY_REGEX.test(date))
+              .filter((date, index, source) => source.indexOf(date) === index)
+              .sort()
+          : [],
+        profileCycleStart:
+          raw.profileCycleStart === "12h_manha" || raw.profileCycleStart === "12h_noite"
+            ? raw.profileCycleStart
+            : null,
+      };
+    } catch {
+      return defaultSchedule;
+    }
+  };
+
+  const normalizeClock = (value?: string): string | null => {
+    if (!value) return null;
+    const normalized = value.trim();
+    if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(normalized)) return null;
+    return normalized;
+  };
+
+  const buildDateWithClock = (baseDate: Date, clock: string): Date | null => {
+    const normalized = normalizeClock(clock);
+    if (!normalized) return null;
+    const [hours, minutes] = normalized.split(":").map(Number);
+    return new Date(
+      baseDate.getFullYear(),
+      baseDate.getMonth(),
+      baseDate.getDate(),
+      hours,
+      minutes,
+      0,
+      0,
+    );
+  };
+  type DailyScheduleWindow = { start: Date; end: Date; source: string };
+  type DailyScheduleResolution = {
+    hasRestrictions: boolean;
+    blocked: boolean;
+    windows: DailyScheduleWindow[];
+    invalidSlots: number;
+  };
+  const isRuleConfigured = (rule: WorkScheduleRule | undefined): boolean =>
+    Boolean(rule?.enabled && (rule.slots?.length ?? 0) > 0);
+  const buildRuleWindowsForDate = (
+    baseDate: Date,
+    rule: WorkScheduleRule | undefined,
+    source: string,
+  ): { windows: DailyScheduleWindow[]; invalidSlots: number } => {
+    if (!isRuleConfigured(rule)) return { windows: [], invalidSlots: 0 };
+    const windows: DailyScheduleWindow[] = [];
+    let invalidSlots = 0;
+
+    for (const slot of rule?.slots ?? []) {
+      const start = buildDateWithClock(baseDate, slot.start);
+      const rawEnd = buildDateWithClock(baseDate, slot.end);
+      if (!start || !rawEnd) {
+        invalidSlots++;
+        continue;
+      }
+      const end = new Date(rawEnd);
+      if (end <= start) {
+        end.setDate(end.getDate() + 1);
+      }
+      windows.push({ start, end, source });
+    }
+
+    return { windows, invalidSlots };
+  };
+  const intersectDailyWindows = (
+    first: DailyScheduleWindow[],
+    second: DailyScheduleWindow[],
+  ): DailyScheduleWindow[] => {
+    const intersections: DailyScheduleWindow[] = [];
+    for (const left of first) {
+      for (const right of second) {
+        const start = new Date(Math.max(left.start.getTime(), right.start.getTime()));
+        const end = new Date(Math.min(left.end.getTime(), right.end.getTime()));
+        if (end > start) {
+          intersections.push({
+            start,
+            end,
+            source: `${left.source}+${right.source}`,
+          });
+        }
+      }
+    }
+    return intersections;
+  };
+  const resolveDailySchedule = (schedule: ParsedWorkSchedule, baseDate: Date): DailyScheduleResolution => {
+    const dayKey = toDateKey(baseDate);
+    if (schedule.blockedDates.includes(dayKey)) {
+      return {
+        hasRestrictions: true,
+        blocked: true,
+        windows: [],
+        invalidSlots: 0,
+      };
+    }
+
+    const weekdayKey = WEEKDAY_KEYS[baseDate.getDay()];
+    const hasWeeklyRestriction = WEEKDAY_KEYS.some((key) => isRuleConfigured(schedule.weekly[key]));
+    const hasOddRestriction = isRuleConfigured(schedule.oddDays);
+    const hasEvenRestriction = isRuleConfigured(schedule.evenDays);
+    const hasParityRestriction = hasOddRestriction || hasEvenRestriction;
+
+    const weeklyWindowsForDay = buildRuleWindowsForDate(
+      baseDate,
+      schedule.weekly[weekdayKey],
+      WEEKDAY_LABELS_PT[weekdayKey],
+    );
+    const isOddDay = baseDate.getDate() % 2 === 1;
+    const parityRule = isOddDay ? schedule.oddDays : schedule.evenDays;
+    const parityWindowsForDay = buildRuleWindowsForDate(
+      baseDate,
+      parityRule,
+      isOddDay ? "dias impares" : "dias pares",
+    );
+
+    let windows: DailyScheduleWindow[] = [];
+    if (hasParityRestriction) {
+      // Dias pares/impares têm prioridade e dispensam seleção de dia da semana.
+      windows = parityWindowsForDay.windows;
+    } else if (hasWeeklyRestriction) {
+      windows = weeklyWindowsForDay.windows;
+    }
+
+    return {
+      hasRestrictions: hasWeeklyRestriction || hasParityRestriction,
+      blocked: false,
+      windows,
+      invalidSlots: weeklyWindowsForDay.invalidSlots + parityWindowsForDay.invalidSlots,
+    };
+  };
+  const isShiftWithinWindows = (startTime: Date, endTime: Date, windows: DailyScheduleWindow[]) =>
+    windows.some((window) => startTime >= window.start && endTime <= window.end);
+
+  const FIVE_MINUTES_MS = 5 * 60 * 1000;
+  const HOUR_MS = 60 * 60 * 1000;
 
   const assertShiftWindow = (startTime: Date, endTime: Date) => {
     if (Number.isNaN(startTime.getTime()) || Number.isNaN(endTime.getTime())) {
@@ -638,14 +1532,61 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   const rangesOverlap = (aStart: Date, aEnd: Date, bStart: Date, bEnd: Date) =>
     aStart < bEnd && aEnd > bStart;
+  const resolveShiftTypeFromWindow = (startTime: Date, endTime: Date): ShiftAssignmentType => {
+    const durationMs = endTime.getTime() - startTime.getTime();
+    if (Math.abs(durationMs - (12 * HOUR_MS)) <= FIVE_MINUTES_MS) {
+      return startTime.getHours() < 12 ? "12h_manha" : "12h_noite";
+    }
+    if (Math.abs(durationMs - (24 * HOUR_MS)) <= FIVE_MINUTES_MS) {
+      return "24h";
+    }
+    return "avulso";
+  };
+  const getDefaultShiftTypeForRule = (allowedShiftTypes: ShiftAssignmentType[]): ShiftAssignmentType => {
+    if (allowedShiftTypes.includes("12h_manha")) return "12h_manha";
+    if (allowedShiftTypes.includes("12h_noite")) return "12h_noite";
+    if (allowedShiftTypes.includes("24h")) return "24h";
+    if (allowedShiftTypes.includes("avulso")) return "avulso";
+    return "avulso";
+  };
+  const buildShiftWindowFromType = (
+    baseDate: Date,
+    shiftType: ShiftAssignmentType,
+    exactShiftHours?: number | null,
+  ): { startTime: Date; endTime: Date } => {
+    let startHour = 8;
+    if (shiftType === "12h_manha" || shiftType === "24h") startHour = 7;
+    if (shiftType === "12h_noite") startHour = 19;
+
+    const startTime = new Date(
+      baseDate.getFullYear(),
+      baseDate.getMonth(),
+      baseDate.getDate(),
+      startHour,
+      0,
+      0,
+      0,
+    );
+    const durationHours =
+      exactShiftHours && exactShiftHours > 0
+        ? exactShiftHours
+        : shiftType === "24h"
+          ? 24
+          : shiftType === "12h_manha" || shiftType === "12h_noite"
+            ? 12
+            : 8;
+    const endTime = new Date(startTime.getTime() + (durationHours * HOUR_MS));
+    return { startTime, endTime };
+  };
 
   const assertShiftAssignmentAllowed = async (input: {
     orgId: number;
     staffId: number;
-    shiftType: "12h_manha" | "12h_noite" | "24h" | "avulso";
+    shiftType: ShiftAssignmentType;
     startTime: Date;
     endTime: Date;
     excludeShiftId?: number;
+    environmentSettings?: EnvironmentSettings;
   }) => {
     const staffMember = await storage.getStaffMember(input.orgId, input.staffId);
     if (!staffMember) {
@@ -666,37 +1607,78 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       throw new ShiftValidationError("Funcionário já possui escala neste período.");
     }
 
-    if (!isTwelveByThirtySixStaff(staffMember.shift)) {
+    const hasCustomWorkSchedule =
+      typeof staffMember.workSchedule === "string" && staffMember.workSchedule.trim().length > 0;
+
+    if (hasCustomWorkSchedule) {
+      const schedule = parseStaffWorkSchedule(staffMember.workSchedule);
+      const dayReference = new Date(
+        input.startTime.getFullYear(),
+        input.startTime.getMonth(),
+        input.startTime.getDate(),
+        0,
+        0,
+        0,
+        0,
+      );
+      const dailySchedule = resolveDailySchedule(schedule, dayReference);
+
+      if (dailySchedule.blocked) {
+        throw new ShiftValidationError("Este dia esta bloqueado na jornada do colaborador.");
+      }
+      if (dailySchedule.hasRestrictions) {
+        if (dailySchedule.windows.length === 0) {
+          throw new ShiftValidationError("Dia/horario fora da jornada configurada do colaborador.");
+        }
+        if (!isShiftWithinWindows(input.startTime, input.endTime, dailySchedule.windows)) {
+          throw new ShiftValidationError("Horario fora da jornada configurada do colaborador.");
+        }
+      }
+    }
+
+    const shiftRule = getShiftProfileRule(staffMember.shift, input.environmentSettings?.shiftProfiles);
+    if (!shiftRule.enabled) {
       return;
     }
 
-    if (!SHIFT_12X36_TYPES.has(input.shiftType)) {
-      throw new ShiftValidationError("Equipe 12x36 só pode receber plantões de 12h (manhã/noite).");
+    if (shiftRule.allowedShiftTypes.length > 0 && !shiftRule.allowedShiftTypes.includes(input.shiftType)) {
+      throw new ShiftValidationError(
+        `Perfil ${staffMember.shift} aceita apenas: ${shiftRule.allowedShiftTypes.join(", ")}.`,
+      );
     }
 
     const durationMs = input.endTime.getTime() - input.startTime.getTime();
-    const toleranceMs = 5 * 60 * 1000;
-    if (Math.abs(durationMs - TWELVE_HOURS_MS) > toleranceMs) {
-      throw new ShiftValidationError("Equipe 12x36 deve ter plantão de 12 horas.");
+    if (shiftRule.exactShiftHours) {
+      const expectedDurationMs = shiftRule.exactShiftHours * HOUR_MS;
+      if (Math.abs(durationMs - expectedDurationMs) > FIVE_MINUTES_MS) {
+        throw new ShiftValidationError(
+          `Perfil ${staffMember.shift} exige plantao de ${shiftRule.exactShiftHours}h.`,
+        );
+      }
     }
 
-    const violatesRest = otherShifts.some((shift) => {
-      const existingStartMs = new Date(shift.startTime).getTime();
-      const existingEndMs = new Date(shift.endTime).getTime();
-      const startMs = input.startTime.getTime();
-      const endMs = input.endTime.getTime();
+    if (shiftRule.minRestHours) {
+      const minimumRestMs = shiftRule.minRestHours * HOUR_MS;
+      const violatesRest = otherShifts.some((shift) => {
+        const existingStartMs = new Date(shift.startTime).getTime();
+        const existingEndMs = new Date(shift.endTime).getTime();
+        const startMs = input.startTime.getTime();
+        const endMs = input.endTime.getTime();
 
-      if (startMs >= existingEndMs) {
-        return startMs - existingEndMs < THIRTY_SIX_HOURS_MS;
-      }
-      if (endMs <= existingStartMs) {
-        return existingStartMs - endMs < THIRTY_SIX_HOURS_MS;
-      }
-      return true;
-    });
+        if (startMs >= existingEndMs) {
+          return startMs - existingEndMs < minimumRestMs;
+        }
+        if (endMs <= existingStartMs) {
+          return existingStartMs - endMs < minimumRestMs;
+        }
+        return true;
+      });
 
-    if (violatesRest) {
-      throw new ShiftValidationError("Escala 12x36 exige descanso mínimo de 36h entre plantões.");
+      if (violatesRest) {
+        throw new ShiftValidationError(
+          `Perfil ${staffMember.shift} exige descanso minimo de ${shiftRule.minRestHours}h entre plantoes.`,
+        );
+      }
     }
   };
 
@@ -712,27 +1694,321 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
   // Escrita de escalas: admin + enfermeiro + tecnico + recepcionista + administrativo
   const SHIFT_WRITE_ROLES = ["admin", "enfermeiro", "tecnico_enfermagem", "recepcionista", "administrativo"];
-  app.post("/api/shift-assignments", requireAuth, requireRole(...SHIFT_WRITE_ROLES), async (req, res) => {
+  app.post("/api/shift-assignments/generate-month", requireAuth, requireRole(...SHIFT_WRITE_ROLES), async (req, res, next) => {
     try {
       const orgId = getOrgId(req);
-      const input = shiftInputSchema.parse(req.body);
-      await assertShiftAssignmentAllowed({
-        orgId,
-        staffId: input.staffId,
-        shiftType: input.shiftType,
-        startTime: input.startTime,
-        endTime: input.endTime,
+      const environmentSettings = (res.locals.environmentSettings as EnvironmentSettings | undefined)
+        ?? (await getOrganizationEnvironmentSettings(orgId))?.settings
+        ?? DEFAULT_ENVIRONMENT_SETTINGS;
+      const input = generateMonthInputSchema.parse(req.body);
+      const enforcedStaffId = await enforceCaregiverOwnStaffId(orgId, req.session.user, input.staffId ?? null);
+      const [year, monthNumber] = input.month.split("-").map(Number);
+      const monthStart = new Date(year, monthNumber - 1, 1, 0, 0, 0, 0);
+      const monthEnd = new Date(year, monthNumber, 0, 23, 59, 59, 999);
+      const totalDaysInMonth = monthEnd.getDate();
+
+      const allStaff = await storage.getStaff(orgId);
+      const targetStaff = enforcedStaffId
+        ? allStaff.filter((member) => member.id === enforcedStaffId)
+        : input.staffId
+          ? allStaff.filter((member) => member.id === input.staffId)
+        : allStaff;
+
+      if ((input.staffId || enforcedStaffId) && targetStaff.length === 0) {
+        return res.status(404).json({ message: "Funcionario nao encontrado." });
+      }
+
+      let monthlyShifts = await storage.getShiftAssignments(orgId, {
+        start: monthStart,
+        end: monthEnd,
       });
-      res.status(201).json(await storage.createShiftAssignment({ ...input, organizationId: orgId }));
+
+      const isGeneratedShift = (note?: string | null) =>
+        typeof note === "string" && note.startsWith(`${AUTO_MONTH_NOTE_PREFIX}${input.month}]`);
+
+      if (input.clearGenerated) {
+        const generatedShifts = monthlyShifts.filter(
+          (shift) =>
+            isGeneratedShift(shift.notes) &&
+            (!input.staffId || shift.staffId === input.staffId),
+        );
+
+        for (const generatedShift of generatedShifts) {
+          await storage.deleteShiftAssignment(orgId, generatedShift.id);
+        }
+
+        monthlyShifts = await storage.getShiftAssignments(orgId, {
+          start: monthStart,
+          end: monthEnd,
+        });
+      }
+
+      type ShiftRange = { start: Date; end: Date };
+      const shiftRangesByStaff = new Map<number, ShiftRange[]>();
+      for (const shift of monthlyShifts) {
+        const existingRanges = shiftRangesByStaff.get(shift.staffId) ?? [];
+        existingRanges.push({
+          start: new Date(shift.startTime),
+          end: new Date(shift.endTime),
+        });
+        shiftRangesByStaff.set(shift.staffId, existingRanges);
+      }
+
+      let createdCount = 0;
+      let skippedCount = 0;
+      let invalidSlotCount = 0;
+      let overlapSkipCount = 0;
+      let validationSkipCount = 0;
+      let configuredStaffCount = 0;
+
+      for (const member of targetStaff) {
+        if (member.active === false) continue;
+
+        const schedule = parseStaffWorkSchedule(member.workSchedule);
+        const hasWeeklyRule = WEEKDAY_KEYS.some((key) => {
+          const rule = schedule.weekly[key];
+          return Boolean(rule.enabled && (rule.slots?.length ?? 0) > 0);
+        });
+        const hasOddRule = Boolean(schedule.oddDays.enabled && (schedule.oddDays.slots?.length ?? 0) > 0);
+        const hasEvenRule = Boolean(schedule.evenDays.enabled && (schedule.evenDays.slots?.length ?? 0) > 0);
+        const hasRecurringSchedule = hasWeeklyRule || hasOddRule || hasEvenRule;
+
+        const shiftRule = getShiftProfileRule(member.shift, environmentSettings.shiftProfiles);
+        const canGenerateFromProfileRule =
+          !hasRecurringSchedule
+          && shiftRule.enabled
+          && Boolean(shiftRule.exactShiftHours && shiftRule.exactShiftHours > 0);
+        const preferredProfileShiftType =
+          schedule.profileCycleStart
+          && shiftRule.allowedShiftTypes.includes(schedule.profileCycleStart)
+            ? schedule.profileCycleStart
+            : null;
+        const profileShiftType = preferredProfileShiftType ?? getDefaultShiftTypeForRule(shiftRule.allowedShiftTypes);
+
+        if (!hasRecurringSchedule && !canGenerateFromProfileRule) continue;
+        configuredStaffCount++;
+
+        const memberRanges = shiftRangesByStaff.get(member.id) ?? [];
+
+        for (let day = 1; day <= totalDaysInMonth; day++) {
+          const currentDay = new Date(year, monthNumber - 1, day, 0, 0, 0, 0);
+          if (hasRecurringSchedule) {
+            const dailySchedule = resolveDailySchedule(schedule, currentDay);
+            if (dailySchedule.blocked) {
+              continue;
+            }
+            if (!dailySchedule.hasRestrictions) {
+              continue;
+            }
+            if (dailySchedule.invalidSlots > 0) {
+              skippedCount += dailySchedule.invalidSlots;
+              invalidSlotCount += dailySchedule.invalidSlots;
+            }
+            if (dailySchedule.windows.length === 0) {
+              continue;
+            }
+
+            for (const window of dailySchedule.windows) {
+              const startTime = new Date(window.start);
+              const endTime = new Date(window.end);
+              const generatedShiftType = resolveShiftTypeFromWindow(startTime, endTime);
+
+              const hasOverlap = memberRanges.some((range) =>
+                rangesOverlap(startTime, endTime, range.start, range.end),
+              );
+              if (hasOverlap) {
+                skippedCount++;
+                overlapSkipCount++;
+                continue;
+              }
+
+              try {
+                await assertShiftAssignmentAllowed({
+                  orgId,
+                  staffId: member.id,
+                  shiftType: generatedShiftType,
+                  startTime,
+                  endTime,
+                  environmentSettings,
+                });
+              } catch (error) {
+                if (error instanceof ShiftValidationError) {
+                  skippedCount++;
+                  validationSkipCount++;
+                  continue;
+                }
+                throw error;
+              }
+
+              const notes = `${AUTO_MONTH_NOTE_PREFIX}${input.month}] ${window.source}`;
+              const createdShift = await storage.createShiftAssignment({
+                organizationId: orgId,
+                staffId: member.id,
+                residentId: null,
+                shiftType: generatedShiftType,
+                startTime,
+                endTime,
+                notes,
+              });
+
+              memberRanges.push({
+                start: new Date(createdShift.startTime),
+                end: new Date(createdShift.endTime),
+              });
+              createdCount++;
+            }
+            continue;
+          }
+
+          if (!canGenerateFromProfileRule) {
+            continue;
+          }
+
+          const { startTime, endTime } = buildShiftWindowFromType(
+            currentDay,
+            profileShiftType,
+            shiftRule.exactShiftHours,
+          );
+          const hasOverlap = memberRanges.some((range) =>
+            rangesOverlap(startTime, endTime, range.start, range.end),
+          );
+          if (hasOverlap) {
+            skippedCount++;
+            overlapSkipCount++;
+            continue;
+          }
+
+          try {
+            await assertShiftAssignmentAllowed({
+              orgId,
+              staffId: member.id,
+              shiftType: profileShiftType,
+              startTime,
+              endTime,
+              environmentSettings,
+            });
+          } catch (error) {
+            if (error instanceof ShiftValidationError) {
+              skippedCount++;
+              validationSkipCount++;
+              continue;
+            }
+            throw error;
+          }
+
+          const notes = `${AUTO_MONTH_NOTE_PREFIX}${input.month}] regra:${member.shift}`;
+          const createdShift = await storage.createShiftAssignment({
+            organizationId: orgId,
+            staffId: member.id,
+            residentId: null,
+            shiftType: profileShiftType,
+            startTime,
+            endTime,
+            notes,
+          });
+
+          memberRanges.push({
+            start: new Date(createdShift.startTime),
+            end: new Date(createdShift.endTime),
+          });
+          createdCount++;
+        }
+
+        shiftRangesByStaff.set(member.id, memberRanges);
+      }
+
+      res.json({
+        month: input.month,
+        staffProcessed: targetStaff.length,
+        staffWithSchedule: configuredStaffCount,
+        created: createdCount,
+        skipped: skippedCount,
+        skippedByInvalidSlot: invalidSlotCount,
+        skippedByOverlap: overlapSkipCount,
+        skippedByValidation: validationSkipCount,
+        clearedGenerated: Boolean(input.clearGenerated),
+      });
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
-      if (err instanceof ShiftValidationError) return res.status(400).json({ message: err.message });
+      if (err instanceof Error) return res.status(400).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.post("/api/shift-assignments/:id/exclude-day", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const orgId = getOrgId(req);
+      const shiftId = Number(req.params.id);
+      if (!Number.isInteger(shiftId) || shiftId <= 0) {
+        return res.status(400).json({ message: "ID de escala invalido." });
+      }
+
+      const shifts = await storage.getShiftAssignments(orgId);
+      const targetShift = shifts.find((shift) => shift.id === shiftId);
+      if (!targetShift) {
+        return res.status(404).json({ message: "Escala nao encontrada." });
+      }
+
+      const staffMember = await storage.getStaffMember(orgId, targetShift.staffId);
+      if (!staffMember) {
+        return res.status(404).json({ message: "Funcionario nao encontrado." });
+      }
+
+      const blockedDate = toDateKey(new Date(targetShift.startTime));
+      const schedule = parseStaffWorkSchedule(staffMember.workSchedule);
+      if (!schedule.blockedDates.includes(blockedDate)) {
+        schedule.blockedDates.push(blockedDate);
+        schedule.blockedDates.sort();
+      }
+
+      await storage.updateStaff(orgId, staffMember.id, {
+        workSchedule: JSON.stringify(schedule),
+      });
+      await storage.deleteShiftAssignment(orgId, targetShift.id);
+
+      res.json({
+        message: "Dia dispensado com sucesso.",
+        shiftId: targetShift.id,
+        staffId: staffMember.id,
+        blockedDate,
+      });
+    } catch (err) {
       throw err;
     }
   });
-  app.put("/api/shift-assignments/:id", requireAuth, requireRole(...SHIFT_WRITE_ROLES), async (req, res) => {
+  app.post("/api/shift-assignments", requireAuth, requireRole(...SHIFT_WRITE_ROLES), async (req, res, next) => {
     try {
       const orgId = getOrgId(req);
+      const environmentSettings = (res.locals.environmentSettings as EnvironmentSettings | undefined)
+        ?? (await getOrganizationEnvironmentSettings(orgId))?.settings
+        ?? DEFAULT_ENVIRONMENT_SETTINGS;
+      const input = shiftInputSchema.parse(req.body);
+      const enforcedStaffId = await enforceCaregiverOwnStaffId(orgId, req.session.user, input.staffId);
+      if (!enforcedStaffId) {
+        return res.status(400).json({ message: "Profissional da escala nao informado." });
+      }
+      const normalizedInput = { ...input, staffId: enforcedStaffId };
+      await assertShiftAssignmentAllowed({
+        orgId,
+        staffId: normalizedInput.staffId,
+        shiftType: normalizedInput.shiftType,
+        startTime: normalizedInput.startTime,
+        endTime: normalizedInput.endTime,
+        environmentSettings,
+      });
+      res.status(201).json(await storage.createShiftAssignment({ ...normalizedInput, organizationId: orgId }));
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      if (err instanceof ShiftValidationError) return res.status(400).json({ message: err.message });
+      if (err instanceof Error) return res.status(400).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.put("/api/shift-assignments/:id", requireAuth, requireRole(...SHIFT_WRITE_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      const environmentSettings = (res.locals.environmentSettings as EnvironmentSettings | undefined)
+        ?? (await getOrganizationEnvironmentSettings(orgId))?.settings
+        ?? DEFAULT_ENVIRONMENT_SETTINGS;
       const shiftId = Number(req.params.id);
       const updates = shiftInputSchema.partial().parse(req.body);
 
@@ -742,7 +2018,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(404).json({ message: "Escala não encontrada" });
       }
 
-      const nextStaffId = updates.staffId ?? currentShift.staffId;
+      const requestedStaffId = updates.staffId ?? currentShift.staffId;
+      const enforcedStaffId = await enforceCaregiverOwnStaffId(orgId, req.session.user, requestedStaffId);
+      if (!enforcedStaffId) {
+        return res.status(400).json({ message: "Profissional da escala nao informado." });
+      }
+      const nextStaffId = enforcedStaffId;
       const nextShiftType = (updates.shiftType ?? currentShift.shiftType ?? "avulso") as "12h_manha" | "12h_noite" | "24h" | "avulso";
       const nextStartTime = updates.startTime ?? new Date(currentShift.startTime);
       const nextEndTime = updates.endTime ?? new Date(currentShift.endTime);
@@ -754,18 +2035,36 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         startTime: nextStartTime,
         endTime: nextEndTime,
         excludeShiftId: shiftId,
+        environmentSettings,
       });
 
-      res.json(await storage.updateShiftAssignment(orgId, shiftId, updates));
+      const normalizedUpdates = updates.staffId !== undefined || req.session.user?.role === "cuidador"
+        ? { ...updates, staffId: nextStaffId }
+        : updates;
+
+      res.json(await storage.updateShiftAssignment(orgId, shiftId, normalizedUpdates));
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       if (err instanceof ShiftValidationError) return res.status(400).json({ message: err.message });
-      throw err;
+      if (err instanceof Error) return res.status(400).json({ message: err.message });
+      next(err);
     }
   });
   app.delete("/api/shift-assignments/:id", requireAuth, requireRole(...SHIFT_WRITE_ROLES), async (req, res) => {
     const orgId = getOrgId(req);
-    await storage.deleteShiftAssignment(orgId, Number(req.params.id));
+    const shiftId = Number(req.params.id);
+    if (!Number.isInteger(shiftId) || shiftId <= 0) {
+      return res.status(400).json({ message: "ID de escala invalido." });
+    }
+
+    const shifts = await storage.getShiftAssignments(orgId);
+    const targetShift = shifts.find((shift) => shift.id === shiftId);
+    if (!targetShift) {
+      return res.status(404).json({ message: "Escala nao encontrada." });
+    }
+
+    await enforceCaregiverOwnStaffId(orgId, req.session.user, targetShift.staffId);
+    await storage.deleteShiftAssignment(orgId, shiftId);
     res.status(204).send();
   });
 
@@ -845,8 +2144,8 @@ async function seedDatabase() {
 
   await storage.createUser({ organizationId: null, username: "superadmin", password: "superadmin", name: "Super Administrador", role: "superadmin", isSuperAdmin: true });
 
-  const org1 = await storage.createOrganization({ name: "Bem Viver ILPI", address: "Rua das Flores, 123 - São Paulo/SP", phone: "(11) 3333-0001", email: "contato@bemviver.com.br", cnpj: "12.345.678/0001-90", capacity: 50, active: true });
-  const org2 = await storage.createOrganization({ name: "Lar Esperança", address: "Av. das Acácias, 456 - Campinas/SP", phone: "(19) 3333-0002", email: "contato@laresperanca.com.br", cnpj: "98.765.432/0001-10", capacity: 30, active: true });
+  const org1 = await storage.createOrganization({ name: "Bem Viver ILPI", address: "Rua das Flores, 123 - São Paulo/SP", phone: "(11) 3333-0001", email: "contato@bemviver.com.br", cnpj: "12.345.678/0001-90", capacity: 50, status: "active", active: true });
+  const org2 = await storage.createOrganization({ name: "Lar Esperança", address: "Av. das Acácias, 456 - Campinas/SP", phone: "(19) 3333-0002", email: "contato@laresperanca.com.br", cnpj: "98.765.432/0001-10", capacity: 30, status: "active", active: true });
 
   await storage.createUser({ organizationId: org1.id, username: "admin", password: "admin", name: "Administrador", role: "admin", isSuperAdmin: false });
   await storage.createUser({ organizationId: org2.id, username: "admin2", password: "admin2", name: "Administrador", role: "admin", isSuperAdmin: false });
@@ -930,7 +2229,7 @@ async function seedDatabase() {
 
 async function seedNewModules() {
   // Find existing orgs to seed new modules (comorbidities, medical records, family, contracts, fees)
-  const orgs = await storage.getOrganizations();
+  const orgs = await storage.getOrganizations(true);
   if (orgs.length === 0) return;
 
   const org1 = orgs.find(o => o.name.includes("Bem Viver"));
@@ -1006,7 +2305,7 @@ async function seedPortalCredentials() {
     "Ricardo Moraes":{ username: "ricardo.moraes",password: "familia123" },
   };
 
-  const orgs = await storage.getOrganizations();
+  const orgs = await storage.getOrganizations(true);
   for (const org of orgs) {
     const residents = await storage.getResidents(org.id);
     for (const resident of residents) {
@@ -1025,4 +2324,3 @@ async function seedPortalCredentials() {
     }
   }
 }
-

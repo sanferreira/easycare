@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMedications, useCreateMedication, useUpdateMedication } from "@/hooks/use-medications";
 import { useResidents } from "@/hooks/use-residents";
+import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
+import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -54,11 +56,13 @@ const STATUS_ADMIN: Record<string, { label: string; color: string; bg: string }>
 
 const adminSchema = z.object({
   medicationId: z.coerce.number().min(1, "Medicamento obrigatório"),
+  staffId: z.coerce.number().min(1, "Profissional obrigatorio").optional(),
   status: z.enum(["given", "skipped", "refused", "late"]).default("given"),
   notes: z.string().optional(),
 });
 
 type MedicationWithResident = Medication & { residentName?: string };
+type StaffOption = { id: number; name: string; role?: string; active?: boolean };
 
 export default function Medications() {
   const { data: medications, isLoading } = useMedications();
@@ -67,6 +71,8 @@ export default function Medications() {
   const [editingMedication, setEditingMedication] = useState<MedicationWithResident | null>(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { confirm, confirmDialog } = useConfirmDialog();
+  const { user } = useAuth();
 
   const { data: administrations = [], isLoading: adminsLoading } = useQuery<any[]>({
     queryKey: ["/api/medication-administrations"],
@@ -182,9 +188,14 @@ export default function Medications() {
                             className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                             disabled={deleteMutation.isPending}
                             onClick={() => {
-                              if (confirm(`Excluir "${med.name}" de ${med.residentName || "residente"}? Esta ação não pode ser desfeita.`)) {
-                                deleteMutation.mutate(med.id);
-                              }
+                              confirm({
+                                title: "Excluir medicação",
+                                description: `Excluir "${med.name}" de ${med.residentName || "residente"}? Esta ação não pode ser desfeita.`,
+                                confirmText: "Excluir",
+                                pendingText: "Excluindo...",
+                                variant: "destructive",
+                                onConfirm: () => deleteMutation.mutateAsync(med.id),
+                              });
                             }}
                             data-testid={`button-delete-medication-${med.id}`}
                           >
@@ -217,6 +228,7 @@ export default function Medications() {
                   <TableRow>
                     <TableHead>Residente</TableHead>
                     <TableHead>Medicamento</TableHead>
+                    <TableHead>Profissional</TableHead>
                     <TableHead>Data/Hora</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>Observações</TableHead>
@@ -235,6 +247,9 @@ export default function Medications() {
                             {med?.name ?? `Medicamento #${adm.medicationId}`}
                             {med && <span className="text-xs text-muted-foreground">{med.dosage}</span>}
                           </div>
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">
+                          {adm.administeredByName || "Nao informado"}
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground">
                           {adm.administeredAt
@@ -269,7 +284,10 @@ export default function Medications() {
         open={isAdminDialogOpen}
         onOpenChange={setIsAdminDialogOpen}
         medications={medications ?? []}
+        currentUserName={user?.name ?? ""}
+        currentUserRole={user?.role ?? ""}
       />
+      {confirmDialog}
     </div>
   );
 }
@@ -448,25 +466,54 @@ function MedicationDialog({
   );
 }
 
-function AdminDialog({ open, onOpenChange, medications }: {
+function AdminDialog({ open, onOpenChange, medications, currentUserName, currentUserRole }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   medications: MedicationWithResident[];
+  currentUserName: string;
+  currentUserRole: string;
 }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const isCaregiver = currentUserRole === "cuidador";
 
   const form = useForm<z.infer<typeof adminSchema>>({
     resolver: zodResolver(adminSchema),
     defaultValues: { status: "given", notes: "" },
   });
 
+  const { data: staff = [] } = useQuery<StaffOption[]>({
+    queryKey: ["/api/staff", "medication-admin"],
+    queryFn: async () => {
+      const res = await fetch("/api/staff", { credentials: "include" });
+      if (!res.ok) throw new Error("Erro ao carregar equipe.");
+      return res.json();
+    },
+    enabled: open && !isCaregiver,
+  });
+
+  const activeStaff = staff.filter((member) => member.active !== false);
+
+  useEffect(() => {
+    if (!open) return;
+    form.reset({ medicationId: undefined, staffId: undefined, status: "given", notes: "" });
+  }, [open, form]);
+
+  useEffect(() => {
+    if (!open || isCaregiver) return;
+    if (activeStaff.length !== 1) return;
+    const currentStaffId = Number(form.getValues("staffId"));
+    if (currentStaffId === activeStaff[0].id) return;
+    form.setValue("staffId", activeStaff[0].id, { shouldDirty: false, shouldValidate: true });
+  }, [activeStaff, form, isCaregiver, open]);
+
   const createAdmin = useMutation({
     mutationFn: async (data: z.infer<typeof adminSchema>) => {
-      const med = medications.find(m => m.id === data.medicationId);
       const body = {
-        ...data,
-        residentId: med?.residentId ?? 0,
+        medicationId: Number(data.medicationId),
+        staffId: isCaregiver ? undefined : (data.staffId ? Number(data.staffId) : undefined),
+        status: data.status,
+        notes: data.notes?.trim() || null,
         administeredAt: new Date().toISOString(),
       };
       const res = await fetch("/api/medication-administrations", {
@@ -474,16 +521,19 @@ function AdminDialog({ open, onOpenChange, medications }: {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (!res.ok) throw new Error("Erro ao registrar administração");
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        throw new Error(payload?.message || "Erro ao registrar administracao");
+      }
       return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/medication-administrations"] });
-      toast({ title: "Administração registrada com sucesso" });
-      form.reset({ status: "given", notes: "" });
+      toast({ title: "Administracao registrada com sucesso" });
+      form.reset({ medicationId: undefined, staffId: undefined, status: "given", notes: "" });
       onOpenChange(false);
     },
-    onError: () => toast({ variant: "destructive", title: "Erro ao registrar administração" }),
+    onError: (error: Error) => toast({ variant: "destructive", title: error.message || "Erro ao registrar administracao" }),
   });
 
   const watchedMedId = form.watch("medicationId");
@@ -496,7 +546,16 @@ function AdminDialog({ open, onOpenChange, medications }: {
           <DialogTitle>Registrar Administração</DialogTitle>
         </DialogHeader>
         <Form {...form}>
-          <form onSubmit={form.handleSubmit((d) => createAdmin.mutate(d))} className="space-y-4">
+          <form
+            onSubmit={form.handleSubmit((data) => {
+              if (!isCaregiver && !data.staffId) {
+                form.setError("staffId", { type: "manual", message: "Profissional obrigatorio" });
+                return;
+              }
+              createAdmin.mutate(data);
+            })}
+            className="space-y-4"
+          >
             <FormField
               control={form.control}
               name="medicationId"
@@ -531,6 +590,43 @@ function AdminDialog({ open, onOpenChange, medications }: {
                 </FormItem>
               )}
             />
+
+            {isCaregiver ? (
+              <div className="rounded-lg border border-border bg-muted/30 px-3 py-2">
+                <p className="text-xs text-muted-foreground">Profissional responsavel</p>
+                <p className="text-sm font-medium text-foreground">
+                  {currentUserName || "Cuidador logado"}
+                </p>
+              </div>
+            ) : (
+              <FormField
+                control={form.control}
+                name="staffId"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Profissional que administrou *</FormLabel>
+                    <Select
+                      onValueChange={(value) => field.onChange(Number(value))}
+                      value={field.value ? String(field.value) : undefined}
+                    >
+                      <FormControl>
+                        <SelectTrigger data-testid="select-admin-staff">
+                          <SelectValue placeholder="Selecione o profissional" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        {activeStaff.map((member) => (
+                          <SelectItem key={member.id} value={String(member.id)}>
+                            {member.name}{member.role ? ` - ${member.role}` : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            )}
 
             <FormField
               control={form.control}
@@ -590,3 +686,5 @@ function AdminDialog({ open, onOpenChange, medications }: {
     </Dialog>
   );
 }
+
+

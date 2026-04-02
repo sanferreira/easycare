@@ -12,6 +12,9 @@ export const organizations = pgTable("organizations", {
   email: text("email"),
   cnpj: text("cnpj"),
   capacity: integer("capacity").default(50),
+  environmentSettings: text("environment_settings"),
+  // active | inactive | restricted
+  status: text("status").notNull().default("active"),
   active: boolean("active").default(true),
   createdAt: timestamp("created_at").defaultNow(),
 });
@@ -61,6 +64,7 @@ export const residents = pgTable("residents", {
   contactName: text("contact_name").notNull(),
   contactPhone: text("contact_phone").notNull(),
   contactRelationship: text("contact_relationship"),
+  photoUrl: text("photo_url"),
 });
 
 // ===== FAMILY MEMBERS / RESPONSIBLE =====
@@ -156,14 +160,23 @@ export const staff = pgTable("staff", {
   id: serial("id").primaryKey(),
   organizationId: integer("organization_id").notNull(),
   name: text("name").notNull(),
+  employmentType: text("employment_type").default("clt"), // clt | pj
   cpf: text("cpf"),
+  cnpj: text("cnpj"),
   role: text("role").notNull(),   // cuidador, enfermeiro, técnico de enfermagem, fisioterapeuta, médico, nutricionista, recepcionista, administrativo
   specialty: text("specialty"),
   coren: text("coren"),           // registration number for nurses
   crm: text("crm"),               // for doctors
   shift: text("shift").notNull(), // manhã, tarde, noite, 12x36
   phone: text("phone"),
+  cep: text("cep"),
+  address: text("address"),
   email: text("email"),
+  portalAccess: boolean("portal_access").default(false),
+  portalUsername: text("portal_username"),
+  portalUserId: integer("portal_user_id"),
+  photoUrl: text("photo_url"),
+  workSchedule: text("work_schedule"),
   admissionDate: date("admission_date"),
   active: boolean("active").default(true),
 });

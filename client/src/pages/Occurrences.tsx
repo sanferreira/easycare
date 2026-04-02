@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useOccurrences, useCreateOccurrence, useDeleteOccurrence } from "@/hooks/use-occurrences";
 import { useResidents } from "@/hooks/use-residents";
+import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,6 +49,7 @@ export default function Occurrences() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const deleteMutation = useDeleteOccurrence();
+  const { confirm, confirmDialog } = useConfirmDialog();
 
   const resolveMutation = useMutation({
     mutationFn: async ({ id, newStatus }: { id: number; newStatus: string }) => {
@@ -136,9 +138,14 @@ export default function Occurrences() {
                       className="h-7 text-xs gap-1 text-destructive hover:bg-destructive/10 hover:text-destructive"
                       disabled={deleteMutation.isPending || resolveMutation.isPending}
                       onClick={() => {
-                        if (window.confirm("Tem certeza que deseja excluir esta ocorrência?")) {
-                          deleteMutation.mutate(Number(occ.id));
-                        }
+                        confirm({
+                          title: "Excluir ocorrência",
+                          description: "Tem certeza que deseja excluir esta ocorrência?",
+                          confirmText: "Excluir",
+                          pendingText: "Excluindo...",
+                          variant: "destructive",
+                          onConfirm: () => deleteMutation.mutateAsync(Number(occ.id)),
+                        });
                       }}
                       data-testid={`button-delete-occurrence-${occ.id}`}
                     >
@@ -157,6 +164,7 @@ export default function Occurrences() {
         open={isDialogOpen} 
         onOpenChange={setIsDialogOpen} 
       />
+      {confirmDialog}
     </div>
   );
 }

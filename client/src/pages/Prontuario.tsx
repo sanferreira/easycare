@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useResidents } from "@/hooks/use-residents";
+import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -94,6 +95,7 @@ export default function Prontuario() {
   const [editingFamily, setEditingFamily] = useState<FamilyMember | null>(null);
   const [showPortalPassword, setShowPortalPassword] = useState(false);
   const { toast } = useToast();
+  const { confirm, confirmDialog } = useConfirmDialog();
   const queryClient = useQueryClient();
   const { data: residents = [], isLoading: residentsLoading } = useResidents({ status: "active" });
 
@@ -560,8 +562,14 @@ export default function Prontuario() {
                           className="shrink-0 h-7 w-7 flex items-center justify-center rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
                           disabled={deleteRecord.isPending}
                           onClick={() => {
-                            if (confirm("Excluir este registro do prontuário? Esta ação não pode ser desfeita."))
-                              deleteRecord.mutate(record.id);
+                            confirm({
+                              title: "Excluir registro",
+                              description: "Excluir este registro do prontuário? Esta ação não pode ser desfeita.",
+                              confirmText: "Excluir",
+                              pendingText: "Excluindo...",
+                              variant: "destructive",
+                              onConfirm: () => deleteRecord.mutateAsync(record.id),
+                            });
                           }}
                           data-testid={`button-delete-record-${record.id}`}
                         >
@@ -662,8 +670,14 @@ export default function Prontuario() {
                               className="h-7 w-7 flex items-center justify-center rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
                               disabled={deleteComorbidity.isPending}
                               onClick={() => {
-                                if (confirm(`Excluir diagnóstico "${c.name}"?`))
-                                  deleteComorbidity.mutate(c.id);
+                                confirm({
+                                  title: "Excluir diagnóstico",
+                                  description: `Excluir diagnóstico "${c.name}"?`,
+                                  confirmText: "Excluir",
+                                  pendingText: "Excluindo...",
+                                  variant: "destructive",
+                                  onConfirm: () => deleteComorbidity.mutateAsync(c.id),
+                                });
                               }}
                               data-testid={`button-delete-comorbidity-${c.id}`}
                             >
@@ -901,8 +915,14 @@ export default function Prontuario() {
                             className="h-7 w-7 flex items-center justify-center rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
                             disabled={deleteFamily.isPending}
                             onClick={() => {
-                              if (confirm(`Remover "${f.name}" dos familiares? ${f.portalAccess ? "O acesso ao portal desta pessoa também será removido." : ""}`))
-                                deleteFamily.mutate(f.id);
+                              confirm({
+                                title: "Remover familiar",
+                                description: `Remover "${f.name}" dos familiares? ${f.portalAccess ? "O acesso ao portal desta pessoa também será removido." : ""}`,
+                                confirmText: "Remover",
+                                pendingText: "Removendo...",
+                                variant: "destructive",
+                                onConfirm: () => deleteFamily.mutateAsync(f.id),
+                              });
                             }}
                             data-testid={`button-delete-family-${f.id}`}
                           >
@@ -930,6 +950,7 @@ export default function Prontuario() {
           </Tabs>
         </>
       )}
+      {confirmDialog}
     </div>
   );
 }

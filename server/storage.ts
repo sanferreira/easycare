@@ -21,10 +21,17 @@ import { eq, like, desc, sql, and, gte, lte, ilike } from "drizzle-orm";
 import { hashPassword, isPasswordHash } from "./security";
 
 const normalizePortalUsername = (username: string) => username.trim().toLowerCase();
+const normalizeOrganizationStatus = (org: Partial<Organization>): "active" | "inactive" | "restricted" => {
+  const rawStatus = typeof org.status === "string" ? org.status.toLowerCase().trim() : "";
+  if (rawStatus === "active" || rawStatus === "inactive" || rawStatus === "restricted") {
+    return rawStatus;
+  }
+  return org.active === false ? "inactive" : "active";
+};
 
 export interface IStorage {
   // Organizations
-  getOrganizations(): Promise<Organization[]>;
+  getOrganizations(includeInactive?: boolean): Promise<Organization[]>;
   getOrganization(id: number): Promise<Organization | undefined>;
   getOrganizationByCnpj(cnpj: string): Promise<Organization | undefined>;
   createOrganization(org: InsertOrganization): Promise<Organization>;
@@ -33,6 +40,7 @@ export interface IStorage {
 
   // Users
   getSuperAdminByUsername(username: string): Promise<User | undefined>;
+  getUserById(id: number): Promise<User | undefined>;
   getUserByUsernameAndOrganization(username: string, organizationId: number): Promise<User | undefined>;
   getUsersByOrganization(orgId: number): Promise<User[]>;
   createUser(user: InsertUser): Promise<User>;
@@ -74,7 +82,7 @@ export interface IStorage {
   deleteMedication(orgId: number, id: number): Promise<void>;
 
   // Medication Administrations
-  getMedicationAdministrations(orgId: number, residentId?: number, medicationId?: number): Promise<(MedicationAdministration & { medicationName?: string; residentName?: string })[]>;
+  getMedicationAdministrations(orgId: number, residentId?: number, medicationId?: number): Promise<(MedicationAdministration & { medicationName?: string; residentName?: string; administeredByName?: string })[]>;
   createMedicationAdministration(admin: InsertMedicationAdministration): Promise<MedicationAdministration>;
 
   // Staff
@@ -115,8 +123,10 @@ export interface IStorage {
 
 export class DatabaseStorage implements IStorage {
   // --- Organizations ---
-  async getOrganizations(): Promise<Organization[]> {
-    return await db.select().from(organizations).orderBy(organizations.name);
+  async getOrganizations(includeInactive = false): Promise<Organization[]> {
+    const allOrganizations = await db.select().from(organizations).orderBy(organizations.name);
+    if (includeInactive) return allOrganizations;
+    return allOrganizations.filter((org) => normalizeOrganizationStatus(org) !== "inactive");
   }
   async getOrganization(id: number): Promise<Organization | undefined> {
     const [org] = await db.select().from(organizations).where(eq(organizations.id, id));
@@ -154,6 +164,10 @@ export class DatabaseStorage implements IStorage {
   // --- Users ---
   async getSuperAdminByUsername(username: string): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(and(eq(users.username, username), eq(users.isSuperAdmin, true)));
+    return user;
+  }
+  async getUserById(id: number): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.id, id));
     return user;
   }
   async getUserByUsernameAndOrganization(username: string, organizationId: number): Promise<User | undefined> {
@@ -351,7 +365,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   // --- Medication Administrations ---
-  async getMedicationAdministrations(orgId: number, residentId?: number, medicationId?: number): Promise<(MedicationAdministration & { medicationName?: string; residentName?: string })[]> {
+  async getMedicationAdministrations(orgId: number, residentId?: number, medicationId?: number): Promise<(MedicationAdministration & { medicationName?: string; residentName?: string; administeredByName?: string })[]> {
     const filters: any[] = [eq(medicationAdministrations.organizationId, orgId)];
     if (residentId) filters.push(eq(medicationAdministrations.residentId, residentId));
     if (medicationId) filters.push(eq(medicationAdministrations.medicationId, medicationId));
@@ -367,9 +381,12 @@ export class DatabaseStorage implements IStorage {
       notes: medicationAdministrations.notes,
       medicationName: medications.name,
       residentName: residents.name,
+      administeredByName: sql<string>`coalesce(${staff.name}, ${users.name})`,
     }).from(medicationAdministrations)
       .leftJoin(medications, eq(medicationAdministrations.medicationId, medications.id))
       .leftJoin(residents, eq(medicationAdministrations.residentId, residents.id))
+      .leftJoin(users, eq(medicationAdministrations.staffId, users.id))
+      .leftJoin(staff, eq(medicationAdministrations.staffId, staff.id))
       .where(and(...filters))
       .orderBy(desc(medicationAdministrations.administeredAt)) as any;
   }
@@ -438,8 +455,14 @@ export class DatabaseStorage implements IStorage {
     const filters: any[] = [eq(shiftAssignments.organizationId, orgId)];
     if (query?.residentId) filters.push(eq(shiftAssignments.residentId, query.residentId));
     if (query?.staffId) filters.push(eq(shiftAssignments.staffId, query.staffId));
-    if (query?.start) filters.push(gte(shiftAssignments.startTime, query.start));
-    if (query?.end) filters.push(lte(shiftAssignments.endTime, query.end));
+    if (query?.start && query?.end) {
+      // Include any shift that overlaps the period.
+      filters.push(lte(shiftAssignments.startTime, query.end));
+      filters.push(gte(shiftAssignments.endTime, query.start));
+    } else {
+      if (query?.start) filters.push(gte(shiftAssignments.endTime, query.start));
+      if (query?.end) filters.push(lte(shiftAssignments.startTime, query.end));
+    }
     return await db.select({
       id: shiftAssignments.id,
       organizationId: shiftAssignments.organizationId,

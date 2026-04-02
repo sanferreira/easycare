@@ -1,41 +1,55 @@
 import { Link, useLocation } from "wouter";
 import {
-  LayoutDashboard, Users, Pill, Activity, LogOut,
-  Menu, Calendar, Building2, ShieldAlert, UserCheck,
-  FileText, DollarSign,
+  LayoutDashboard,
+  Users,
+  Pill,
+  Activity,
+  LogOut,
+  Menu,
+  Calendar,
+  Building2,
+  ShieldAlert,
+  UserCheck,
+  FileText,
+  DollarSign,
+  SlidersHorizontal,
 } from "lucide-react";
+import { useState } from "react";
 import { useAuth } from "@/hooks/use-auth";
+import { useEnvironmentSettings } from "@/hooks/use-environment-settings";
 import { canAccessRoute, ROLE_LABELS } from "@/lib/permissions";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
-import { useState } from "react";
 
 const allNavItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/residents", label: "Residentes", icon: Users },
-  { href: "/prontuario", label: "Prontuário", icon: FileText },
-  { href: "/medications", label: "Medicações", icon: Pill },
+  { href: "/prontuario", label: "Prontuario", icon: FileText },
+  { href: "/medications", label: "Medicacoes", icon: Pill },
   { href: "/staff", label: "Equipe", icon: UserCheck },
   { href: "/escalas", label: "Escalas", icon: Calendar },
-  { href: "/occurrences", label: "Ocorrências", icon: Activity },
+  { href: "/occurrences", label: "Ocorrencias", icon: Activity },
   { href: "/financeiro", label: "Financeiro", icon: DollarSign },
+  { href: "/environment", label: "Ambiente", icon: SlidersHorizontal },
 ];
 
 const superAdminItems = [
-  { href: "/admin", label: "Organizações", icon: Building2 },
+  { href: "/admin", label: "Organizacoes", icon: Building2 },
 ];
 
 function NavContent({ onClose }: { onClose?: () => void }) {
   const [location] = useLocation();
   const { logout, user } = useAuth();
+  const { data: environmentSettings } = useEnvironmentSettings({
+    enabled: !!user && !user?.isSuperAdmin,
+  });
 
   const isActive = (href: string) =>
     href === "/" ? location === "/" : location.startsWith(href);
 
-  // Filter nav items based on role permissions
   const navItems = user?.isSuperAdmin
     ? superAdminItems
-    : allNavItems.filter((item) => canAccessRoute(user?.role, item.href));
+    : allNavItems.filter((item) => canAccessRoute(user?.role, item.href, environmentSettings?.roleRoutes));
 
   const roleLabel = user?.role ? (ROLE_LABELS[user.role] ?? user.role) : "";
 
@@ -44,7 +58,6 @@ function NavContent({ onClose }: { onClose?: () => void }) {
       className="flex flex-col h-full"
       style={{ background: "linear-gradient(180deg, #0D1535 0%, #0A0F2C 100%)" }}
     >
-      {/* Logo */}
       <div className="px-5 pt-6 pb-5 border-b border-white/[0.07]">
         <div className="flex items-center gap-3">
           <img src="/easycare-logo.png" alt="EasyCare" className="h-9 w-9 object-contain rounded-xl" />
@@ -54,12 +67,11 @@ function NavContent({ onClose }: { onClose?: () => void }) {
               <span style={{ color: "#22D3EE" }}>Care</span>
             </p>
             <p className="text-[10px] mt-0.5" style={{ color: "rgba(255,255,255,0.4)" }}>
-              Gestão Inteligente
+              Gestao Inteligente
             </p>
           </div>
         </div>
 
-        {/* Org name */}
         {user?.organizationName && (
           <div className="mt-3 flex items-center gap-2 px-2 py-1.5 rounded-lg" style={{ background: "rgba(31,111,235,0.15)" }}>
             <Building2 className="h-3 w-3 shrink-0" style={{ color: "#22D3EE" }} />
@@ -74,11 +86,12 @@ function NavContent({ onClose }: { onClose?: () => void }) {
         )}
       </div>
 
-      {/* Nav */}
       <nav className="flex-1 px-4 py-4 space-y-1 overflow-y-auto">
-        <p className="text-[10px] uppercase tracking-widest font-semibold px-2 pb-2"
-          style={{ color: user?.isSuperAdmin ? "rgba(251,191,36,0.6)" : "rgba(255,255,255,0.3)" }}>
-          {user?.isSuperAdmin ? "Administração" : "Menu"}
+        <p
+          className="text-[10px] uppercase tracking-widest font-semibold px-2 pb-2"
+          style={{ color: user?.isSuperAdmin ? "rgba(251,191,36,0.6)" : "rgba(255,255,255,0.3)" }}
+        >
+          {user?.isSuperAdmin ? "Administracao" : "Menu"}
         </p>
 
         {navItems.map((item) => {
@@ -91,16 +104,13 @@ function NavContent({ onClose }: { onClose?: () => void }) {
               >
                 <item.icon className="h-4 w-4 shrink-0" />
                 <span>{item.label}</span>
-                {active && (
-                  <div className="ml-auto w-1.5 h-1.5 rounded-full bg-white/80" />
-                )}
+                {active && <div className="ml-auto w-1.5 h-1.5 rounded-full bg-white/80" />}
               </div>
             </Link>
           );
         })}
       </nav>
 
-      {/* User footer */}
       <div className="px-4 pb-5 pt-3 border-t border-white/[0.07] space-y-2">
         <div className="flex items-center gap-3 px-2 py-2">
           <div
@@ -119,7 +129,10 @@ function NavContent({ onClose }: { onClose?: () => void }) {
           </div>
         </div>
         <button
-          onClick={() => { logout(); onClose?.(); }}
+          onClick={() => {
+            logout();
+            onClose?.();
+          }}
           className="w-full flex items-center gap-2.5 px-2 py-2 rounded-xl text-sm transition-colors"
           style={{ color: "rgba(255,255,255,0.45)" }}
           onMouseEnter={(e) => (e.currentTarget.style.color = "#fff")}
@@ -139,16 +152,15 @@ export function Sidebar() {
 
   return (
     <>
-      {/* Desktop */}
       <aside className="hidden md:flex flex-col w-64 fixed inset-y-0 left-0 z-30 shadow-2xl">
         <NavContent />
       </aside>
 
-      {/* Mobile */}
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetTrigger asChild>
           <Button
-            variant="ghost" size="icon"
+            variant="ghost"
+            size="icon"
             className="md:hidden fixed top-3 left-3 z-40 bg-[#0A0F2C] text-white hover:bg-[#1F6FEB] border border-white/10 shadow-lg"
           >
             <Menu className="h-5 w-5" />

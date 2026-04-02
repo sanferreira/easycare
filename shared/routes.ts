@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { EnvironmentSettings } from './environment';
 import { 
   residentFormSchema,
   medicationFormSchema,
@@ -12,6 +13,10 @@ import {
   shiftAssignments,
   insertUserSchema
 } from './schema';
+
+const staffApiFormSchema = staffFormSchema.extend({
+  portalPassword: z.string().optional(),
+});
 
 export const errorSchemas = {
   validation: z.object({
@@ -153,7 +158,7 @@ export const api = {
     create: {
       method: 'POST' as const,
       path: '/api/staff',
-      input: staffFormSchema,
+      input: staffApiFormSchema,
       responses: {
         201: z.custom<typeof staff.$inferSelect>(),
         400: errorSchemas.validation,
@@ -162,7 +167,7 @@ export const api = {
     update: {
       method: 'PUT' as const,
       path: '/api/staff/:id',
-      input: staffFormSchema.partial(),
+      input: staffApiFormSchema.partial(),
       responses: {
         200: z.custom<typeof staff.$inferSelect>(),
         404: errorSchemas.notFound,
@@ -266,6 +271,23 @@ export const api = {
       },
     },
   },
+  environmentSettings: {
+    get: {
+      method: 'GET' as const,
+      path: '/api/environment-settings',
+      responses: {
+        200: z.custom<EnvironmentSettings>(),
+      },
+    },
+    update: {
+      method: 'PUT' as const,
+      path: '/api/environment-settings',
+      input: z.custom<EnvironmentSettings>(),
+      responses: {
+        200: z.custom<EnvironmentSettings>(),
+      },
+    },
+  },
 };
 
 export type CreateResidentRequest = z.infer<typeof api.residents.create.input>;
@@ -275,6 +297,7 @@ export type UpdateMedicationRequest = z.infer<typeof api.medications.update.inpu
 export type CreateStaffRequest = z.infer<typeof api.staff.create.input>;
 export type UpdateStaffRequest = z.infer<typeof api.staff.update.input>;
 export type CreateOccurrenceRequest = z.infer<typeof api.occurrences.create.input>;
+export type UpdateEnvironmentSettingsRequest = z.infer<typeof api.environmentSettings.update.input>;
 
 export function buildUrl(path: string, params?: Record<string, string | number>): string {
   let url = path;

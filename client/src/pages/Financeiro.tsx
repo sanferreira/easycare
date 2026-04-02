@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -89,6 +90,7 @@ export default function Financeiro() {
   const [editingContract, setEditingContract] = useState<(Contract & { residentName?: string }) | null>(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { confirm, confirmDialog } = useConfirmDialog();
   const { data: residents = [] } = useResidents({ status: "active" });
 
   const { data: contracts = [], isLoading: contractsLoading } = useQuery<(Contract & { residentName?: string })[]>({
@@ -500,8 +502,14 @@ export default function Financeiro() {
                         className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 h-8 w-8 p-0"
                         disabled={deleteMonthlyFee.isPending}
                         onClick={() => {
-                          if (confirm(`Excluir esta cobrança de ${fee.residentName}?`))
-                            deleteMonthlyFee.mutate(fee.id);
+                          confirm({
+                            title: "Excluir cobrança",
+                            description: `Excluir esta cobrança de ${fee.residentName}?`,
+                            confirmText: "Excluir",
+                            pendingText: "Excluindo...",
+                            variant: "destructive",
+                            onConfirm: () => deleteMonthlyFee.mutateAsync(fee.id),
+                          });
                         }}
                         data-testid={`button-delete-fee-${fee.id}`}
                       >
@@ -566,8 +574,14 @@ export default function Financeiro() {
                         className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                         disabled={deleteContract.isPending}
                         onClick={() => {
-                          if (confirm(`Excluir contrato de ${c.residentName}? Esta ação não pode ser desfeita.`))
-                            deleteContract.mutate(c.id);
+                          confirm({
+                            title: "Excluir contrato",
+                            description: `Excluir contrato de ${c.residentName}? Esta ação não pode ser desfeita.`,
+                            confirmText: "Excluir",
+                            pendingText: "Excluindo...",
+                            variant: "destructive",
+                            onConfirm: () => deleteContract.mutateAsync(c.id),
+                          });
                         }}
                         data-testid={`button-delete-contract-${c.id}`}
                       >
@@ -620,6 +634,7 @@ export default function Financeiro() {
           )}
         </DialogContent>
       </Dialog>
+      {confirmDialog}
     </div>
   );
 }

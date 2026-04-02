@@ -26,7 +26,17 @@ export function useCreateStaff() {
         body: JSON.stringify(validated),
         credentials: "include",
       });
-      if (!res.ok) throw new Error('Falha ao adicionar membro');
+      if (!res.ok) {
+        const fallbackMessage = "Falha ao adicionar membro";
+        let message = fallbackMessage;
+        try {
+          const data = await res.json();
+          if (typeof data?.message === "string" && data.message.trim()) {
+            message = data.message;
+          }
+        } catch {}
+        throw new Error(message);
+      }
       return api.staff.create.responses[201].parse(await res.json());
     },
     onSuccess: () => {
@@ -53,7 +63,17 @@ export function useUpdateStaff() {
         body: JSON.stringify(validated),
         credentials: "include",
       });
-      if (!res.ok) throw new Error('Falha ao atualizar membro');
+      if (!res.ok) {
+        const fallbackMessage = "Falha ao atualizar membro";
+        let message = fallbackMessage;
+        try {
+          const data = await res.json();
+          if (typeof data?.message === "string" && data.message.trim()) {
+            message = data.message;
+          }
+        } catch {}
+        throw new Error(message);
+      }
       return api.staff.update.responses[200].parse(await res.json());
     },
     onSuccess: () => {

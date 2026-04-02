@@ -1,14 +1,17 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
+import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { ROLE_LABELS } from "@/lib/permissions";
+import { DEFAULT_ENVIRONMENT_SETTINGS, normalizeEnvironmentSettings } from "@shared/environment";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
@@ -20,6 +23,8 @@ import {
 } from "lucide-react";
 import { digitsOnly, maskCep, maskCnpj, maskPhoneBR } from "@/lib/masks";
 
+type OrgStatus = "active" | "inactive" | "restricted";
+
 interface Organization {
   id: number;
   name: string;
@@ -27,6 +32,8 @@ interface Organization {
   phone?: string;
   cnpj?: string;
   capacity?: number;
+  status?: OrgStatus;
+  environmentSettings?: string | null;
   active: boolean;
   createdAt: string;
 }
@@ -69,6 +76,51 @@ function isValidCnpj(value: string): boolean {
   return digitsOnly(value).length === 14;
 }
 
+function resolveOrgStatus(org: Pick<Organization, "status" | "active">): OrgStatus {
+  if (org.status === "active" || org.status === "inactive" || org.status === "restricted") {
+    return org.status;
+  }
+  return org.active ? "active" : "inactive";
+}
+
+function getOrgStatusBadge(status: OrgStatus) {
+  if (status === "active") {
+    return { label: "Ativa", className: "bg-green-100 text-green-700 border border-green-200" };
+  }
+  if (status === "restricted") {
+    return { label: "Restrita", className: "bg-orange-100 text-orange-700 border border-orange-200" };
+  }
+  return { label: "Inativa", className: "bg-neutral-100 text-neutral-600 border border-neutral-200" };
+}
+
+function parseOrgEnvironmentSettings(raw?: string | null) {
+  if (!raw || typeof raw !== "string") return DEFAULT_ENVIRONMENT_SETTINGS;
+  try {
+    return normalizeEnvironmentSettings(JSON.parse(raw));
+  } catch {
+    return DEFAULT_ENVIRONMENT_SETTINGS;
+  }
+}
+
+function toRoleLabel(value: string): string {
+  return value
+    .split("_")
+    .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : part))
+    .join(" ");
+}
+
+function getRoleOptionsForOrganization(org: Organization) {
+  const settings = parseOrgEnvironmentSettings(org.environmentSettings);
+  const staffLabelMap = new Map(
+    settings.availableStaffRoles.map((option) => [option.value, option.label] as const),
+  );
+  const roles = Object.keys(settings.roleRoutes).sort((left, right) => left.localeCompare(right));
+  return roles.map((role) => ({
+    value: role,
+    label: ROLE_LABELS[role] ?? staffLabelMap.get(role) ?? toRoleLabel(role),
+  }));
+}
+
 async function fetchAddressByCep(cep: string): Promise<{ cep: string; address: string }> {
   const normalizedCep = digitsOnly(cep);
   if (normalizedCep.length !== 8) {
@@ -92,12 +144,29 @@ async function fetchAddressByCep(cep: string): Promise<{ cep: string; address: s
 
 function OrgCard({ org }: { org: Organization }) {
   const [expanded, setExpanded] = useState(false);
+  const orgStatus = resolveOrgStatus(org);
+  const orgBadge = getOrgStatusBadge(orgStatus);
+  const { data: latestOrg } = useQuery<Organization>({
+    queryKey: [`/api/organizations/${org.id}`],
+    enabled: expanded,
+    queryFn: async () => {
+      const res = await fetch(`/api/organizations/${org.id}`);
+      if (!res.ok) throw new Error("Erro ao carregar organização");
+      return res.json();
+    },
+  });
+  const roleSource = latestOrg ?? org;
+  const roleOptions = useMemo(() => getRoleOptionsForOrganization(roleSource), [roleSource.environmentSettings]);
+  const defaultRole = useMemo(() => {
+    const staffFallback = roleOptions.find((option) => option.value === "staff");
+    return staffFallback?.value ?? roleOptions[0]?.value ?? "staff";
+  }, [roleOptions]);
   const [showAddUser, setShowAddUser] = useState(false);
   const [showEditUser, setShowEditUser] = useState(false);
   const [showEditOrg, setShowEditOrg] = useState(false);
   const [editingUser, setEditingUser] = useState<OrgUser | null>(null);
-  const [userForm, setUserForm] = useState({ name: "", username: "", password: "", role: "staff" });
-  const [editForm, setEditForm] = useState({ name: "", username: "", password: "", role: "staff" });
+  const [userForm, setUserForm] = useState({ name: "", username: "", password: "", role: defaultRole });
+  const [editForm, setEditForm] = useState({ name: "", username: "", password: "", role: defaultRole });
   const [editOrgForm, setEditOrgForm] = useState({
     name: org.name,
     address: removeCepPrefixFromAddress(org.address),
@@ -105,12 +174,51 @@ function OrgCard({ org }: { org: Organization }) {
     phone: maskPhoneBR(org.phone ?? ""),
     cnpj: maskCnpj(org.cnpj ?? ""),
     capacity: String(org.capacity ?? 50),
+    status: orgStatus as OrgStatus,
   });
   const [isLookingUpEditCep, setIsLookingUpEditCep] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showEditPassword, setShowEditPassword] = useState(false);
   const { toast } = useToast();
+  const { confirm, confirmDialog } = useConfirmDialog();
   const hasValidEditCnpj = isValidCnpj(editOrgForm.cnpj);
+  const resolveRoleSelectOptions = (currentRole: string) => {
+    if (!currentRole || roleOptions.some((option) => option.value === currentRole)) {
+      return roleOptions;
+    }
+    return [
+      ...roleOptions,
+      {
+        value: currentRole,
+        label: ROLE_LABELS[currentRole] ?? toRoleLabel(currentRole),
+      },
+    ];
+  };
+  const addUserRoleOptions = useMemo(
+    () => resolveRoleSelectOptions(userForm.role),
+    [roleOptions, userForm.role],
+  );
+  const editUserRoleOptions = useMemo(
+    () => resolveRoleSelectOptions(editForm.role),
+    [roleOptions, editForm.role],
+  );
+  const roleLabelMap = useMemo(
+    () => new Map(roleOptions.map((option) => [option.value, option.label] as const)),
+    [roleOptions],
+  );
+
+  useEffect(() => {
+    setUserForm((current) => (
+      roleOptions.some((option) => option.value === current.role)
+        ? current
+        : { ...current, role: defaultRole }
+    ));
+    setEditForm((current) => (
+      roleOptions.some((option) => option.value === current.role)
+        ? current
+        : { ...current, role: defaultRole }
+    ));
+  }, [defaultRole, roleOptions]);
 
   const { data: orgUsers = [], refetch: refetchUsers } = useQuery<OrgUser[]>({
     queryKey: [`/api/organizations/${org.id}/users`],
@@ -144,6 +252,7 @@ function OrgCard({ org }: { org: Organization }) {
           phone: editOrgForm.phone.trim(),
           cnpj: editOrgForm.cnpj.trim(),
           capacity: Number(editOrgForm.capacity) || 50,
+          status: editOrgForm.status,
         }),
       });
       if (!res.ok) {
@@ -156,6 +265,7 @@ function OrgCard({ org }: { org: Organization }) {
       toast({ title: "Organização atualizada!" });
       setShowEditOrg(false);
       queryClient.invalidateQueries({ queryKey: ["/api/organizations"] });
+      queryClient.invalidateQueries({ queryKey: [`/api/organizations/${org.id}`] });
     },
     onError: (err: Error) => {
       toast({ title: "Erro", description: err.message, variant: "destructive" });
@@ -178,7 +288,7 @@ function OrgCard({ org }: { org: Organization }) {
     onSuccess: () => {
       toast({ title: "Usuário criado com sucesso!" });
       setShowAddUser(false);
-      setUserForm({ name: "", username: "", password: "", role: "staff" });
+      setUserForm({ name: "", username: "", password: "", role: defaultRole });
       refetchUsers();
     },
     onError: (err: Error) => {
@@ -260,8 +370,8 @@ function OrgCard({ org }: { org: Organization }) {
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="font-semibold text-foreground">{org.name}</h3>
-                <Badge variant={org.active ? "default" : "secondary"} className="text-xs">
-                  {org.active ? "Ativa" : "Inativa"}
+                <Badge className={`text-xs ${orgBadge.className}`}>
+                  {orgBadge.label}
                 </Badge>
               </div>
               {org.address && <p className="text-xs text-muted-foreground mt-0.5">{org.address}</p>}
@@ -293,6 +403,7 @@ function OrgCard({ org }: { org: Organization }) {
                   phone: maskPhoneBR(org.phone ?? ""),
                   cnpj: maskCnpj(org.cnpj ?? ""),
                   capacity: String(org.capacity ?? 50),
+                  status: resolveOrgStatus(org),
                 });
                 setShowEditOrg(true);
               }}
@@ -304,9 +415,14 @@ function OrgCard({ org }: { org: Organization }) {
             <Button
               variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive"
               onClick={() => {
-                if (confirm(`Remover "${org.name}"? Todos os dados serão perdidos.`)) {
-                  deleteOrgMutation.mutate();
-                }
+                confirm({
+                  title: "Remover organização",
+                  description: `Remover "${org.name}"? Todos os dados serão perdidos.`,
+                  confirmText: "Remover",
+                  pendingText: "Removendo...",
+                  variant: "destructive",
+                  onConfirm: () => deleteOrgMutation.mutateAsync(),
+                });
               }}
               data-testid={`button-delete-org-${org.id}`}
               title="Remover organização"
@@ -324,7 +440,15 @@ function OrgCard({ org }: { org: Organization }) {
             <div className="flex items-center justify-between">
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Usuários</p>
               <Button variant="outline" size="sm" className="gap-1 text-xs h-7"
-                onClick={() => setShowAddUser(true)} data-testid={`button-add-user-${org.id}`}>
+                onClick={() => {
+                  setUserForm((current) => ({
+                    ...current,
+                    role: roleOptions.some((option) => option.value === current.role)
+                      ? current.role
+                      : defaultRole,
+                  }));
+                  setShowAddUser(true);
+                }} data-testid={`button-add-user-${org.id}`}>
                 <UserPlus className="h-3 w-3" />
                 Novo usuário
               </Button>
@@ -339,7 +463,7 @@ function OrgCard({ org }: { org: Organization }) {
                     data-testid={`user-row-${u.id}`}>
                     <div>
                       <p className="text-sm font-medium">{u.name}</p>
-                      <p className="text-xs text-muted-foreground">@{u.username} · {ROLE_LABELS[u.role] ?? u.role}</p>
+                      <p className="text-xs text-muted-foreground">@{u.username} - {roleLabelMap.get(u.role) ?? ROLE_LABELS[u.role] ?? u.role}</p>
                     </div>
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100">
                       <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary"
@@ -401,16 +525,11 @@ function OrgCard({ org }: { org: Organization }) {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="admin">Administrador</SelectItem>
-                      <SelectItem value="enfermeiro">Enfermeiro(a)</SelectItem>
-                      <SelectItem value="medico">Médico(a)</SelectItem>
-                      <SelectItem value="tecnico_enfermagem">Técnico(a) de Enfermagem</SelectItem>
-                      <SelectItem value="cuidador">Cuidador(a)</SelectItem>
-                      <SelectItem value="fisioterapeuta">Fisioterapeuta</SelectItem>
-                      <SelectItem value="nutricionista">Nutricionista</SelectItem>
-                      <SelectItem value="recepcionista">Recepcionista</SelectItem>
-                      <SelectItem value="administrativo">Administrativo</SelectItem>
-                      <SelectItem value="staff">Colaborador</SelectItem>
+                      {addUserRoleOptions.map((option) => (
+                        <SelectItem key={`add-user-role-${option.value}`} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -451,16 +570,11 @@ function OrgCard({ org }: { org: Organization }) {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="admin">Administrador</SelectItem>
-                      <SelectItem value="enfermeiro">Enfermeiro(a)</SelectItem>
-                      <SelectItem value="medico">Médico(a)</SelectItem>
-                      <SelectItem value="tecnico_enfermagem">Técnico(a) de Enfermagem</SelectItem>
-                      <SelectItem value="cuidador">Cuidador(a)</SelectItem>
-                      <SelectItem value="fisioterapeuta">Fisioterapeuta</SelectItem>
-                      <SelectItem value="nutricionista">Nutricionista</SelectItem>
-                      <SelectItem value="recepcionista">Recepcionista</SelectItem>
-                      <SelectItem value="administrativo">Administrativo</SelectItem>
-                      <SelectItem value="staff">Colaborador</SelectItem>
+                      {editUserRoleOptions.map((option) => (
+                        <SelectItem key={`edit-user-role-${option.value}`} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -547,6 +661,25 @@ function OrgCard({ org }: { org: Organization }) {
                 data-testid="input-edit-org-cnpj" />
             </div>
             <div>
+              <Label className="text-sm font-medium">Status</Label>
+              <Select
+                value={editOrgForm.status}
+                onValueChange={(value: OrgStatus) => setEditOrgForm({ ...editOrgForm, status: value })}
+              >
+                <SelectTrigger className="mt-1.5" data-testid="select-edit-org-status">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">Ativa</SelectItem>
+                  <SelectItem value="inactive">Inativa</SelectItem>
+                  <SelectItem value="restricted">Restrita</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground mt-1">
+                Inativa/Restrita bloqueiam acesso dos usuários desta organização.
+              </p>
+            </div>
+            <div>
               <Label className="text-sm font-medium">Capacidade de Vagas</Label>
               <Input className="mt-1.5" type="number" min="1" placeholder="Ex: 30"
                 value={editOrgForm.capacity} onChange={(e) => setEditOrgForm({ ...editOrgForm, capacity: e.target.value })}
@@ -563,21 +696,32 @@ function OrgCard({ org }: { org: Organization }) {
           </div>
         </DialogContent>
       </Dialog>
+      {confirmDialog}
     </Card>
   );
 }
 
 export default function Admin() {
   const [showAddOrg, setShowAddOrg] = useState(false);
-  const [orgForm, setOrgForm] = useState({ name: "", cep: "", address: "", phone: "", cnpj: "", capacity: "50" });
+  const [showInactive, setShowInactive] = useState(false);
+  const [orgForm, setOrgForm] = useState({
+    name: "",
+    cep: "",
+    address: "",
+    phone: "",
+    cnpj: "",
+    capacity: "50",
+    status: "active" as OrgStatus,
+  });
   const [isLookingUpOrgCep, setIsLookingUpOrgCep] = useState(false);
   const { toast } = useToast();
   const hasValidOrgCnpj = isValidCnpj(orgForm.cnpj);
 
   const { data: organizations = [], isLoading } = useQuery<Organization[]>({
-    queryKey: ["/api/organizations"],
+    queryKey: ["/api/organizations", { showInactive }],
     queryFn: async () => {
-      const res = await fetch("/api/organizations");
+      const url = showInactive ? "/api/organizations?includeInactive=true" : "/api/organizations";
+      const res = await fetch(url);
       if (!res.ok) throw new Error("Erro ao carregar organizações");
       return res.json();
     },
@@ -595,6 +739,7 @@ export default function Admin() {
           phone: orgForm.phone.trim(),
           cnpj: orgForm.cnpj.trim(),
           capacity: Number(orgForm.capacity) || 50,
+          status: orgForm.status,
         }),
       });
       if (!res.ok) {
@@ -606,7 +751,7 @@ export default function Admin() {
     onSuccess: () => {
       toast({ title: "Organização criada com sucesso!" });
       setShowAddOrg(false);
-      setOrgForm({ name: "", cep: "", address: "", phone: "", cnpj: "", capacity: "50" });
+      setOrgForm({ name: "", cep: "", address: "", phone: "", cnpj: "", capacity: "50", status: "active" });
       queryClient.invalidateQueries({ queryKey: ["/api/organizations"] });
     },
     onError: (err: Error) => {
@@ -651,6 +796,18 @@ export default function Admin() {
           <Plus className="h-4 w-4" />
           Nova Organização
         </Button>
+      </div>
+
+      <div className="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3">
+        <div>
+          <p className="text-sm font-medium text-foreground">Mostrar organizações inativas</p>
+          <p className="text-xs text-muted-foreground">Por padrão, organizações inativas ficam ocultas da lista.</p>
+        </div>
+        <Switch
+          checked={showInactive}
+          onCheckedChange={setShowInactive}
+          data-testid="toggle-show-inactive-orgs"
+        />
       </div>
 
       {isLoading ? (
@@ -724,6 +881,22 @@ export default function Admin() {
                 data-testid="input-org-cnpj" />
             </div>
             <div>
+              <Label className="text-sm font-medium">Status</Label>
+              <Select
+                value={orgForm.status}
+                onValueChange={(value: OrgStatus) => setOrgForm({ ...orgForm, status: value })}
+              >
+                <SelectTrigger className="mt-1.5" data-testid="select-org-status">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">Ativa</SelectItem>
+                  <SelectItem value="inactive">Inativa</SelectItem>
+                  <SelectItem value="restricted">Restrita</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
               <Label className="text-sm font-medium">Capacidade de Vagas *</Label>
               <Input className="mt-1.5" type="number" min="1" placeholder="Ex: 30"
                 value={orgForm.capacity} onChange={(e) => setOrgForm({ ...orgForm, capacity: e.target.value })}
@@ -743,3 +916,6 @@ export default function Admin() {
     </div>
   );
 }
+
+
+
