@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useStaff, useCreateStaff, useUpdateStaff } from "@/hooks/use-staff";
 import { useEnvironmentSettings } from "@/hooks/use-environment-settings";
@@ -543,6 +543,7 @@ function StaffDialog({
   const [portalPassword, setPortalPassword] = useState("");
   const [showPortalPassword, setShowPortalPassword] = useState(false);
   const [workSchedule, setWorkSchedule] = useState<WorkScheduleConfig>(createEmptyWorkSchedule());
+  const initializedFormKeyRef = useRef<string | null>(null);
   const normalizedScheduleConfigurableProfiles = useMemo(
     () => new Set(scheduleConfigurableProfiles.map((profile) => normalizeShiftProfile(profile))),
     [scheduleConfigurableProfiles],
@@ -649,7 +650,14 @@ function StaffDialog({
   }, [portalAccessEnabled, portalPassword.length]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      initializedFormKeyRef.current = null;
+      return;
+    }
+
+    const formKey = staff ? `edit:${staff.id}` : "create";
+    if (initializedFormKeyRef.current === formKey) return;
+    initializedFormKeyRef.current = formKey;
 
     if (staff) {
       const normalizedStaffRole = normalizeStaffRoleValue(staff.role);
@@ -685,7 +693,16 @@ function StaffDialog({
     setPortalPassword("");
     setShowPortalPassword(false);
     setWorkSchedule(createEmptyWorkSchedule());
-  }, [open, staff, form, fallbackShiftProfile, fallbackStaffRole, shiftProfileOptions]);
+  }, [
+    open,
+    staff,
+    defaultValues,
+    fallbackShiftProfile,
+    fallbackStaffRole,
+    shiftProfileOptions,
+    staffRoleOptions,
+    form,
+  ]);
 
   async function handleLookupCep() {
     const currentCep = form.getValues("cep");

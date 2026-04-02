@@ -244,12 +244,32 @@ export const monthlyFees = pgTable("monthly_fees", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// ===== ACCOUNTS PAYABLE (TEAM / OPERATIONAL EXPENSES) =====
+export const accountsPayable = pgTable("accounts_payable", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull(),
+  staffId: integer("staff_id"),
+  title: text("title").notNull(),
+  category: text("category").notNull().default("staff"), // staff | encargos | servicos | outros
+  referenceMonth: text("reference_month"), // "2026-04"
+  dueDate: date("due_date").notNull(),
+  amount: real("amount").notNull(),
+  discount: real("discount").default(0),
+  extra: real("extra").default(0),
+  status: text("status").notNull().default("pending"), // pending | paid | overdue | cancelled
+  paidAt: timestamp("paid_at"),
+  paymentMethod: text("payment_method"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 // ===== RELATIONS =====
 export const organizationsRelations = relations(organizations, ({ many }) => ({
   users: many(users),
   residents: many(residents),
   staff: many(staff),
   contracts: many(contracts),
+  accountsPayable: many(accountsPayable),
 }));
 
 export const usersRelations = relations(users, ({ one }) => ({
@@ -271,6 +291,7 @@ export const residentsRelations = relations(residents, ({ one, many }) => ({
 export const staffRelations = relations(staff, ({ one, many }) => ({
   organization: one(organizations, { fields: [staff.organizationId], references: [organizations.id] }),
   shiftAssignments: many(shiftAssignments),
+  accountsPayable: many(accountsPayable),
 }));
 
 export const shiftAssignmentsRelations = relations(shiftAssignments, ({ one }) => ({
@@ -314,6 +335,10 @@ export const monthlyFeesRelations = relations(monthlyFees, ({ one }) => ({
   resident: one(residents, { fields: [monthlyFees.residentId], references: [residents.id] }),
 }));
 
+export const accountsPayableRelations = relations(accountsPayable, ({ one }) => ({
+  staff: one(staff, { fields: [accountsPayable.staffId], references: [staff.id] }),
+}));
+
 // ===== INSERT SCHEMAS (server use) =====
 export const insertOrganizationSchema = createInsertSchema(organizations).omit({ id: true, createdAt: true });
 export const insertUserSchema = createInsertSchema(users).omit({ id: true });
@@ -327,6 +352,7 @@ export const insertComorbiditySchema = createInsertSchema(comorbidities).omit({ 
 export const insertFamilyMemberSchema = createInsertSchema(familyMembers).omit({ id: true, createdAt: true });
 export const insertContractSchema = createInsertSchema(contracts).omit({ id: true, createdAt: true });
 export const insertMonthlyFeeSchema = createInsertSchema(monthlyFees).omit({ id: true, createdAt: true });
+export const insertAccountPayableSchema = createInsertSchema(accountsPayable).omit({ id: true, createdAt: true });
 export const insertMedicationAdministrationSchema = createInsertSchema(medicationAdministrations).omit({ id: true });
 
 // ===== FORM SCHEMAS (frontend — organizationId added by backend) =====
@@ -343,6 +369,7 @@ export const comorbidityFormSchema = createInsertSchema(comorbidities).omit({ id
 export const familyMemberFormSchema = createInsertSchema(familyMembers).omit({ id: true, organizationId: true, createdAt: true });
 export const contractFormSchema = createInsertSchema(contracts).omit({ id: true, organizationId: true, createdAt: true });
 export const monthlyFeeFormSchema = createInsertSchema(monthlyFees).omit({ id: true, organizationId: true, createdAt: true });
+export const accountPayableFormSchema = createInsertSchema(accountsPayable).omit({ id: true, organizationId: true, createdAt: true });
 export const medicationAdministrationFormSchema = createInsertSchema(medicationAdministrations).omit({ id: true, organizationId: true, administeredAt: true });
 
 // ===== TYPES =====
@@ -358,6 +385,7 @@ export type Comorbidity = typeof comorbidities.$inferSelect;
 export type FamilyMember = typeof familyMembers.$inferSelect;
 export type Contract = typeof contracts.$inferSelect;
 export type MonthlyFee = typeof monthlyFees.$inferSelect;
+export type AccountPayable = typeof accountsPayable.$inferSelect;
 export type MedicationAdministration = typeof medicationAdministrations.$inferSelect;
 
 export type InsertOrganization = z.infer<typeof insertOrganizationSchema>;
@@ -372,6 +400,7 @@ export type InsertComorbidity = z.infer<typeof insertComorbiditySchema>;
 export type InsertFamilyMember = z.infer<typeof insertFamilyMemberSchema>;
 export type InsertContract = z.infer<typeof insertContractSchema>;
 export type InsertMonthlyFee = z.infer<typeof insertMonthlyFeeSchema>;
+export type InsertAccountPayable = z.infer<typeof insertAccountPayableSchema>;
 export type InsertMedicationAdministration = z.infer<typeof insertMedicationAdministrationSchema>;
 
 export type ResidentFormInput = z.infer<typeof residentFormSchema>;
@@ -386,6 +415,7 @@ export type UpdateShiftAssignmentRequest = Partial<InsertShiftAssignment>;
 export type UpdateOccurrenceRequest = Partial<InsertOccurrence>;
 export type UpdateContractRequest = Partial<InsertContract>;
 export type UpdateMonthlyFeeRequest = Partial<InsertMonthlyFee>;
+export type UpdateAccountPayableRequest = Partial<InsertAccountPayable>;
 
 export type DashboardStats = {
   totalResidents: number;

@@ -6,11 +6,13 @@ import {
   staffFormSchema,
   occurrenceFormSchema,
   shiftAssignmentFormSchema,
+  accountPayableFormSchema,
   residents,
   medications,
   staff,
   occurrences,
   shiftAssignments,
+  accountsPayable,
   insertUserSchema
 } from './schema';
 
@@ -265,6 +267,46 @@ export const api = {
     delete: {
       method: 'DELETE' as const,
       path: '/api/shift-assignments/:id',
+      responses: {
+        204: z.void(),
+        404: errorSchemas.notFound,
+      },
+    },
+  },
+  accountsPayable: {
+    list: {
+      method: 'GET' as const,
+      path: '/api/accounts-payable',
+      input: z.object({
+        staffId: z.coerce.number().optional(),
+        status: z.enum(['pending', 'paid', 'overdue', 'cancelled']).optional(),
+        referenceMonth: z.string().optional(),
+      }).optional(),
+      responses: {
+        200: z.array(z.custom<typeof accountsPayable.$inferSelect & { staffName?: string }>()),
+      },
+    },
+    create: {
+      method: 'POST' as const,
+      path: '/api/accounts-payable',
+      input: accountPayableFormSchema,
+      responses: {
+        201: z.custom<typeof accountsPayable.$inferSelect>(),
+        400: errorSchemas.validation,
+      },
+    },
+    update: {
+      method: 'PUT' as const,
+      path: '/api/accounts-payable/:id',
+      input: accountPayableFormSchema.partial(),
+      responses: {
+        200: z.custom<typeof accountsPayable.$inferSelect>(),
+        404: errorSchemas.notFound,
+      },
+    },
+    delete: {
+      method: 'DELETE' as const,
+      path: '/api/accounts-payable/:id',
       responses: {
         204: z.void(),
         404: errorSchemas.notFound,

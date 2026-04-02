@@ -144,6 +144,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     { pattern: /^\/api\/shift-assignments(?:\/|$)/, route: "/escalas" },
     { pattern: /^\/api\/contracts(?:\/|$)/, route: "/financeiro" },
     { pattern: /^\/api\/monthly-fees(?:\/|$)/, route: "/financeiro" },
+    { pattern: /^\/api\/accounts-payable(?:\/|$)/, route: "/financeiro" },
     { pattern: /^\/api\/occurrences(?:\/|$)/, route: "/occurrences" },
     { pattern: /^\/api\/family(?:\/|$)/, route: "/prontuario" },
     { pattern: /^\/api\/residents(?:\/|$)/, route: "/residents" },
@@ -2117,6 +2118,33 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.delete("/api/monthly-fees/:id", requireAuth, requireRole(...FINANCIAL_ROLES), async (req, res) => {
     const orgId = getOrgId(req);
     await storage.deleteMonthlyFee(orgId, Number(req.params.id));
+    res.status(204).send();
+  });
+
+  // ===== ACCOUNTS PAYABLE =====
+  app.get("/api/accounts-payable", requireAuth, requireRole(...FINANCIAL_ROLES), async (req, res) => {
+    const orgId = getOrgId(req);
+    res.json(await storage.getAccountsPayable(orgId, {
+      staffId: req.query.staffId ? Number(req.query.staffId) : undefined,
+      status: req.query.status as string | undefined,
+      referenceMonth: req.query.referenceMonth as string | undefined,
+    }));
+  });
+  app.post("/api/accounts-payable", requireAuth, requireRole(...FINANCIAL_ROLES), async (req, res) => {
+    const orgId = getOrgId(req);
+    res.status(201).json(await storage.createAccountPayable({ ...req.body, organizationId: orgId }));
+  });
+  app.put("/api/accounts-payable/:id", requireAuth, requireRole(...FINANCIAL_ROLES), async (req, res) => {
+    const orgId = getOrgId(req);
+    const body = { ...req.body };
+    if (body.paidAt && typeof body.paidAt === "string") {
+      body.paidAt = new Date(body.paidAt);
+    }
+    res.json(await storage.updateAccountPayable(orgId, Number(req.params.id), body));
+  });
+  app.delete("/api/accounts-payable/:id", requireAuth, requireRole(...FINANCIAL_ROLES), async (req, res) => {
+    const orgId = getOrgId(req);
+    await storage.deleteAccountPayable(orgId, Number(req.params.id));
     res.status(204).send();
   });
 

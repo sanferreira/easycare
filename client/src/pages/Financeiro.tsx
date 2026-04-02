@@ -14,14 +14,15 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useResidents } from "@/hooks/use-residents";
+import { useStaff } from "@/hooks/use-staff";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import {
   DollarSign, FileText, Plus, TrendingUp, AlertCircle, CheckCircle2,
-  Clock, User, Trash2, Pencil
+  Clock, User, Trash2, Pencil, Wallet
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import type { Contract, MonthlyFee } from "@shared/schema";
+import type { AccountPayable, Contract, MonthlyFee } from "@shared/schema";
 
 const PLAN_LABELS: Record<string, string> = {
   standard: "Standard",
@@ -40,6 +41,20 @@ const STATUS_CONTRACT: Record<string, { label: string; color: string }> = {
   active: { label: "Ativo", color: "#22C55E" },
   suspended: { label: "Suspenso", color: "#F59E0B" },
   terminated: { label: "Encerrado", color: "#EF4444" },
+};
+
+const PAYABLE_CATEGORY_LABELS: Record<string, string> = {
+  staff: "Equipe/Cuidador",
+  encargos: "Encargos",
+  servicos: "Servicos",
+  outros: "Outros",
+};
+
+const STATUS_PAYABLE: Record<string, { label: string; color: string; bg: string }> = {
+  pending: { label: "Pendente", color: "#F59E0B", bg: "#FEF3C7" },
+  paid: { label: "Pago", color: "#22C55E", bg: "#DCFCE7" },
+  overdue: { label: "Em Atraso", color: "#EF4444", bg: "#FEE2E2" },
+  cancelled: { label: "Cancelado", color: "#6B7280", bg: "#F3F4F6" },
 };
 
 const contractSchema = z.object({
@@ -65,8 +80,31 @@ const feeSchema = z.object({
   notes: z.string().optional(),
 });
 
+const payableSchema = z.object({
+  title: z.string().min(2, "Descricao obrigatoria"),
+  category: z.enum(["staff", "encargos", "servicos", "outros"]).default("staff"),
+  staffId: z.coerce.number().optional().nullable(),
+  referenceMonth: z.string().optional(),
+  dueDate: z.string().min(1, "Vencimento obrigatorio"),
+  amount: z.coerce.number().min(1, "Valor obrigatorio"),
+  discount: z.coerce.number().default(0),
+  extra: z.coerce.number().default(0),
+  status: z.enum(["pending", "paid", "overdue", "cancelled"]).default("pending"),
+  paymentMethod: z.string().optional(),
+  notes: z.string().optional(),
+});
+
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
+}
+
+function parseDateOnly(value: string | Date | null | undefined): Date | null {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return new Date(`${value}T00:00:00`);
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
 }
 
 function KpiCard({ title, value, sub, icon: Icon, color }: any) {
@@ -87,11 +125,13 @@ function KpiCard({ title, value, sub, icon: Icon, color }: any) {
 export default function Financeiro() {
   const [contractOpen, setContractOpen] = useState(false);
   const [feeOpen, setFeeOpen] = useState(false);
+  const [payableOpen, setPayableOpen] = useState(false);
   const [editingContract, setEditingContract] = useState<(Contract & { residentName?: string }) | null>(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { confirm, confirmDialog } = useConfirmDialog();
   const { data: residents = [] } = useResidents({ status: "active" });
+  const { data: staff = [] } = useStaff();
 
   const { data: contracts = [], isLoading: contractsLoading } = useQuery<(Contract & { residentName?: string })[]>({
     queryKey: ["/api/contracts"],
@@ -109,21 +149,43 @@ export default function Financeiro() {
     },
   });
 
+  const { data: accountsPayable = [], isLoading: accountsPayableLoading } = useQuery<(AccountPayable & { staffName?: string })[]>({
+    queryKey: ["/api/accounts-payable"],
+    queryFn: async () => {
+      const res = await fetch("/api/accounts-payable", { credentials: "include" });
+      return res.json();
+    },
+  });
+
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
   function effectiveStatus(fee: any): string {
     if (fee.status === "pending" && fee.dueDate) {
-      const due = new Date(fee.dueDate + "T00:00:00");
-      if (due < today) return "overdue";
+      const due = parseDateOnly(fee.dueDate);
+      if (due && due < today) return "overdue";
     }
     return fee.status;
+  }
+
+  function effectivePayableStatus(item: any): string {
+    if (item.status === "pending" && item.dueDate) {
+      const due = parseDateOnly(item.dueDate);
+      if (due && due < today) return "overdue";
+    }
+    return item.status;
   }
 
   const totalPendingFees = fees.filter(f => effectiveStatus(f) === "pending").reduce((acc, f) => acc + (f.amount ?? 0), 0);
   const totalOverdue = fees.filter(f => effectiveStatus(f) === "overdue").reduce((acc, f) => acc + (f.amount ?? 0), 0);
   const totalReceived = fees.filter(f => f.status === "paid").reduce((acc, f) => acc + (f.amount ?? 0), 0);
   const activeContracts = contracts.filter(c => c.status === "active").length;
+  const totalPendingPayables = accountsPayable
+    .filter((item) => effectivePayableStatus(item) === "pending")
+    .reduce((acc, item) => acc + (item.amount ?? 0) + (item.extra ?? 0) - (item.discount ?? 0), 0);
+  const totalOverduePayables = accountsPayable
+    .filter((item) => effectivePayableStatus(item) === "overdue")
+    .reduce((acc, item) => acc + (item.amount ?? 0) + (item.extra ?? 0) - (item.discount ?? 0), 0);
 
   // Delete contract
   const deleteContract = useMutation({
@@ -189,6 +251,34 @@ export default function Financeiro() {
     },
   });
 
+  const deleteAccountPayable = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/accounts-payable/${id}`, { method: "DELETE", credentials: "include" });
+      if (!res.ok) throw new Error("Erro ao excluir conta a pagar");
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/accounts-payable"] });
+      toast({ title: "Conta a pagar excluida" });
+    },
+    onError: () => toast({ variant: "destructive", title: "Erro ao excluir conta a pagar" }),
+  });
+
+  const markPayablePaid = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/accounts-payable/${id}`, {
+        method: "PUT", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "paid", paidAt: new Date().toISOString() }),
+      });
+      if (!res.ok) throw new Error("Erro ao registrar pagamento");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/accounts-payable"] });
+      toast({ title: "Pagamento registrado" });
+    },
+  });
+
   // Contract form
   const contractForm = useForm<z.infer<typeof contractSchema>>({
     resolver: zodResolver(contractSchema),
@@ -238,9 +328,63 @@ export default function Financeiro() {
     },
   });
 
-  // Watch contract ID to auto-fill resident
-  const watchedContractId = feeForm.watch("contractId");
-  const selectedContract = contracts.find((c) => c.id === Number(watchedContractId));
+  const payableForm = useForm<z.infer<typeof payableSchema>>({
+    resolver: zodResolver(payableSchema),
+    defaultValues: {
+      title: "",
+      category: "staff",
+      staffId: undefined,
+      referenceMonth: new Date().toISOString().slice(0, 7),
+      dueDate: new Date().toISOString().split("T")[0],
+      amount: 0,
+      discount: 0,
+      extra: 0,
+      status: "pending",
+      paymentMethod: "",
+      notes: "",
+    },
+  });
+
+  const createAccountPayable = useMutation({
+    mutationFn: async (data: z.infer<typeof payableSchema>) => {
+      const payload = {
+        ...data,
+        staffId: data.category === "staff" && data.staffId ? Number(data.staffId) : null,
+        referenceMonth: data.referenceMonth?.trim() ? data.referenceMonth : null,
+        paymentMethod: data.paymentMethod?.trim() ? data.paymentMethod : null,
+        notes: data.notes?.trim() ? data.notes : null,
+      };
+      const res = await fetch("/api/accounts-payable", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error("Erro");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/accounts-payable"] });
+      setPayableOpen(false);
+      payableForm.reset({
+        title: "",
+        category: "staff",
+        staffId: undefined,
+        referenceMonth: new Date().toISOString().slice(0, 7),
+        dueDate: new Date().toISOString().split("T")[0],
+        amount: 0,
+        discount: 0,
+        extra: 0,
+        status: "pending",
+        paymentMethod: "",
+        notes: "",
+      });
+      toast({ title: "Conta a pagar criada" });
+    },
+    onError: () => toast({ variant: "destructive", title: "Erro ao criar conta a pagar" }),
+  });
+
+  const payableCategory = payableForm.watch("category");
 
   return (
     <div className="space-y-6">
@@ -249,7 +393,7 @@ export default function Financeiro() {
           <h1 className="text-3xl font-bold text-foreground" style={{ fontFamily: "var(--font-display)" }}>
             Financeiro
           </h1>
-          <p className="text-muted-foreground mt-1">Contratos, mensalidades e controle de pagamentos</p>
+          <p className="text-muted-foreground mt-1">Contratos, mensalidades e contas a pagar da equipe</p>
         </div>
         <div className="flex gap-2">
           <Dialog open={contractOpen} onOpenChange={setContractOpen}>
@@ -427,21 +571,152 @@ export default function Financeiro() {
               </Form>
             </DialogContent>
           </Dialog>
+
+          <Dialog open={payableOpen} onOpenChange={setPayableOpen}>
+            <DialogTrigger asChild>
+              <Button size="sm" variant="outline" className="gap-2" data-testid="button-new-payable">
+                <Wallet className="h-4 w-4" />Nova Conta a Pagar
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+              <DialogHeader><DialogTitle>Nova Conta a Pagar</DialogTitle></DialogHeader>
+              <Form {...payableForm}>
+                <form onSubmit={payableForm.handleSubmit((d) => createAccountPayable.mutate(d))} className="space-y-4">
+                  <FormField control={payableForm.control} name="title" render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Descricao *</FormLabel>
+                      <FormControl><Input {...field} placeholder="Ex: Pagamento cuidadora abril/2026" data-testid="input-payable-title" /></FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+                  <div className="grid grid-cols-2 gap-4">
+                    <FormField control={payableForm.control} name="category" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Categoria *</FormLabel>
+                        <Select
+                          onValueChange={(v) => {
+                            field.onChange(v);
+                            if (v !== "staff") payableForm.setValue("staffId", undefined);
+                          }}
+                          value={field.value}
+                        >
+                          <FormControl><SelectTrigger><SelectValue placeholder="Selecionar categoria" /></SelectTrigger></FormControl>
+                          <SelectContent>
+                            <SelectItem value="staff">Equipe/Cuidador</SelectItem>
+                            <SelectItem value="encargos">Encargos</SelectItem>
+                            <SelectItem value="servicos">Servicos</SelectItem>
+                            <SelectItem value="outros">Outros</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                    <FormField control={payableForm.control} name="staffId" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Colaborador</FormLabel>
+                        <Select
+                          onValueChange={(v) => field.onChange(v === "none" ? undefined : Number(v))}
+                          value={field.value ? String(field.value) : "none"}
+                          disabled={payableCategory !== "staff"}
+                        >
+                          <FormControl><SelectTrigger><SelectValue placeholder="Selecionar colaborador" /></SelectTrigger></FormControl>
+                          <SelectContent>
+                            <SelectItem value="none">Nao vincular</SelectItem>
+                            {staff.filter((member: any) => member.active !== false).map((member: any) => (
+                              <SelectItem key={member.id} value={String(member.id)}>{member.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <FormField control={payableForm.control} name="referenceMonth" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Mes Referencia</FormLabel>
+                        <FormControl><Input type="month" {...field} value={field.value ?? ""} /></FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                    <FormField control={payableForm.control} name="dueDate" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Vencimento *</FormLabel>
+                        <FormControl><Input type="date" {...field} /></FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <FormField control={payableForm.control} name="amount" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Valor (R$) *</FormLabel>
+                        <FormControl><Input type="number" step="0.01" {...field} /></FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                    <FormField control={payableForm.control} name="discount" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Desconto</FormLabel>
+                        <FormControl><Input type="number" step="0.01" {...field} /></FormControl>
+                      </FormItem>
+                    )} />
+                    <FormField control={payableForm.control} name="extra" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Adicional</FormLabel>
+                        <FormControl><Input type="number" step="0.01" {...field} /></FormControl>
+                      </FormItem>
+                    )} />
+                  </div>
+                  <FormField control={payableForm.control} name="paymentMethod" render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Forma de Pagamento</FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value ?? ""}>
+                        <FormControl><SelectTrigger><SelectValue placeholder="Selecionar" /></SelectTrigger></FormControl>
+                        <SelectContent>
+                          <SelectItem value="pix">PIX</SelectItem>
+                          <SelectItem value="boleto">Boleto</SelectItem>
+                          <SelectItem value="transferencia">Transferencia</SelectItem>
+                          <SelectItem value="dinheiro">Dinheiro</SelectItem>
+                          <SelectItem value="cartao">Cartao</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </FormItem>
+                  )} />
+                  <FormField control={payableForm.control} name="notes" render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Observacoes</FormLabel>
+                      <FormControl><Textarea rows={2} {...field} value={field.value ?? ""} /></FormControl>
+                    </FormItem>
+                  )} />
+                  <div className="flex justify-end gap-2">
+                    <Button type="button" variant="outline" onClick={() => setPayableOpen(false)}>Cancelar</Button>
+                    <Button type="submit" disabled={createAccountPayable.isPending}>Criar Conta</Button>
+                  </div>
+                </form>
+              </Form>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
 
       {/* KPIs */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <KpiCard title="Contratos Ativos" value={activeContracts} sub="residentes com contrato" icon={FileText} color="#1F6FEB" />
         <KpiCard title="A Receber" value={formatCurrency(totalPendingFees)} sub="mensalidades pendentes" icon={Clock} color="#F59E0B" />
         <KpiCard title="Em Atraso" value={formatCurrency(totalOverdue)} sub="requerem atenção" icon={AlertCircle} color="#EF4444" />
         <KpiCard title="Recebido" value={formatCurrency(totalReceived)} sub="histórico de pagamentos" icon={TrendingUp} color="#22C55E" />
+        <KpiCard title="A Pagar" value={formatCurrency(totalPendingPayables)} sub="despesas pendentes" icon={Wallet} color="#F97316" />
+        <KpiCard title="Atrasadas (Pagar)" value={formatCurrency(totalOverduePayables)} sub="contas vencidas" icon={AlertCircle} color="#DC2626" />
       </div>
 
       <Tabs defaultValue="fees">
         <TabsList>
           <TabsTrigger value="fees" data-testid="tab-fees">
             <DollarSign className="h-3.5 w-3.5 mr-1.5" />Mensalidades
+          </TabsTrigger>
+          <TabsTrigger value="accounts-payable" data-testid="tab-accounts-payable">
+            <Wallet className="h-3.5 w-3.5 mr-1.5" />Contas a Pagar
           </TabsTrigger>
           <TabsTrigger value="contracts" data-testid="tab-contracts">
             <FileText className="h-3.5 w-3.5 mr-1.5" />Contratos
@@ -463,6 +738,7 @@ export default function Financeiro() {
                 const eff = effectiveStatus(fee);
                 const s = STATUS_FEE[eff] ?? { label: eff, color: "#888", bg: "#F3F4F6" };
                 const total = (fee.amount ?? 0) + (fee.fine ?? 0) - (fee.discount ?? 0);
+                const feeDueDate = parseDateOnly(fee.dueDate);
                 return (
                   <div key={fee.id} className="bg-card border border-border/60 rounded-2xl p-4 shadow-sm flex flex-wrap items-center gap-4" data-testid={`fee-${fee.id}`}>
                     <div className="flex-1 min-w-0">
@@ -473,7 +749,7 @@ export default function Financeiro() {
                         </Badge>
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        Referência: {fee.referenceMonth} · Vencimento: {fee.dueDate ? format(new Date(fee.dueDate + "T00:00:00"), "dd/MM/yyyy", { locale: ptBR }) : "—"}
+                        Referência: {fee.referenceMonth} · Vencimento: {feeDueDate ? format(feeDueDate, "dd/MM/yyyy", { locale: ptBR }) : "—"}
                       </p>
                       {fee.paidAt && (
                         <p className="text-xs text-green-600 mt-0.5">
@@ -512,6 +788,90 @@ export default function Financeiro() {
                           });
                         }}
                         data-testid={`button-delete-fee-${fee.id}`}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </TabsContent>
+
+        {/* ACCOUNTS PAYABLE TAB */}
+        <TabsContent value="accounts-payable" className="mt-4">
+          {accountsPayableLoading ? (
+            <div className="space-y-3">{[1,2,3].map(i => <div key={i} className="h-20 bg-muted rounded-2xl animate-pulse" />)}</div>
+          ) : accountsPayable.length === 0 ? (
+            <div className="text-center py-16 text-muted-foreground">
+              <Wallet className="h-12 w-12 text-muted-foreground/30 mx-auto mb-3" />
+              <p>Nenhuma conta a pagar cadastrada.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {accountsPayable.map((item: any) => {
+                const eff = effectivePayableStatus(item);
+                const s = STATUS_PAYABLE[eff] ?? { label: eff, color: "#888", bg: "#F3F4F6" };
+                const total = (item.amount ?? 0) + (item.extra ?? 0) - (item.discount ?? 0);
+                const dueDate = parseDateOnly(item.dueDate);
+                return (
+                  <div key={item.id} className="bg-card border border-border/60 rounded-2xl p-4 shadow-sm flex flex-wrap items-center gap-4" data-testid={`payable-${item.id}`}>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2 mb-0.5">
+                        <p className="font-semibold text-foreground text-sm">{item.title}</p>
+                        <Badge className="text-xs" style={{ background: s.bg, color: s.color, border: `1px solid ${s.color}30` }}>
+                          {s.label}
+                        </Badge>
+                        <Badge variant="secondary" className="text-xs">
+                          {PAYABLE_CATEGORY_LABELS[item.category ?? "outros"] ?? item.category}
+                        </Badge>
+                        {item.staffName && <Badge variant="outline" className="text-xs">{item.staffName}</Badge>}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Referência: {item.referenceMonth || "—"} · Vencimento: {dueDate ? format(dueDate, "dd/MM/yyyy", { locale: ptBR }) : "—"}
+                      </p>
+                      {item.paidAt && (
+                        <p className="text-xs text-green-600 mt-0.5">
+                          Pago em {format(new Date(item.paidAt), "dd/MM/yyyy", { locale: ptBR })}
+                          {item.paymentMethod && ` · ${item.paymentMethod}`}
+                        </p>
+                      )}
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-lg font-bold text-foreground">{formatCurrency(total)}</p>
+                      {(item.discount ?? 0) > 0 && <p className="text-xs text-green-600">-{formatCurrency(item.discount)} desconto</p>}
+                      {(item.extra ?? 0) > 0 && <p className="text-xs text-red-600">+{formatCurrency(item.extra)} adicional</p>}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {(eff === "pending" || eff === "overdue") && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="gap-1.5 text-green-700 border-green-200 hover:bg-green-50"
+                          onClick={() => markPayablePaid.mutate(item.id)}
+                          disabled={markPayablePaid.isPending}
+                          data-testid={`button-pay-payable-${item.id}`}
+                        >
+                          <CheckCircle2 className="h-4 w-4" />Registrar Pagamento
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 h-8 w-8 p-0"
+                        disabled={deleteAccountPayable.isPending}
+                        onClick={() => {
+                          confirm({
+                            title: "Excluir conta a pagar",
+                            description: `Excluir a conta "${item.title}"?`,
+                            confirmText: "Excluir",
+                            pendingText: "Excluindo...",
+                            variant: "destructive",
+                            onConfirm: () => deleteAccountPayable.mutateAsync(item.id),
+                          });
+                        }}
+                        data-testid={`button-delete-payable-${item.id}`}
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>

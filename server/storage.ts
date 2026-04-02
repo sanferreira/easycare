@@ -1,7 +1,7 @@
 import { db } from "./db";
 import {
   users, organizations, residents, medications, staff, occurrences, shiftAssignments,
-  medicalRecords, comorbidities, familyMembers, contracts, monthlyFees, medicationAdministrations,
+  medicalRecords, comorbidities, familyMembers, contracts, monthlyFees, accountsPayable, medicationAdministrations,
   type User, type InsertUser,
   type Organization, type InsertOrganization,
   type Resident, type InsertResident, type UpdateResidentRequest,
@@ -14,6 +14,7 @@ import {
   type FamilyMember, type InsertFamilyMember,
   type Contract, type InsertContract, type UpdateContractRequest,
   type MonthlyFee, type InsertMonthlyFee, type UpdateMonthlyFeeRequest,
+  type AccountPayable, type InsertAccountPayable, type UpdateAccountPayableRequest,
   type MedicationAdministration, type InsertMedicationAdministration,
   type DashboardStats,
 } from "@shared/schema";
@@ -116,6 +117,15 @@ export interface IStorage {
   createMonthlyFee(fee: InsertMonthlyFee): Promise<MonthlyFee>;
   updateMonthlyFee(orgId: number, id: number, updates: UpdateMonthlyFeeRequest): Promise<MonthlyFee>;
   deleteMonthlyFee(orgId: number, id: number): Promise<void>;
+
+  // Accounts Payable
+  getAccountsPayable(
+    orgId: number,
+    query?: { staffId?: number; status?: string; referenceMonth?: string },
+  ): Promise<(AccountPayable & { staffName?: string })[]>;
+  createAccountPayable(item: InsertAccountPayable): Promise<AccountPayable>;
+  updateAccountPayable(orgId: number, id: number, updates: UpdateAccountPayableRequest): Promise<AccountPayable>;
+  deleteAccountPayable(orgId: number, id: number): Promise<void>;
 
   // Stats
   getDashboardStats(orgId: number): Promise<DashboardStats>;
@@ -564,6 +574,58 @@ export class DatabaseStorage implements IStorage {
   }
   async deleteMonthlyFee(orgId: number, id: number): Promise<void> {
     await db.delete(monthlyFees).where(and(eq(monthlyFees.id, id), eq(monthlyFees.organizationId, orgId)));
+  }
+
+  // --- Accounts Payable ---
+  async getAccountsPayable(
+    orgId: number,
+    query?: { staffId?: number; status?: string; referenceMonth?: string },
+  ): Promise<(AccountPayable & { staffName?: string })[]> {
+    const filters: any[] = [eq(accountsPayable.organizationId, orgId)];
+    if (query?.staffId) filters.push(eq(accountsPayable.staffId, query.staffId));
+    if (query?.status) filters.push(eq(accountsPayable.status, query.status));
+    if (query?.referenceMonth) filters.push(eq(accountsPayable.referenceMonth, query.referenceMonth));
+
+    return await db.select({
+      id: accountsPayable.id,
+      organizationId: accountsPayable.organizationId,
+      staffId: accountsPayable.staffId,
+      title: accountsPayable.title,
+      category: accountsPayable.category,
+      referenceMonth: accountsPayable.referenceMonth,
+      dueDate: accountsPayable.dueDate,
+      amount: accountsPayable.amount,
+      discount: accountsPayable.discount,
+      extra: accountsPayable.extra,
+      status: accountsPayable.status,
+      paidAt: accountsPayable.paidAt,
+      paymentMethod: accountsPayable.paymentMethod,
+      notes: accountsPayable.notes,
+      createdAt: accountsPayable.createdAt,
+      staffName: staff.name,
+    }).from(accountsPayable)
+      .leftJoin(staff, eq(accountsPayable.staffId, staff.id))
+      .where(and(...filters))
+      .orderBy(desc(accountsPayable.dueDate)) as any;
+  }
+  async createAccountPayable(item: InsertAccountPayable): Promise<AccountPayable> {
+    const [created] = await db.insert(accountsPayable).values(item).returning();
+    return created;
+  }
+  async updateAccountPayable(
+    orgId: number,
+    id: number,
+    updates: UpdateAccountPayableRequest,
+  ): Promise<AccountPayable> {
+    const [updated] = await db
+      .update(accountsPayable)
+      .set(updates)
+      .where(and(eq(accountsPayable.id, id), eq(accountsPayable.organizationId, orgId)))
+      .returning();
+    return updated;
+  }
+  async deleteAccountPayable(orgId: number, id: number): Promise<void> {
+    await db.delete(accountsPayable).where(and(eq(accountsPayable.id, id), eq(accountsPayable.organizationId, orgId)));
   }
 
   // --- Dashboard Stats ---
