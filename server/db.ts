@@ -58,4 +58,23 @@ export async function ensureDatabaseCompatibility() {
     ALTER TABLE organizations
       ADD COLUMN IF NOT EXISTS environment_settings text;
   `);
+
+  await pool.query(`
+    ALTER TABLE residents
+      ADD COLUMN IF NOT EXISTS gender text,
+      ADD COLUMN IF NOT EXISTS cpf text,
+      ADD COLUMN IF NOT EXISTS rg text,
+      ADD COLUMN IF NOT EXISTS sus_number text,
+      ADD COLUMN IF NOT EXISTS blood_type text,
+      ADD COLUMN IF NOT EXISTS marital_status text,
+      ADD COLUMN IF NOT EXISTS nationality text DEFAULT 'Brasileiro(a)',
+      ADD COLUMN IF NOT EXISTS status text DEFAULT 'active',
+      ADD COLUMN IF NOT EXISTS health_notes text,
+      ADD COLUMN IF NOT EXISTS allergies text,
+      ADD COLUMN IF NOT EXISTS dietary_restrictions text,
+      ADD COLUMN IF NOT EXISTS mobility_status text,
+      ADD COLUMN IF NOT EXISTS cognitive_status text,
+      ADD COLUMN IF NOT EXISTS contact_relationship text,
+      ADD COLUMN IF NOT EXISTS photo_url text;
+  `);
 }
