@@ -1,4 +1,4 @@
-import { useState } from "react";
+﻿import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -90,10 +90,10 @@ const STATUS_PAYABLE: Record<string, { label: string; color: string; bg: string 
 };
 
 const contractSchema = z.object({
-  residentId: z.coerce.number().min(1, "Residente obrigatório"),
+  residentId: z.coerce.number().min(1, "Residente obrigatÃ³rio"),
   plan: z.enum(["standard", "premium", "vip"]),
-  monthlyValue: z.coerce.number().min(1, "Valor obrigatório"),
-  startDate: z.string().min(1, "Data obrigatória"),
+  monthlyValue: z.coerce.number().min(1, "Valor obrigatÃ³rio"),
+  startDate: z.string().min(1, "Data obrigatÃ³ria"),
   endDate: z.string().optional(),
   paymentDay: z.coerce.number().min(1).max(31).default(5),
   paymentMethod: z.string().optional(),
@@ -101,11 +101,11 @@ const contractSchema = z.object({
 });
 
 const feeSchema = z.object({
-  contractId: z.coerce.number().min(1, "Contrato obrigatório"),
+  contractId: z.coerce.number().min(1, "Contrato obrigatÃ³rio"),
   residentId: z.coerce.number().min(1),
-  referenceMonth: z.string().min(1, "Mês obrigatório"),
-  dueDate: z.string().min(1, "Vencimento obrigatório"),
-  amount: z.coerce.number().min(1, "Valor obrigatório"),
+  referenceMonth: z.string().min(1, "MÃªs obrigatÃ³rio"),
+  dueDate: z.string().min(1, "Vencimento obrigatÃ³rio"),
+  amount: z.coerce.number().min(1, "Valor obrigatÃ³rio"),
   discount: z.coerce.number().default(0),
   fine: z.coerce.number().default(0),
   status: z.enum(["pending", "paid", "overdue", "cancelled"]).default("pending"),
@@ -168,7 +168,7 @@ async function parseApiJson<T>(res: Response, fallbackMessage: string): Promise<
     try {
       data = JSON.parse(trimmed);
     } catch {
-      throw new Error("Resposta JSON inválida da API.");
+      throw new Error("Resposta JSON invÃ¡lida da API.");
     }
   }
 
@@ -286,7 +286,7 @@ export default function Financeiro() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/contracts"] });
-      toast({ title: "Contrato excluído" });
+      toast({ title: "Contrato excluÃ­do" });
     },
     onError: () => toast({ variant: "destructive", title: "Erro ao excluir contrato" }),
   });
@@ -314,14 +314,14 @@ export default function Financeiro() {
   const deleteMonthlyFee = useMutation({
     mutationFn: async (id: number) => {
       const res = await fetch(`/api/monthly-fees/${id}`, { method: "DELETE", credentials: "include" });
-      if (!res.ok) throw new Error("Erro ao excluir cobrança");
+      if (!res.ok) throw new Error("Erro ao excluir cobranÃ§a");
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/monthly-fees"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
-      toast({ title: "Cobrança excluída" });
+      toast({ title: "CobranÃ§a excluÃ­da" });
     },
-    onError: () => toast({ variant: "destructive", title: "Erro ao excluir cobrança" }),
+    onError: () => toast({ variant: "destructive", title: "Erro ao excluir cobranÃ§a" }),
   });
 
   // Mark as paid
@@ -417,7 +417,7 @@ export default function Financeiro() {
       queryClient.invalidateQueries({ queryKey: ["/api/monthly-fees"] });
       setFeeOpen(false);
       feeForm.reset();
-      toast({ title: "Cobrança criada" });
+      toast({ title: "CobranÃ§a criada" });
     },
   });
 
@@ -513,7 +513,7 @@ export default function Financeiro() {
                       <FormMessage />
                     </FormItem>
                   )} />
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <FormField control={contractForm.control} name="plan" render={({ field }) => (
                       <FormItem>
                         <FormLabel>Plano *</FormLabel>
@@ -535,10 +535,10 @@ export default function Financeiro() {
                       </FormItem>
                     )} />
                   </div>
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <FormField control={contractForm.control} name="startDate" render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Início *</FormLabel>
+                        <FormLabel>InÃ­cio *</FormLabel>
                         <FormControl><Input type="date" {...field} /></FormControl>
                         <FormMessage />
                       </FormItem>
@@ -558,16 +558,16 @@ export default function Financeiro() {
                         <SelectContent>
                           <SelectItem value="pix">PIX</SelectItem>
                           <SelectItem value="boleto">Boleto</SelectItem>
-                          <SelectItem value="debito_automatico">Débito Automático</SelectItem>
+                          <SelectItem value="debito_automatico">DÃ©bito AutomÃ¡tico</SelectItem>
                           <SelectItem value="dinheiro">Dinheiro</SelectItem>
-                          <SelectItem value="transferencia">Transferência</SelectItem>
+                          <SelectItem value="transferencia">TransferÃªncia</SelectItem>
                         </SelectContent>
                       </Select>
                     </FormItem>
                   )} />
                   <FormField control={contractForm.control} name="notes" render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Observações</FormLabel>
+                      <FormLabel>ObservaÃ§Ãµes</FormLabel>
                       <FormControl><Textarea rows={2} {...field} /></FormControl>
                     </FormItem>
                   )} />
@@ -583,11 +583,11 @@ export default function Financeiro() {
           <Dialog open={feeOpen} onOpenChange={setFeeOpen}>
             <DialogTrigger asChild>
               <Button size="sm" className="gap-2 btn-glow" data-testid="button-new-fee">
-                <Plus className="h-4 w-4" />Nova Cobrança
+                <Plus className="h-4 w-4" />Nova CobranÃ§a
               </Button>
             </DialogTrigger>
             <DialogContent className="max-w-lg">
-              <DialogHeader><DialogTitle>Lançar Mensalidade</DialogTitle></DialogHeader>
+              <DialogHeader><DialogTitle>LanÃ§ar Mensalidade</DialogTitle></DialogHeader>
               <Form {...feeForm}>
                 <form onSubmit={feeForm.handleSubmit((d) => createFee.mutate(d))} className="space-y-4">
                   <FormField control={feeForm.control} name="contractId" render={({ field }) => (
@@ -605,7 +605,7 @@ export default function Financeiro() {
                         <SelectContent>
                           {contracts.filter(c => c.status === "active").map((c) => (
                             <SelectItem key={c.id} value={c.id.toString()}>
-                              {c.residentName} — {PLAN_LABELS[c.plan ?? "standard"]} ({formatCurrency(c.monthlyValue ?? 0)}/mês)
+                              {c.residentName} â€” {PLAN_LABELS[c.plan ?? "standard"]} ({formatCurrency(c.monthlyValue ?? 0)}/mÃªs)
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -613,10 +613,10 @@ export default function Financeiro() {
                       <FormMessage />
                     </FormItem>
                   )} />
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <FormField control={feeForm.control} name="referenceMonth" render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Mês Referência *</FormLabel>
+                        <FormLabel>MÃªs ReferÃªncia *</FormLabel>
                         <FormControl><Input type="month" {...field} /></FormControl>
                         <FormMessage />
                       </FormItem>
@@ -629,7 +629,7 @@ export default function Financeiro() {
                       </FormItem>
                     )} />
                   </div>
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <FormField control={feeForm.control} name="amount" render={({ field }) => (
                       <FormItem>
                         <FormLabel>Valor (R$)</FormLabel>
@@ -652,13 +652,13 @@ export default function Financeiro() {
                   </div>
                   <FormField control={feeForm.control} name="notes" render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Observações</FormLabel>
+                      <FormLabel>ObservaÃ§Ãµes</FormLabel>
                       <FormControl><Textarea rows={2} {...field} /></FormControl>
                     </FormItem>
                   )} />
                   <div className="flex justify-end gap-2">
                     <Button type="button" variant="outline" onClick={() => setFeeOpen(false)}>Cancelar</Button>
-                    <Button type="submit" disabled={createFee.isPending}>Lançar</Button>
+                    <Button type="submit" disabled={createFee.isPending}>LanÃ§ar</Button>
                   </div>
                 </form>
               </Form>
@@ -682,7 +682,7 @@ export default function Financeiro() {
                       <FormMessage />
                     </FormItem>
                   )} />
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <FormField control={payableForm.control} name="category" render={({ field }) => (
                       <FormItem>
                         <FormLabel>Categoria *</FormLabel>
@@ -724,7 +724,7 @@ export default function Financeiro() {
                       </FormItem>
                     )} />
                   </div>
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <FormField control={payableForm.control} name="referenceMonth" render={({ field }) => (
                       <FormItem>
                         <FormLabel>Mes Referencia</FormLabel>
@@ -740,7 +740,7 @@ export default function Financeiro() {
                       </FormItem>
                     )} />
                   </div>
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <FormField control={payableForm.control} name="amount" render={({ field }) => (
                       <FormItem>
                         <FormLabel>Valor (R$) *</FormLabel>
@@ -797,8 +797,8 @@ export default function Financeiro() {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <KpiCard title="Contratos Ativos" value={activeContracts} sub="residentes com contrato" icon={FileText} color="#1F6FEB" />
         <KpiCard title="A Receber" value={formatCurrency(totalPendingFees)} sub="mensalidades pendentes" icon={Clock} color="#F59E0B" />
-        <KpiCard title="Em Atraso" value={formatCurrency(totalOverdue)} sub="requerem atenção" icon={AlertCircle} color="#EF4444" />
-        <KpiCard title="Recebido" value={formatCurrency(totalReceived)} sub="histórico de pagamentos" icon={TrendingUp} color="#22C55E" />
+        <KpiCard title="Em Atraso" value={formatCurrency(totalOverdue)} sub="requerem atenÃ§Ã£o" icon={AlertCircle} color="#EF4444" />
+        <KpiCard title="Recebido" value={formatCurrency(totalReceived)} sub="histÃ³rico de pagamentos" icon={TrendingUp} color="#22C55E" />
         <KpiCard title="A Pagar" value={formatCurrency(totalPendingPayables)} sub="despesas pendentes" icon={Wallet} color="#F97316" />
         <KpiCard title="Atrasadas (Pagar)" value={formatCurrency(totalOverduePayables)} sub="contas vencidas" icon={AlertCircle} color="#DC2626" />
       </div>
@@ -823,7 +823,7 @@ export default function Financeiro() {
           ) : fees.length === 0 ? (
             <div className="text-center py-16 text-muted-foreground">
               <DollarSign className="h-12 w-12 text-muted-foreground/30 mx-auto mb-3" />
-              <p>Nenhuma cobrança lançada.</p>
+              <p>Nenhuma cobranÃ§a lanÃ§ada.</p>
             </div>
           ) : (
             <div className="space-y-3">
@@ -842,12 +842,12 @@ export default function Financeiro() {
                         </Badge>
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        Referência: {fee.referenceMonth} · Vencimento: {feeDueDate ? format(feeDueDate, "dd/MM/yyyy", { locale: ptBR }) : "—"}
+                        ReferÃªncia: {fee.referenceMonth} Â· Vencimento: {feeDueDate ? format(feeDueDate, "dd/MM/yyyy", { locale: ptBR }) : "â€”"}
                       </p>
                       {fee.paidAt && (
                         <p className="text-xs text-green-600 mt-0.5">
                           Pago em {format(new Date(fee.paidAt), "dd/MM/yyyy", { locale: ptBR })}
-                          {fee.paymentMethod && ` · ${fee.paymentMethod}`}
+                          {fee.paymentMethod && ` Â· ${fee.paymentMethod}`}
                         </p>
                       )}
                     </div>
@@ -872,8 +872,8 @@ export default function Financeiro() {
                         disabled={deleteMonthlyFee.isPending}
                         onClick={() => {
                           confirm({
-                            title: "Excluir cobrança",
-                            description: `Excluir esta cobrança de ${fee.residentName}?`,
+                            title: "Excluir cobranÃ§a",
+                            description: `Excluir esta cobranÃ§a de ${fee.residentName}?`,
                             confirmText: "Excluir",
                             pendingText: "Excluindo...",
                             variant: "destructive",
@@ -935,12 +935,12 @@ export default function Financeiro() {
                         {item.staffName && <Badge variant="outline" className="text-xs">{item.staffName}</Badge>}
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        Referência: {item.referenceMonth || "—"} · Vencimento: {dueDate ? format(dueDate, "dd/MM/yyyy", { locale: ptBR }) : "—"}
+                        ReferÃªncia: {item.referenceMonth || "â€”"} Â· Vencimento: {dueDate ? format(dueDate, "dd/MM/yyyy", { locale: ptBR }) : "â€”"}
                       </p>
                       {item.paidAt && (
                         <p className="text-xs text-green-600 mt-0.5">
                           Pago em {format(new Date(item.paidAt), "dd/MM/yyyy", { locale: ptBR })}
-                          {item.paymentMethod && ` · ${item.paymentMethod}`}
+                          {item.paymentMethod && ` Â· ${item.paymentMethod}`}
                         </p>
                       )}
                     </div>
@@ -1032,15 +1032,15 @@ export default function Financeiro() {
                         <Badge variant="secondary" className="text-xs">{PLAN_LABELS[c.plan ?? "standard"]}</Badge>
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        Desde {c.startDate ? format(new Date(c.startDate + "T00:00:00"), "dd/MM/yyyy", { locale: ptBR }) : "—"}
-                        {c.paymentDay && ` · Vence dia ${c.paymentDay}`}
-                        {c.paymentMethod && ` · ${c.paymentMethod}`}
+                        Desde {c.startDate ? format(new Date(c.startDate + "T00:00:00"), "dd/MM/yyyy", { locale: ptBR }) : "â€”"}
+                        {c.paymentDay && ` Â· Vence dia ${c.paymentDay}`}
+                        {c.paymentMethod && ` Â· ${c.paymentMethod}`}
                       </p>
                       {c.notes && <p className="text-xs text-muted-foreground/70 mt-0.5 truncate">{c.notes}</p>}
                     </div>
                     <div className="text-right shrink-0">
                       <p className="text-xl font-bold text-foreground">{formatCurrency(c.monthlyValue ?? 0)}</p>
-                      <p className="text-xs text-muted-foreground">por mês</p>
+                      <p className="text-xs text-muted-foreground">por mÃªs</p>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
                       <Button
@@ -1058,7 +1058,7 @@ export default function Financeiro() {
                         onClick={() => {
                           confirm({
                             title: "Excluir contrato",
-                            description: `Excluir contrato de ${c.residentName}? Esta ação não pode ser desfeita.`,
+                            description: `Excluir contrato de ${c.residentName}? Esta aÃ§Ã£o nÃ£o pode ser desfeita.`,
                             confirmText: "Excluir",
                             pendingText: "Excluindo...",
                             variant: "destructive",
@@ -1118,7 +1118,7 @@ export default function Financeiro() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
                   <div>
                     <p className="text-xs text-muted-foreground">Periodo de referencia</p>
-                    <p className="font-medium">{payableDetails.referenceMonth || "—"}</p>
+                    <p className="font-medium">{payableDetails.referenceMonth || "â€”"}</p>
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Cuidador vinculado</p>
@@ -1145,7 +1145,7 @@ export default function Financeiro() {
                   <div>
                     <p className="text-xs text-muted-foreground">Vencimento</p>
                     <p className="font-medium">
-                      {parseDateOnly(payableDetails.dueDate) ? format(parseDateOnly(payableDetails.dueDate) as Date, "dd/MM/yyyy", { locale: ptBR }) : "—"}
+                      {parseDateOnly(payableDetails.dueDate) ? format(parseDateOnly(payableDetails.dueDate) as Date, "dd/MM/yyyy", { locale: ptBR }) : "â€”"}
                     </p>
                   </div>
                   <div>
@@ -1177,7 +1177,7 @@ export default function Financeiro() {
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <p className="text-sm font-medium">
                               {day ? format(day, "dd/MM/yyyy", { locale: ptBR }) : shift.date}
-                              {" — "}
+                              {" â€” "}
                               {startTime ? format(startTime, "HH:mm") : "--:--"}
                               {" as "}
                               {endTime ? format(endTime, "HH:mm") : "--:--"}
@@ -1216,7 +1216,7 @@ export default function Financeiro() {
           {editingContract && (
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">
-                Contrato de <strong>{editingContract.residentName}</strong> — Plano {PLAN_LABELS[editingContract.plan ?? "standard"]}
+                Contrato de <strong>{editingContract.residentName}</strong> â€” Plano {PLAN_LABELS[editingContract.plan ?? "standard"]}
               </p>
               <div className="space-y-2">
                 {(["active", "suspended", "terminated"] as const).map((s) => (
@@ -1249,3 +1249,5 @@ export default function Financeiro() {
     </div>
   );
 }
+
+

@@ -85,6 +85,16 @@ export interface IStorage {
   // Medication Administrations
   getMedicationAdministrations(orgId: number, residentId?: number, medicationId?: number): Promise<(MedicationAdministration & { medicationName?: string; residentName?: string; administeredByName?: string })[]>;
   createMedicationAdministration(admin: InsertMedicationAdministration): Promise<MedicationAdministration>;
+  upsertMedicationAdministrationForDose(input: {
+    organizationId: number;
+    medicationId: number;
+    residentId: number;
+    staffId: number | null;
+    scheduledFor: Date;
+    administeredAt: Date;
+    status: "given" | "skipped" | "refused" | "late";
+    notes: string | null;
+  }): Promise<MedicationAdministration>;
 
   // Staff
   getStaff(orgId: number): Promise<StaffMember[]>;
@@ -404,6 +414,63 @@ export class DatabaseStorage implements IStorage {
   async createMedicationAdministration(admin: InsertMedicationAdministration): Promise<MedicationAdministration> {
     const [newAdmin] = await db.insert(medicationAdministrations).values(admin).returning();
     return newAdmin;
+  }
+  async upsertMedicationAdministrationForDose(input: {
+    organizationId: number;
+    medicationId: number;
+    residentId: number;
+    staffId: number | null;
+    scheduledFor: Date;
+    administeredAt: Date;
+    status: "given" | "skipped" | "refused" | "late";
+    notes: string | null;
+  }): Promise<MedicationAdministration> {
+    const toleranceInMs = 30 * 1000;
+    const scheduledFrom = new Date(input.scheduledFor.getTime() - toleranceInMs);
+    const scheduledTo = new Date(input.scheduledFor.getTime() + toleranceInMs);
+
+    const existingMatches = await db.select()
+      .from(medicationAdministrations)
+      .where(and(
+        eq(medicationAdministrations.organizationId, input.organizationId),
+        eq(medicationAdministrations.medicationId, input.medicationId),
+        eq(medicationAdministrations.residentId, input.residentId),
+        gte(medicationAdministrations.scheduledFor, scheduledFrom),
+        lte(medicationAdministrations.scheduledFor, scheduledTo),
+      ))
+      .orderBy(desc(medicationAdministrations.id));
+
+    const existing = existingMatches[0];
+    if (existing) {
+      const [updated] = await db.update(medicationAdministrations)
+        .set({
+          staffId: input.staffId,
+          scheduledFor: input.scheduledFor,
+          administeredAt: input.administeredAt,
+          status: input.status,
+          notes: input.notes,
+        })
+        .where(and(
+          eq(medicationAdministrations.id, existing.id),
+          eq(medicationAdministrations.organizationId, input.organizationId),
+        ))
+        .returning();
+      return updated;
+    }
+
+    const [created] = await db.insert(medicationAdministrations)
+      .values({
+        organizationId: input.organizationId,
+        medicationId: input.medicationId,
+        residentId: input.residentId,
+        staffId: input.staffId,
+        scheduledFor: input.scheduledFor,
+        administeredAt: input.administeredAt,
+        status: input.status,
+        notes: input.notes,
+      })
+      .returning();
+    return created;
   }
 
   // --- Staff ---

@@ -2,7 +2,6 @@ export const MODULE_ROUTE_VALUES = [
   "/",
   "/residents",
   "/prontuario",
-  "/medications",
   "/staff",
   "/escalas",
   "/occurrences",
@@ -31,10 +30,10 @@ export const APP_ROLE_VALUES = [
 export type AppRole = (typeof APP_ROLE_VALUES)[number];
 
 export const DEFAULT_ROLE_ROUTES: Record<string, ModuleRoute[]> = {
-  admin: ["/", "/residents", "/prontuario", "/medications", "/staff", "/escalas", "/occurrences", "/financeiro", "/environment"],
-  enfermeiro: ["/", "/residents", "/prontuario", "/medications", "/escalas", "/occurrences"],
-  medico: ["/", "/residents", "/prontuario", "/medications", "/occurrences"],
-  tecnico_enfermagem: ["/", "/residents", "/prontuario", "/medications", "/escalas", "/occurrences"],
+  admin: ["/", "/residents", "/prontuario", "/staff", "/escalas", "/occurrences", "/financeiro", "/environment"],
+  enfermeiro: ["/", "/residents", "/prontuario", "/escalas", "/occurrences"],
+  medico: ["/", "/residents", "/prontuario", "/occurrences"],
+  tecnico_enfermagem: ["/", "/residents", "/prontuario", "/escalas", "/occurrences"],
   cuidador: ["/", "/residents", "/escalas", "/occurrences"],
   fisioterapeuta: ["/", "/residents", "/prontuario", "/occurrences"],
   nutricionista: ["/", "/residents", "/prontuario", "/occurrences"],
@@ -84,6 +83,9 @@ export type EnvironmentSettings = {
 
 const allowedRouteSet = new Set<string>(MODULE_ROUTE_VALUES);
 const allowedShiftTypeSet = new Set<string>(SHIFT_ASSIGNMENT_TYPE_VALUES);
+const ROUTE_ALIASES: Record<string, ModuleRoute> = {
+  "/medications": "/prontuario",
+};
 
 function createEmptyShiftProfileRule(overrides?: Partial<ShiftProfileRule>): ShiftProfileRule {
   return {
@@ -168,9 +170,15 @@ export const DEFAULT_SHIFT_PROFILES: ShiftProfilesSettings = {
 
 const normalizeRoutes = (value: unknown, fallback: ModuleRoute[]): ModuleRoute[] => {
   if (!Array.isArray(value)) return [...fallback];
-  const deduped = value
-    .filter((item): item is string => typeof item === "string" && allowedRouteSet.has(item))
-    .filter((item, index, source) => source.indexOf(item) === index);
+  const mappedRoutes = value
+    .map((item) => {
+      if (typeof item !== "string") return null;
+      const normalized = item.trim();
+      if (!normalized) return null;
+      return ROUTE_ALIASES[normalized] ?? normalized;
+    })
+    .filter((item): item is ModuleRoute => typeof item === "string" && allowedRouteSet.has(item));
+  const deduped = mappedRoutes.filter((item, index, source) => source.indexOf(item) === index);
   return deduped.length > 0 ? (deduped as ModuleRoute[]) : [...fallback];
 };
 

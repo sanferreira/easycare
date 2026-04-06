@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useAuth } from "@/hooks/use-auth";
+import { useEnvironmentSettings } from "@/hooks/use-environment-settings";
 import { useResidents } from "@/hooks/use-residents";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -14,15 +16,21 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import {
   Plus, FileText, Stethoscope, Heart, Users2,
-  Activity, Thermometer, Wind, Smile, Lock, Eye, EyeOff, Globe, Trash2, Pencil
+  Activity, Thermometer, Wind, Smile, Lock, Eye, EyeOff, Globe, Trash2, Pencil, Pill, AlertTriangle, Check, ChevronsUpDown
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { MedicalRecord, Comorbidity, FamilyMember } from "@shared/schema";
 import { maskCpf, maskPhoneBR } from "@/lib/masks";
+import { canAccessRoute, canEditRoute } from "@/lib/permissions";
+import { ResidentMedicationSection } from "@/components/prontuario/ResidentMedicationSection";
+import { ResidentOccurrenceSection } from "@/components/prontuario/ResidentOccurrenceSection";
+import { cn } from "@/lib/utils";
 
 const evolutionSchema = z.object({
   date: z.string().min(1, "Data obrigatória"),
@@ -87,8 +95,61 @@ const MOOD_MAP: Record<string, string> = {
   triste: "😢 Triste",
 };
 
+function getResidentAge(birthDate?: string | null): number | null {
+  if (!birthDate) return null;
+  const birth = new Date(`${birthDate}T00:00:00`);
+  if (Number.isNaN(birth.getTime())) return null;
+
+  const today = new Date();
+  let age = today.getFullYear() - birth.getFullYear();
+  const monthDiff = today.getMonth() - birth.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) {
+    age -= 1;
+  }
+  return age >= 0 ? age : null;
+}
+
+const RECENT_RESIDENTS_STORAGE_KEY = "easycare:prontuario:recent-residents";
+const MAX_RECENT_RESIDENTS = 5;
+
+function loadRecentResidentIds(): number[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(RECENT_RESIDENTS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value > 0)
+      .slice(0, MAX_RECENT_RESIDENTS);
+  } catch {
+    return [];
+  }
+}
+
+function saveRecentResidentIds(ids: number[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(RECENT_RESIDENTS_STORAGE_KEY, JSON.stringify(ids));
+  } catch {
+    // ignore localStorage failures
+  }
+}
+
+function getResidentSelectorSubtitle(resident: any): string {
+  if (!resident) return "Busque por nome ou quarto";
+  const age = getResidentAge(resident.birthDate);
+  const parts: string[] = [];
+  if (resident.roomNumber) parts.push(`Quarto ${resident.roomNumber}`);
+  if (age !== null) parts.push(`${age} anos`);
+  return parts.length > 0 ? parts.join(" | ") : "Sem quarto";
+}
+
 export default function Prontuario() {
   const [selectedResident, setSelectedResident] = useState<number | null>(null);
+  const [residentSelectorOpen, setResidentSelectorOpen] = useState(false);
+  const [recentResidentIds, setRecentResidentIds] = useState<number[]>(() => loadRecentResidentIds());
   const [evolutionOpen, setEvolutionOpen] = useState(false);
   const [comorbidityOpen, setComorbidityOpen] = useState(false);
   const [familyOpen, setFamilyOpen] = useState(false);
@@ -97,9 +158,57 @@ export default function Prontuario() {
   const { toast } = useToast();
   const { confirm, confirmDialog } = useConfirmDialog();
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const { data: environmentSettings } = useEnvironmentSettings();
   const { data: residents = [], isLoading: residentsLoading } = useResidents({ status: "active" });
+  const canViewProntuario = canAccessRoute(user?.role, "/prontuario", environmentSettings?.roleRoutes);
+  const canEditProntuario = canEditRoute(
+    user?.role,
+    "/prontuario",
+    environmentSettings?.roleRoutes,
+    environmentSettings?.roleEditRoutes,
+  );
+  const sortedResidents = useMemo(
+    () =>
+      [...residents].sort((left: any, right: any) =>
+        String(left?.name ?? "").localeCompare(String(right?.name ?? ""), "pt-BR"),
+      ),
+    [residents],
+  );
+  const recentResidents = useMemo(
+    () =>
+      recentResidentIds
+        .map((id) => sortedResidents.find((item: any) => item.id === id))
+        .filter((item): item is any => Boolean(item)),
+    [recentResidentIds, sortedResidents],
+  );
+  const nonRecentResidents = useMemo(() => {
+    const recentSet = new Set(recentResidents.map((item) => item.id));
+    return sortedResidents.filter((item: any) => !recentSet.has(item.id));
+  }, [recentResidents, sortedResidents]);
 
   const resident = residents.find((r: any) => r.id === selectedResident);
+  const residentAge = getResidentAge(resident?.birthDate);
+
+  useEffect(() => {
+    if (!selectedResident) return;
+    setRecentResidentIds((previous) => {
+      const next = [selectedResident, ...previous.filter((id) => id !== selectedResident)].slice(0, MAX_RECENT_RESIDENTS);
+      saveRecentResidentIds(next);
+      return next;
+    });
+  }, [selectedResident]);
+
+  useEffect(() => {
+    const residentIdSet = new Set(residents.map((item: any) => item.id));
+    setRecentResidentIds((previous) => {
+      const next = previous.filter((id) => residentIdSet.has(id));
+      if (next.length !== previous.length) {
+        saveRecentResidentIds(next);
+      }
+      return next;
+    });
+  }, [residents]);
 
   const { data: records = [] } = useQuery<MedicalRecord[]>({
     queryKey: ["/api/residents", selectedResident, "medical-records"],
@@ -275,7 +384,7 @@ export default function Prontuario() {
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-3xl font-bold text-foreground" style={{ fontFamily: "var(--font-display)" }}>
+        <h1 className="text-2xl sm:text-3xl font-bold text-foreground" style={{ fontFamily: "var(--font-display)" }}>
           Prontuário
         </h1>
         <p className="text-muted-foreground mt-1">Histórico médico, evolução diária e informações clínicas dos residentes</p>
@@ -283,24 +392,140 @@ export default function Prontuario() {
 
       {/* Resident selector */}
       <Card className="shadow-sm">
-        <CardContent className="pt-4 pb-4">
-          <div className="flex flex-wrap gap-2 items-center">
-            <p className="text-sm font-medium text-muted-foreground mr-2">Residente:</p>
-            {residentsLoading && <p className="text-sm text-muted-foreground">Carregando...</p>}
-            {residents.map((r: any) => (
-              <button
-                key={r.id}
-                data-testid={`resident-selector-${r.id}`}
-                onClick={() => setSelectedResident(r.id)}
-                className={`px-3 py-1.5 rounded-xl text-sm font-medium border transition-all ${
-                  selectedResident === r.id
-                    ? "border-primary text-primary bg-primary/10"
-                    : "border-border text-muted-foreground hover:border-primary/50 hover:text-foreground"
-                }`}
-              >
-                {r.name}
-              </button>
-            ))}
+        <CardContent className="p-4">
+          <div className="grid gap-3 sm:grid-cols-[100px,1fr] sm:items-start">
+            <p className="text-sm font-medium text-muted-foreground pt-2">Residente:</p>
+            <div className="space-y-3">
+              <Popover open={residentSelectorOpen} onOpenChange={setResidentSelectorOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={residentSelectorOpen}
+                    className="w-full h-auto justify-between px-3 py-2"
+                    data-testid="resident-selector-combobox"
+                    disabled={residentsLoading || residents.length === 0}
+                  >
+                    <div className="flex min-w-0 items-center gap-3 text-left">
+                      <div
+                        className="h-8 w-8 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0"
+                        style={{ background: "linear-gradient(135deg, #1F6FEB, #22D3EE)" }}
+                      >
+                        {resident?.name?.charAt(0)?.toUpperCase() ?? "?"}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-foreground">
+                          {resident ? resident.name : "Selecionar residente"}
+                        </p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {resident ? getResidentSelectorSubtitle(resident) : "Busque por nome ou quarto"}
+                        </p>
+                      </div>
+                    </div>
+                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+                  <Command>
+                    <CommandInput placeholder="Buscar por nome ou quarto..." />
+                    <CommandList>
+                      <CommandEmpty>Nenhum residente encontrado.</CommandEmpty>
+
+                      {recentResidents.length > 0 && (
+                        <CommandGroup heading="Recentes">
+                          {recentResidents.map((item: any) => (
+                            <CommandItem
+                              key={`recent-${item.id}`}
+                              value={`${item.name} ${item.roomNumber ?? ""} ${getResidentAge(item.birthDate) ?? ""}`}
+                              onSelect={() => {
+                                setSelectedResident(item.id);
+                                setResidentSelectorOpen(false);
+                              }}
+                              data-testid={`resident-selector-recent-${item.id}`}
+                            >
+                              <Check
+                                className={cn(
+                                  "mr-2 h-4 w-4",
+                                  selectedResident === item.id ? "opacity-100" : "opacity-0",
+                                )}
+                              />
+                              <div className="flex min-w-0 flex-col">
+                                <span className="truncate font-medium">{item.name}</span>
+                                <span className="text-xs text-muted-foreground">{getResidentSelectorSubtitle(item)}</span>
+                              </div>
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      )}
+
+                      <CommandGroup heading="Todos os residentes">
+                        {nonRecentResidents.map((item: any) => (
+                          <CommandItem
+                            key={item.id}
+                            value={`${item.name} ${item.roomNumber ?? ""} ${getResidentAge(item.birthDate) ?? ""}`}
+                            onSelect={() => {
+                              setSelectedResident(item.id);
+                              setResidentSelectorOpen(false);
+                            }}
+                            data-testid={`resident-selector-${item.id}`}
+                          >
+                            <Check
+                              className={cn(
+                                "mr-2 h-4 w-4",
+                                selectedResident === item.id ? "opacity-100" : "opacity-0",
+                              )}
+                            />
+                            <div className="flex min-w-0 flex-col">
+                              <span className="truncate font-medium">{item.name}</span>
+                              <span className="text-xs text-muted-foreground">{getResidentSelectorSubtitle(item)}</span>
+                            </div>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-xs text-muted-foreground">
+                  {residentsLoading
+                    ? "Carregando residentes..."
+                    : `${residents.length} residente(s) ativo(s)`}
+                </p>
+                {recentResidents.length > 0 && (
+                  <>
+                    <span className="text-xs text-muted-foreground">|</span>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-xs text-muted-foreground">Recentes:</span>
+                      {recentResidents.map((item: any) => (
+                        <Button
+                          key={`quick-${item.id}`}
+                          size="sm"
+                          variant={selectedResident === item.id ? "default" : "outline"}
+                          className="h-7 px-2 text-xs"
+                          onClick={() => setSelectedResident(item.id)}
+                          data-testid={`resident-selector-quick-${item.id}`}
+                        >
+                          {item.name}
+                        </Button>
+                      ))}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs text-muted-foreground"
+                        onClick={() => {
+                          setRecentResidentIds([]);
+                          saveRecentResidentIds([]);
+                        }}
+                        data-testid="resident-selector-clear-recents"
+                      >
+                        Limpar
+                      </Button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -315,7 +540,7 @@ export default function Prontuario() {
         <>
           {/* Resident info bar */}
           {resident && (
-            <div className="flex flex-wrap items-center gap-4 p-4 rounded-2xl border border-border bg-card shadow-sm">
+            <div className="flex flex-wrap items-center gap-3 p-3 sm:p-4 rounded-2xl border border-border bg-card shadow-sm">
               <div className="h-12 w-12 rounded-full flex items-center justify-center text-lg font-bold text-white shrink-0"
                 style={{ background: "linear-gradient(135deg, #1F6FEB, #22D3EE)" }}>
                 {resident.name.charAt(0)}
@@ -323,9 +548,9 @@ export default function Prontuario() {
               <div className="flex-1 min-w-0">
                 <p className="font-bold text-foreground text-lg">{resident.name}</p>
                 <div className="flex flex-wrap gap-3 mt-0.5">
-                  {resident.birthDate && (
+                  {residentAge !== null && (
                     <span className="text-xs text-muted-foreground">
-                      {new Date().getFullYear() - new Date(resident.birthDate + "T00:00:00").getFullYear()} anos
+                      {residentAge} anos
                     </span>
                   )}
                   {resident.roomNumber && <span className="text-xs text-muted-foreground">Quarto {resident.roomNumber}</span>}
@@ -335,7 +560,7 @@ export default function Prontuario() {
                 </div>
               </div>
               {resident.allergies && resident.allergies !== "Nenhuma" && resident.allergies !== "Nenhuma conhecida" && (
-                <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium"
+                <div className="flex w-full sm:w-auto items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium break-words"
                   style={{ background: "rgba(239,68,68,0.08)", color: "#EF4444", border: "1px solid rgba(239,68,68,0.2)" }}>
                   ⚠️ Alergia: {resident.allergies}
                 </div>
@@ -343,25 +568,41 @@ export default function Prontuario() {
             </div>
           )}
 
+          {!canViewProntuario ? (
+            <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+              Sem permissao para visualizar o prontuario.
+            </div>
+          ) : (
           <Tabs defaultValue="evolution">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-              <TabsList className="h-10">
+              <TabsList className="w-full sm:w-auto h-auto min-h-10">
                 <TabsTrigger value="evolution" data-testid="tab-evolution">
                   <Activity className="h-3.5 w-3.5 mr-1.5" />Evolução
                 </TabsTrigger>
                 <TabsTrigger value="diagnoses" data-testid="tab-diagnoses">
                   <Stethoscope className="h-3.5 w-3.5 mr-1.5" />Diagnósticos
                 </TabsTrigger>
+                <TabsTrigger value="medications" data-testid="tab-medications">
+                  <Pill className="h-3.5 w-3.5 mr-1.5" />Medicacoes
+                </TabsTrigger>
+                <TabsTrigger value="occurrences" data-testid="tab-occurrences">
+                  <AlertTriangle className="h-3.5 w-3.5 mr-1.5" />Ocorrencias
+                </TabsTrigger>
                 <TabsTrigger value="family" data-testid="tab-family">
                   <Users2 className="h-3.5 w-3.5 mr-1.5" />Familiares
                 </TabsTrigger>
               </TabsList>
 
-              <div className="flex gap-2">
+              <div className="flex w-full sm:w-auto gap-2">
                 {/* Nueva evolución */}
                 <Dialog open={evolutionOpen} onOpenChange={setEvolutionOpen}>
                   <DialogTrigger asChild>
-                    <Button size="sm" className="gap-2 btn-glow" data-testid="button-add-evolution">
+                    <Button
+                      size="sm"
+                      className="w-full sm:w-auto gap-2 btn-glow"
+                      data-testid="button-add-evolution"
+                      disabled={!canEditProntuario}
+                    >
                       <Plus className="h-4 w-4" />Nova Evolução
                     </Button>
                   </DialogTrigger>
@@ -371,7 +612,7 @@ export default function Prontuario() {
                     </DialogHeader>
                     <Form {...evolutionForm}>
                       <form onSubmit={evolutionForm.handleSubmit((d) => createRecord.mutate(d))} className="space-y-4">
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <FormField control={evolutionForm.control} name="date" render={({ field }) => (
                             <FormItem>
                               <FormLabel>Data</FormLabel>
@@ -416,7 +657,7 @@ export default function Prontuario() {
                           <p className="text-sm font-semibold text-foreground flex items-center gap-2">
                             <Heart className="h-4 w-4 text-primary" />Sinais Vitais (opcional)
                           </p>
-                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                             <FormField control={evolutionForm.control} name="bloodPressure" render={({ field }) => (
                               <FormItem>
                                 <FormLabel className="text-xs">Pressão Arterial</FormLabel>
@@ -584,10 +825,10 @@ export default function Prontuario() {
 
             {/* DIAGNOSES TAB */}
             <TabsContent value="diagnoses" className="mt-4">
-              <div className="flex justify-end mb-4">
+              <div className="flex justify-start sm:justify-end mb-4">
                 <Dialog open={comorbidityOpen} onOpenChange={setComorbidityOpen}>
                   <DialogTrigger asChild>
-                    <Button size="sm" className="gap-2" data-testid="button-add-comorbidity">
+                    <Button size="sm" className="w-full sm:w-auto gap-2" data-testid="button-add-comorbidity">
                       <Plus className="h-4 w-4" />Adicionar Diagnóstico
                     </Button>
                   </DialogTrigger>
@@ -604,7 +845,7 @@ export default function Prontuario() {
                             <FormMessage />
                           </FormItem>
                         )} />
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <FormField control={comorbidityForm.control} name="icd10" render={({ field }) => (
                             <FormItem>
                               <FormLabel>CID-10</FormLabel>
@@ -692,15 +933,29 @@ export default function Prontuario() {
               )}
             </TabsContent>
 
+            <TabsContent value="medications" className="mt-4">
+              <ResidentMedicationSection
+                residentId={selectedResident}
+                canEdit={canEditProntuario}
+              />
+            </TabsContent>
+
+            <TabsContent value="occurrences" className="mt-4">
+              <ResidentOccurrenceSection
+                residentId={selectedResident}
+                canEdit={canEditProntuario}
+              />
+            </TabsContent>
+
             {/* FAMILY TAB */}
             <TabsContent value="family" className="mt-4">
-              <div className="flex justify-end mb-4">
+              <div className="flex justify-start sm:justify-end mb-4">
                 <Dialog open={familyOpen} onOpenChange={(open) => {
                   setFamilyOpen(open);
                   if (!open) { setEditingFamily(null); setShowPortalPassword(false); familyForm.reset({ isPrimary: false, name: "", relationship: "", phone: "", portalAccess: false, portalUsername: "", portalPassword: "" }); }
                 }}>
                   <DialogTrigger asChild>
-                    <Button size="sm" className="gap-2" data-testid="button-add-family">
+                    <Button size="sm" className="w-full sm:w-auto gap-2" data-testid="button-add-family">
                       <Plus className="h-4 w-4" />Adicionar Familiar
                     </Button>
                   </DialogTrigger>
@@ -720,7 +975,7 @@ export default function Prontuario() {
                             <FormMessage />
                           </FormItem>
                         )} />
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <FormField control={familyForm.control} name="relationship" render={({ field }) => (
                             <FormItem>
                               <FormLabel>Parentesco *</FormLabel>
@@ -744,7 +999,7 @@ export default function Prontuario() {
                             </FormItem>
                           )} />
                         </div>
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <FormField control={familyForm.control} name="phone2" render={({ field }) => (
                             <FormItem>
                               <FormLabel>Telefone 2</FormLabel>
@@ -820,7 +1075,7 @@ export default function Prontuario() {
                           )} />
 
                           {portalAccessValue && (
-                            <div className="grid grid-cols-2 gap-3 pt-1">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                               <FormField control={familyForm.control} name="portalUsername" render={({ field }) => (
                                 <FormItem>
                                   <FormLabel className="text-xs">Usuário de acesso *</FormLabel>
@@ -948,6 +1203,7 @@ export default function Prontuario() {
               )}
             </TabsContent>
           </Tabs>
+          )}
         </>
       )}
       {confirmDialog}

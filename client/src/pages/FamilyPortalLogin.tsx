@@ -97,7 +97,7 @@ export default function FamilyPortalLogin() {
             </p>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {[
               { icon: FileText, label: "Evoluções compartilhadas", color: "#22D3EE" },
               { icon: Shield, label: "Acesso seguro e privado", color: "#22D3EE" },

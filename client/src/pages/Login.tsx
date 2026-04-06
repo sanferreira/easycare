@@ -1,4 +1,4 @@
-import { useAuth } from "@/hooks/use-auth";
+﻿import { useAuth } from "@/hooks/use-auth";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -12,7 +12,7 @@ import { ArrowRight } from "lucide-react";
 
 const loginSchema = z.object({
   organizationCnpj: z.string().optional(),
-  username: z.string().min(1, "Informe o usuário"),
+  username: z.string().min(1, "Informe o usuÃ¡rio"),
   password: z.string().min(1, "Informe a senha"),
 });
 
@@ -37,7 +37,7 @@ export default function Login() {
           "linear-gradient(135deg, #060B1F 0%, #0A0F2C 50%, #0D1A40 100%)",
       }}
     >
-      {/* Left panel — branding */}
+      {/* Left panel â€” branding */}
       <div className="hidden lg:flex flex-col justify-between w-1/2 p-12 relative overflow-hidden">
         {/* Grid decoration */}
         <div
@@ -93,32 +93,32 @@ export default function Login() {
             >
               Controle total da sua <span style={{ color: "#22D3EE" }}>ILPI</span>,
               <br />
-              com mais segurança, organização e cuidado
+              com mais seguranÃ§a, organizaÃ§Ã£o e cuidado
             </h2>
 
             <p
               className="mt-4 text-base leading-relaxed max-w-xl"
               style={{ color: "rgba(255,255,255,0.55)" }}
             >
-              Centralize prontuários, medicações, equipe e atendimentos em um único
-              sistema. Reduza erros, ganhe tempo e ofereça mais transparência para
-              familiares e responsáveis.
+              Centralize prontuÃ¡rios, medicaÃ§Ãµes, equipe e atendimentos em um Ãºnico
+              sistema. Reduza erros, ganhe tempo e ofereÃ§a mais transparÃªncia para
+              familiares e responsÃ¡veis.
             </p>
 
             <p
               className="text-xs mt-4 uppercase tracking-[0.18em] font-semibold"
               style={{ color: "rgba(255,255,255,0.28)" }}
             >
-              Plataforma em nuvem para gestão moderna de cuidados
+              Plataforma em nuvem para gestÃ£o moderna de cuidados
             </p>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {[
-              { title: "Controle da unidade", label: "Rotinas, cadastros e equipe em um só lugar" },
-              { title: "Prontuário integrado", label: "Evoluções, medicações e ocorrências" },
-              { title: "Acesso remoto seguro", label: "Gestão online com praticidade e proteção" },
-              { title: "Conforme LGPD", label: "Mais segurança para dados sensíveis" },
+              { title: "Controle da unidade", label: "Rotinas, cadastros e equipe em um sÃ³ lugar" },
+              { title: "ProntuÃ¡rio integrado", label: "EvoluÃ§Ãµes, medicaÃ§Ãµes e ocorrÃªncias" },
+              { title: "Acesso remoto seguro", label: "GestÃ£o online com praticidade e proteÃ§Ã£o" },
+              { title: "Conforme LGPD", label: "Mais seguranÃ§a para dados sensÃ­veis" },
             ].map((item) => (
               <div
                 key={item.title}
@@ -143,11 +143,11 @@ export default function Login() {
             style={{ background: "rgba(255,255,255,0.03)" }}
           >
             <p className="text-sm text-white font-medium">
-              Mais controle para a equipe. Mais confiança para a família.
+              Mais controle para a equipe. Mais confianÃ§a para a famÃ­lia.
             </p>
             <p className="text-xs mt-1" style={{ color: "rgba(255,255,255,0.4)" }}>
-              Ideal para instituições que precisam de organização, rastreabilidade e
-              acompanhamento contínuo do cuidado.
+              Ideal para instituiÃ§Ãµes que precisam de organizaÃ§Ã£o, rastreabilidade e
+              acompanhamento contÃ­nuo do cuidado.
             </p>
           </div>
         </div>
@@ -156,11 +156,11 @@ export default function Login() {
           className="relative z-10 text-xs"
           style={{ color: "rgba(255,255,255,0.2)" }}
         >
-          © 2026 EasyCare · Todos os direitos reservados
+          Â© 2026 EasyCare Â· Todos os direitos reservados
         </p>
       </div>
 
-      {/* Right panel — login form */}
+      {/* Right panel â€” login form */}
       <div className="flex-1 flex flex-col items-center justify-center p-6 lg:p-12 relative">
         {/* Mobile logo */}
         <div className="lg:hidden mb-8 flex items-center gap-3">
@@ -178,7 +178,7 @@ export default function Login() {
               <span style={{ color: "#22D3EE" }}>Care</span>
             </p>
             <p className="text-xs" style={{ color: "rgba(255,255,255,0.35)" }}>
-              Gestão moderna para ILPIs
+              GestÃ£o moderna para ILPIs
             </p>
           </div>
         </div>
@@ -203,7 +203,7 @@ export default function Login() {
                 className="text-sm mt-1 leading-relaxed"
                 style={{ color: "rgba(255,255,255,0.45)" }}
               >
-                Gerencie sua unidade, equipe, pacientes e rotinas em um só lugar.
+                Gerencie sua unidade, equipe, pacientes e rotinas em um sÃ³ lugar.
               </p>
             </div>
 
@@ -218,7 +218,7 @@ export default function Login() {
                         className="text-sm font-medium"
                         style={{ color: "rgba(255,255,255,0.7)" }}
                       >
-                        CNPJ da organização
+                        CNPJ da organizaÃ§Ã£o
                       </FormLabel>
                       <FormControl>
                         <Input
@@ -249,11 +249,11 @@ export default function Login() {
                         className="text-sm font-medium"
                         style={{ color: "rgba(255,255,255,0.7)" }}
                       >
-                        Usuário
+                        UsuÃ¡rio
                       </FormLabel>
                       <FormControl>
                         <Input
-                          placeholder="Digite seu usuário"
+                          placeholder="Digite seu usuÃ¡rio"
                           {...field}
                           className="h-11 border-white/10 text-white placeholder:text-white/25"
                           style={{ background: "rgba(255,255,255,0.06)" }}
@@ -329,3 +329,4 @@ export default function Login() {
     </div>
   );
 }
+

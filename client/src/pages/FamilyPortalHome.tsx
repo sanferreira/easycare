@@ -119,13 +119,13 @@ export default function FamilyPortalHome() {
       {/* Header */}
       <header className="sticky top-0 z-10 border-b"
         style={{ background: "#0A0F2C", borderColor: "rgba(34,211,238,0.15)" }}>
-        <div className="max-w-2xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
+        <div className="max-w-2xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-1 items-center gap-2.5">
             <div className="relative">
               <img src="/easycare-logo.png" alt="EasyCare" className="h-8 w-8 object-contain rounded-lg" />
               <div className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#0A0F2C]" style={{ background: "#22D3EE" }} />
             </div>
-            <div>
+            <div className="min-w-0">
               <p className="text-sm font-bold" style={{ fontFamily: "var(--font-display)", color: "white" }}>
                 Easy<span style={{ color: "#22D3EE" }}>Care</span>{" "}
                 <span className="text-xs font-normal px-1.5 py-0.5 rounded-md ml-0.5"
@@ -133,10 +133,10 @@ export default function FamilyPortalHome() {
                   Portal Família
                 </span>
               </p>
-              <p className="text-[10px] leading-none mt-0.5" style={{ color: "rgba(255,255,255,0.35)" }}>{me.name} · {me.relationship}</p>
+              <p className="text-[10px] leading-none mt-0.5 truncate" style={{ color: "rgba(255,255,255,0.35)" }}>{me.name} · {me.relationship}</p>
             </div>
           </div>
-          <Button variant="ghost" size="sm" className="gap-1.5 text-xs"
+          <Button variant="ghost" size="sm" className="w-full justify-center gap-1.5 text-xs sm:w-auto"
             style={{ color: "rgba(255,255,255,0.4)" }}
             onClick={() => logoutMutation.mutate()} data-testid="button-portal-logout">
             <LogOut className="h-3.5 w-3.5" />
@@ -156,10 +156,10 @@ export default function FamilyPortalHome() {
               borderColor: "rgba(34,211,238,0.3)",
               boxShadow: "0 4px 24px rgba(34,211,238,0.12)",
             }}>
-            <div className="flex items-start justify-between">
-              <div>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0">
                 <p className="text-xs font-semibold uppercase tracking-wider mb-1" style={{ color: "#22D3EE" }}>Seu familiar</p>
-                <h2 className="text-2xl font-bold text-white" style={{ fontFamily: "var(--font-display)" }}>{resident.name}</h2>
+                <h2 className="text-2xl font-bold text-white truncate" style={{ fontFamily: "var(--font-display)" }}>{resident.name}</h2>
                 <div className="flex flex-wrap gap-2 mt-2">
                   <span className="flex items-center gap-1 text-xs" style={{ color: "rgba(255,255,255,0.55)" }}>
                     <BedDouble className="h-3.5 w-3.5" />
@@ -214,7 +214,7 @@ export default function FamilyPortalHome() {
             <CardContent className="space-y-3">
               {/* Vitals */}
               {(latestRecord.bloodPressure || latestRecord.heartRate || latestRecord.temperature || latestRecord.oxygenSat) && (
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
                   {latestRecord.bloodPressure && (
                     <div className="rounded-xl p-2.5 bg-red-50 border border-red-100 text-center">
                       <Activity className="h-3.5 w-3.5 text-red-400 mx-auto mb-1" />
@@ -364,3 +364,6 @@ export default function FamilyPortalHome() {
     </div>
   );
 }
+
+
+

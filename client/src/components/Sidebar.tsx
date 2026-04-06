@@ -2,8 +2,6 @@ import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard,
   Users,
-  Pill,
-  Activity,
   LogOut,
   Menu,
   Calendar,
@@ -25,10 +23,8 @@ const allNavItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/residents", label: "Residentes", icon: Users },
   { href: "/prontuario", label: "Prontuario", icon: FileText },
-  { href: "/medications", label: "Medicacoes", icon: Pill },
   { href: "/staff", label: "Equipe", icon: UserCheck },
   { href: "/escalas", label: "Escalas", icon: Calendar },
-  { href: "/occurrences", label: "Ocorrencias", icon: Activity },
   { href: "/financeiro", label: "Financeiro", icon: DollarSign },
   { href: "/environment", label: "Ambiente", icon: SlidersHorizontal },
 ];

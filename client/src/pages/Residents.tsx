@@ -57,12 +57,49 @@ import {
   type FamilyMember,
   type Contract,
 } from "@shared/schema";
-import { format } from "date-fns";
+import { addDays, format } from "date-fns";
 import { maskCpf, maskPhoneBR } from "@/lib/masks";
 import { imageFileToDataUrl } from "@/lib/imageUpload";
 import { DEFAULT_ENVIRONMENT_SETTINGS, getShiftProfileRule } from "@shared/environment";
 
 type MedicationWithResident = Medication & { residentName?: string };
+type MedicationAdministrationWithDetails = {
+  id: number;
+  medicationId: number;
+  residentId: number;
+  staffId: number | null;
+  scheduledFor: string | null;
+  administeredAt: string | null;
+  status: "given" | "skipped" | "refused" | "late";
+  notes: string | null;
+  medicationName?: string;
+  residentName?: string;
+  administeredByName?: string;
+};
+type MedicationDoseScheduleItem = {
+  key: string;
+  medicationId: number;
+  medicationName: string;
+  dosage: string;
+  frequency: string;
+  route: string | null;
+  scheduledFor: string;
+  scheduledDate: string;
+  scheduledTime: string;
+  status: "pending" | "given" | "skipped" | "refused" | "late";
+  isOverdue: boolean;
+  notes: string | null;
+  administeredAt: string | null;
+  administeredByName: string | null;
+  administeredByStaffId: number | null;
+};
+type MedicationDoseScheduleResponse = {
+  residentId: number;
+  from: string;
+  to: string;
+  generatedAt: string;
+  doses: MedicationDoseScheduleItem[];
+};
 type OccurrenceWithResident = Occurrence & { residentName?: string };
 type ShiftWithDetails = ShiftAssignment & { residentName?: string; staffName?: string };
 type ContractWithResident = Contract & { residentName?: string };
@@ -125,6 +162,11 @@ const residentMedicationSchema = z.object({
   startDate: z.string().optional(),
   endDate: z.string().optional(),
 });
+const residentMedicationDoseActionSchema = z.object({
+  status: z.enum(["given", "skipped", "refused", "late"]).default("given"),
+  notes: z.string().optional(),
+  staffId: z.coerce.number().optional(),
+});
 const residentShiftSchema = z.object({
   staffId: z.coerce.number().min(1, "Cuidador obrigatorio"),
   shiftType: z.enum(["12h_manha", "12h_noite", "24h", "avulso"]).default("avulso"),
@@ -169,6 +211,83 @@ const residentOccurrenceSchema = z.object({
 const medicationStatusLabel: Record<string, string> = {
   active: "Ativo",
   suspended: "Suspenso",
+};
+const MEDICATION_FREQUENCY_OPTIONS = [
+  { value: "a cada 4h", label: "A cada 4 horas" },
+  { value: "a cada 6h", label: "A cada 6 horas" },
+  { value: "a cada 8h", label: "A cada 8 horas" },
+  { value: "a cada 12h", label: "A cada 12 horas" },
+  { value: "a cada 24h", label: "1x ao dia (24h)" },
+  { value: "2x ao dia", label: "2x ao dia" },
+  { value: "3x ao dia", label: "3x ao dia" },
+  { value: "4x ao dia", label: "4x ao dia" },
+  { value: "semanal", label: "Semanal" },
+  { value: "sob demanda", label: "Sob demanda (se necessario)" },
+] as const;
+
+function getMedicationFrequencyLabel(value?: string | null): string {
+  if (!value) return "-";
+  const normalizedValue = value.trim().toLowerCase();
+  const found = MEDICATION_FREQUENCY_OPTIONS.find(
+    (option) => option.value.trim().toLowerCase() === normalizedValue,
+  );
+  return found?.label ?? value;
+}
+
+function getMedicationFrequencyOptionsForValue(value?: string | null): Array<{ value: string; label: string }> {
+  const currentValue = value?.trim() ?? "";
+  if (!currentValue) return [...MEDICATION_FREQUENCY_OPTIONS];
+  const hasCurrent = MEDICATION_FREQUENCY_OPTIONS.some(
+    (option) => option.value.trim().toLowerCase() === currentValue.toLowerCase(),
+  );
+  if (hasCurrent) return [...MEDICATION_FREQUENCY_OPTIONS];
+  return [
+    { value: currentValue, label: `Personalizado (${currentValue})` },
+    ...MEDICATION_FREQUENCY_OPTIONS,
+  ];
+}
+
+function extractPrimaryScheduleTime(value?: string | null): string {
+  const raw = (value ?? "").trim();
+  if (!raw) return "";
+  const token = raw
+    .split(/[\n,;|]+/g)
+    .map((item) => item.trim())
+    .find((item) => /^([01]?\d|2[0-3]):([0-5]\d)$/.test(item));
+  if (!token) return "";
+  const [hourText, minuteText] = token.split(":");
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function normalizeScheduleTimeValue(value?: string | null): string | null {
+  const normalized = (value ?? "").trim();
+  if (!normalized) return null;
+  if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(normalized)) return null;
+  return normalized;
+}
+
+function frequencyNeedsBaseTime(value?: string | null): boolean {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized.includes("sob demanda")) return false;
+  if (normalized.includes("semanal")) return true;
+  if (normalized.match(/(?:a cada\s*)?(\d{1,2})\s*h/)) return true;
+  const timesPerDayMatch = normalized.match(/(\d{1,2})\s*x\s*ao\s*dia/);
+  if (timesPerDayMatch) return true;
+  return false;
+}
+
+const medicationAdministrationStatusLabel: Record<
+  MedicationDoseScheduleItem["status"] | MedicationAdministrationWithDetails["status"],
+  string
+> = {
+  pending: "Pendente",
+  given: "Administrado",
+  skipped: "Nao administrado",
+  refused: "Recusado",
+  late: "Atrasado",
 };
 
 const occurrenceSeverityLabel: Record<string, string> = {
@@ -216,6 +335,14 @@ const shiftTypeMeta = {
     selectedStyle: "bg-emerald-100 text-emerald-800 border-emerald-200 ring-emerald-500/25",
   },
 } as const;
+
+function medicationAdministrationStatusClass(status: MedicationDoseScheduleItem["status"]): string {
+  if (status === "given") return "bg-emerald-100 text-emerald-800 border-emerald-200";
+  if (status === "skipped") return "bg-amber-100 text-amber-800 border-amber-200";
+  if (status === "refused") return "bg-rose-100 text-rose-800 border-rose-200";
+  if (status === "late") return "bg-violet-100 text-violet-800 border-violet-200";
+  return "bg-slate-100 text-slate-700 border-slate-200";
+}
 
 function getDefaultShiftTimes(
   type: z.infer<typeof residentShiftSchema>["shiftType"],
@@ -323,7 +450,7 @@ export default function Residents() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { confirm, confirmDialog } = useConfirmDialog();
-  const canViewMedications = canAccessRoute(user?.role, "/medications", environmentSettings?.roleRoutes);
+  const canViewMedications = canAccessRoute(user?.role, "/prontuario", environmentSettings?.roleRoutes);
   const canViewEscalas = canAccessRoute(user?.role, "/escalas", environmentSettings?.roleRoutes);
   const canViewOccurrences = canAccessRoute(user?.role, "/occurrences", environmentSettings?.roleRoutes);
   const canManageFamily = canAccessRoute(user?.role, "/prontuario", environmentSettings?.roleRoutes);
@@ -350,26 +477,26 @@ export default function Residents() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h1 className="text-3xl font-bold font-display text-foreground">Residentes</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold font-display text-foreground">Residentes</h1>
           <p className="text-muted-foreground mt-1">Gerencie os idosos acolhidos na instituição.</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => { setEditingResident(null); setIsDialogOpen(true); }} data-testid="button-new-resident">
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+          <Button variant="outline" className="w-full sm:w-auto" onClick={() => { setEditingResident(null); setIsDialogOpen(true); }} data-testid="button-new-resident">
             <Plus className="mr-2 h-4 w-4" /> Cadastro Rápido
           </Button>
-          <Button onClick={() => setIsWizardOpen(true)} className="shadow-lg shadow-primary/20 gap-2" data-testid="button-nova-admissao">
+          <Button onClick={() => setIsWizardOpen(true)} className="w-full sm:w-auto shadow-lg shadow-primary/20 gap-2" data-testid="button-nova-admissao">
             <Plus className="h-4 w-4" /> Nova Admissão
           </Button>
         </div>
       </div>
 
-      <div className="flex items-center gap-2 bg-card p-4 rounded-xl border border-border shadow-sm">
-        <Search className="h-5 w-5 text-muted-foreground" />
+      <div className="flex items-center gap-2 bg-card p-3 sm:p-4 rounded-xl border border-border shadow-sm">
+        <Search className="h-4 w-4 sm:h-5 sm:w-5 text-muted-foreground" />
         <Input 
           placeholder="Buscar por nome..." 
           value={search} 
           onChange={(e) => setSearch(e.target.value)}
-          className="border-0 focus-visible:ring-0 bg-transparent px-0 text-base"
+          className="border-0 focus-visible:ring-0 bg-transparent px-0 text-sm sm:text-base"
         />
       </div>
 
@@ -377,7 +504,7 @@ export default function Residents() {
         <Table>
           <TableHeader className="bg-muted/50">
             <TableRow>
-              <TableHead className="w-[300px]">Nome</TableHead>
+              <TableHead className="w-[240px]">Nome</TableHead>
               <TableHead>Quarto</TableHead>
               <TableHead>Contato</TableHead>
               <TableHead>Status</TableHead>
@@ -584,6 +711,41 @@ function ResidentDetailsDialog({
         "Erro ao carregar medicacoes.",
       ),
   });
+  const [medicationScheduleRange, setMedicationScheduleRange] = useState(() => {
+    const baseDate = new Date();
+    return {
+      from: format(baseDate, "yyyy-MM-dd"),
+      to: format(addDays(baseDate, 6), "yyyy-MM-dd"),
+    };
+  });
+  const [isDoseActionDialogOpen, setIsDoseActionDialogOpen] = useState(false);
+  const [selectedDoseItem, setSelectedDoseItem] = useState<MedicationDoseScheduleItem | null>(null);
+
+  const medicationDoseScheduleQuery = useQuery<MedicationDoseScheduleResponse>({
+    queryKey: [
+      "/api/residents",
+      residentId,
+      "medication-dose-schedule",
+      medicationScheduleRange.from,
+      medicationScheduleRange.to,
+    ],
+    enabled: open && !!resident && canViewMedications,
+    queryFn: () =>
+      fetchResidentData<MedicationDoseScheduleResponse>(
+        `/api/residents/${residentId}/medication-dose-schedule?from=${medicationScheduleRange.from}&to=${medicationScheduleRange.to}`,
+        "Erro ao carregar agenda de doses.",
+      ),
+  });
+
+  const medicationAdministrationHistoryQuery = useQuery<MedicationAdministrationWithDetails[]>({
+    queryKey: ["/api/medication-administrations", "resident-details", residentId],
+    enabled: open && !!resident && canViewMedications,
+    queryFn: () =>
+      fetchResidentData<MedicationAdministrationWithDetails[]>(
+        `/api/medication-administrations?residentId=${residentId}`,
+        "Erro ao carregar historico de medicacoes.",
+      ),
+  });
 
   const occurrencesQuery = useQuery<OccurrenceWithResident[]>({
     queryKey: ["/api/occurrences", "resident-details", residentId],
@@ -624,14 +786,15 @@ function ResidentDetailsDialog({
         "Erro ao carregar contratos.",
       ),
   });
-  const staffQuery = useQuery<Array<{ id: number; name: string; role?: string; shift?: string }>>({
+  const staffQuery = useQuery<Array<{ id: number; name: string; role?: string; shift?: string; active?: boolean }>>({
     queryKey: ["/api/staff", "resident-details", residentId],
-    enabled: open && !!resident && canViewEscalas,
-    queryFn: () =>
-      fetchResidentData<Array<{ id: number; name: string; role?: string; shift?: string }>>(
-        "/api/staff",
-        "Erro ao carregar equipe.",
-      ),
+    enabled: open && !!resident && (canViewEscalas || canViewMedications),
+    queryFn: async () => {
+      const res = await fetch("/api/staff", { credentials: "include" });
+      if (res.status === 403) return [];
+      if (!res.ok) throw new Error("Erro ao carregar equipe.");
+      return (await res.json()) as Array<{ id: number; name: string; role?: string; shift?: string; active?: boolean }>;
+    },
   });
   const isCaregiver = user?.role === "cuidador";
   const normalizeStaffName = (value?: string | null) =>
@@ -649,6 +812,10 @@ function ResidentDetailsDialog({
     if (!isCaregiver) return staffQuery.data ?? [];
     return linkedStaffForCaregiver ? [linkedStaffForCaregiver] : [];
   }, [isCaregiver, linkedStaffForCaregiver, staffQuery.data]);
+  const activeMedicationAdministrators = useMemo(
+    () => (staffQuery.data ?? []).filter((member) => member.active !== false),
+    [staffQuery.data],
+  );
   const defaultShiftStaffId = linkedStaffForCaregiver?.id ?? 0;
 
   const [isMedicationDialogOpen, setIsMedicationDialogOpen] = useState(false);
@@ -676,6 +843,15 @@ function ResidentDetailsDialog({
       notes: "",
       startDate: "",
       endDate: "",
+    },
+  });
+  const watchedMedicationFrequency = medicationForm.watch("frequency");
+  const medicationDoseActionForm = useForm<z.infer<typeof residentMedicationDoseActionSchema>>({
+    resolver: zodResolver(residentMedicationDoseActionSchema),
+    defaultValues: {
+      status: "given",
+      notes: "",
+      staffId: undefined,
     },
   });
   const shiftForm = useForm<z.infer<typeof residentShiftSchema>>({
@@ -722,6 +898,19 @@ function ResidentDetailsDialog({
     if (!open) return;
     contractForm.setValue("residentId", residentId);
   }, [open, residentId, contractForm]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (!selectedDoseItem) return;
+    const initialStatus = selectedDoseItem.status === "pending"
+      ? "given"
+      : selectedDoseItem.status;
+    medicationDoseActionForm.reset({
+      status: initialStatus,
+      notes: selectedDoseItem.notes ?? "",
+      staffId: selectedDoseItem.administeredByStaffId ?? undefined,
+    });
+  }, [medicationDoseActionForm, open, selectedDoseItem]);
 
   const selectedShiftType = shiftForm.watch("shiftType");
   const shiftDate = shiftForm.watch("date");
@@ -770,6 +959,10 @@ function ResidentDetailsDialog({
 
   const createMedication = useMutation({
     mutationFn: async (data: z.infer<typeof residentMedicationSchema>) => {
+      const scheduleTime = normalizeScheduleTimeValue(data.scheduleTime);
+      if (frequencyNeedsBaseTime(data.frequency) && !scheduleTime) {
+        throw new Error("Informe o horario base para esta frequencia.");
+      }
       const payload = {
         residentId,
         name: data.name.trim(),
@@ -777,7 +970,7 @@ function ResidentDetailsDialog({
         frequency: data.frequency.trim(),
         status: data.status,
         route: data.route?.trim() || null,
-        scheduleTime: data.scheduleTime?.trim() || null,
+        scheduleTime,
         prescribedBy: data.prescribedBy?.trim() || null,
         notes: data.notes?.trim() || null,
         startDate: data.startDate?.trim() || null,
@@ -825,6 +1018,10 @@ function ResidentDetailsDialog({
 
   const updateMedication = useMutation({
     mutationFn: async ({ id, data }: { id: number; data: z.infer<typeof residentMedicationSchema> }) => {
+      const scheduleTime = normalizeScheduleTimeValue(data.scheduleTime);
+      if (frequencyNeedsBaseTime(data.frequency) && !scheduleTime) {
+        throw new Error("Informe o horario base para esta frequencia.");
+      }
       const payload = {
         residentId,
         name: data.name.trim(),
@@ -832,7 +1029,7 @@ function ResidentDetailsDialog({
         frequency: data.frequency.trim(),
         status: data.status,
         route: data.route?.trim() || null,
-        scheduleTime: data.scheduleTime?.trim() || null,
+        scheduleTime,
         prescribedBy: data.prescribedBy?.trim() || null,
         notes: data.notes?.trim() || null,
         startDate: data.startDate?.trim() || null,
@@ -878,6 +1075,60 @@ function ResidentDetailsDialog({
     },
     onError: (error: Error) => {
       toast({ variant: "destructive", title: error.message || "Erro ao excluir medicacao" });
+    },
+  });
+  const registerDoseAdministration = useMutation({
+    mutationFn: async (data: z.infer<typeof residentMedicationDoseActionSchema>) => {
+      if (!selectedDoseItem) {
+        throw new Error("Nenhuma dose selecionada.");
+      }
+      const payload = {
+        medicationId: selectedDoseItem.medicationId,
+        scheduledFor: selectedDoseItem.scheduledFor,
+        staffId: isCaregiver ? undefined : data.staffId ?? undefined,
+        status: data.status,
+        notes: data.notes?.trim() || null,
+        administeredAt: new Date().toISOString(),
+      };
+      const res = await fetch(`/api/residents/${residentId}/medication-dose-records`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        let message = "Erro ao registrar administracao da dose.";
+        try {
+          const responseBody = await res.json();
+          if (responseBody?.message) message = responseBody.message;
+        } catch {}
+        throw new Error(message);
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/medication-administrations"] });
+      queryClient.invalidateQueries({
+        queryKey: [
+          "/api/residents",
+          residentId,
+          "medication-dose-schedule",
+          medicationScheduleRange.from,
+          medicationScheduleRange.to,
+        ],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["/api/medication-administrations", "resident-details", residentId],
+      });
+      setIsDoseActionDialogOpen(false);
+      setSelectedDoseItem(null);
+      toast({ title: "Administracao registrada com sucesso" });
+    },
+    onError: (error: Error) => {
+      toast({
+        variant: "destructive",
+        title: error.message || "Erro ao registrar administracao da dose",
+      });
     },
   });
 
@@ -1302,13 +1553,23 @@ function ResidentDetailsDialog({
       frequency: medication.frequency || "",
       status: (medication.status as "active" | "suspended") || "active",
       route: medication.route || "",
-      scheduleTime: medication.scheduleTime || "",
+      scheduleTime: extractPrimaryScheduleTime(medication.scheduleTime),
       prescribedBy: medication.prescribedBy || "",
       notes: medication.notes || "",
       startDate: medication.startDate || "",
       endDate: medication.endDate || "",
     });
     setIsMedicationDialogOpen(true);
+  };
+
+  const openDoseActionDialog = (dose: MedicationDoseScheduleItem) => {
+    setSelectedDoseItem(dose);
+    medicationDoseActionForm.reset({
+      status: dose.status === "pending" ? "given" : dose.status,
+      notes: dose.notes ?? "",
+      staffId: dose.administeredByStaffId ?? activeMedicationAdministrators[0]?.id,
+    });
+    setIsDoseActionDialogOpen(true);
   };
 
   const openCreateShiftDialog = () => {
@@ -1461,7 +1722,7 @@ function ResidentDetailsDialog({
         </div>
 
         <Tabs defaultValue={defaultTab} className="space-y-4">
-          <TabsList className="grid w-full grid-cols-5">
+          <TabsList className="grid w-full grid-cols-1 sm:grid-cols-2 lg:grid-cols-5">
             <TabsTrigger value="medications" disabled={!canViewMedications}>
               Medicacoes
             </TabsTrigger>
@@ -1524,7 +1785,7 @@ function ResidentDetailsDialog({
                           <TableRow key={medication.id}>
                             <TableCell className="font-medium">{medication.name}</TableCell>
                             <TableCell>{medication.dosage}</TableCell>
-                            <TableCell>{medication.frequency}</TableCell>
+                            <TableCell>{getMedicationFrequencyLabel(medication.frequency)}</TableCell>
                             <TableCell>
                               {medicationStatusLabel[medication.status] ?? medication.status}
                             </TableCell>
@@ -1564,6 +1825,214 @@ function ResidentDetailsDialog({
                     </Table>
                   </div>
                 )}
+
+                <Tabs defaultValue="agenda" className="mt-5 space-y-3">
+                  <TabsList className="grid w-full grid-cols-1 sm:grid-cols-2">
+                    <TabsTrigger value="agenda">Agenda de doses</TabsTrigger>
+                    <TabsTrigger value="historico">Historico de administracoes</TabsTrigger>
+                  </TabsList>
+
+                  <TabsContent value="agenda" className="mt-0">
+                    <div className="rounded-xl border border-border bg-card shadow-sm p-4 space-y-4">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                        <div>
+                          <h4 className="text-sm font-semibold text-foreground">Agenda de doses</h4>
+                          <p className="text-xs text-muted-foreground">
+                            Doses geradas por residente com base nos horarios e periodo das prescricoes.
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-end gap-2">
+                          <div className="space-y-1">
+                            <Label className="text-xs text-muted-foreground">De</Label>
+                            <Input
+                              type="date"
+                              value={medicationScheduleRange.from}
+                              onChange={(event) =>
+                                setMedicationScheduleRange((prev) => ({ ...prev, from: event.target.value }))
+                              }
+                              className="h-8 w-full sm:w-[148px]"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-xs text-muted-foreground">Ate</Label>
+                            <Input
+                              type="date"
+                              value={medicationScheduleRange.to}
+                              onChange={(event) =>
+                                setMedicationScheduleRange((prev) => ({ ...prev, to: event.target.value }))
+                              }
+                              className="h-8 w-full sm:w-[148px]"
+                            />
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              queryClient.invalidateQueries({
+                                queryKey: [
+                                  "/api/residents",
+                                  residentId,
+                                  "medication-dose-schedule",
+                                  medicationScheduleRange.from,
+                                  medicationScheduleRange.to,
+                                ],
+                              });
+                            }}
+                          >
+                            Atualizar agenda
+                          </Button>
+                        </div>
+                      </div>
+
+                      {medicationDoseScheduleQuery.isLoading ? (
+                        <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                          Carregando agenda de doses...
+                        </div>
+                      ) : medicationDoseScheduleQuery.error ? (
+                        <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-6 text-sm text-destructive">
+                          {medicationDoseScheduleQuery.error instanceof Error
+                            ? medicationDoseScheduleQuery.error.message
+                            : "Erro ao carregar agenda de doses."}
+                        </div>
+                      ) : (medicationDoseScheduleQuery.data?.doses.length ?? 0) === 0 ? (
+                        <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                          Nenhuma dose gerada no periodo selecionado.
+                        </div>
+                      ) : (
+                        <div className="rounded-xl border border-border overflow-hidden">
+                          <Table>
+                            <TableHeader className="bg-muted/50">
+                              <TableRow>
+                                <TableHead>Data/Hora</TableHead>
+                                <TableHead>Medicacao</TableHead>
+                                <TableHead>Dose</TableHead>
+                                <TableHead>Status</TableHead>
+                                <TableHead>Administrado por</TableHead>
+                                <TableHead className="text-right">Acoes</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {medicationDoseScheduleQuery.data?.doses.map((dose) => (
+                                <TableRow key={dose.key}>
+                                  <TableCell className="font-medium">
+                                    <div className="flex flex-col">
+                                      <span>{format(new Date(dose.scheduledFor), "dd/MM/yyyy HH:mm")}</span>
+                                      {dose.isOverdue && dose.status === "pending" ? (
+                                        <span className="text-[11px] text-rose-600">Dose em atraso</span>
+                                      ) : null}
+                                    </div>
+                                  </TableCell>
+                                  <TableCell>
+                                    <div className="flex flex-col">
+                                      <span className="font-medium">{dose.medicationName}</span>
+                                      <span className="text-xs text-muted-foreground">
+                                        {getMedicationFrequencyLabel(dose.frequency)}
+                                      </span>
+                                    </div>
+                                  </TableCell>
+                                  <TableCell>{dose.dosage}</TableCell>
+                                  <TableCell>
+                                    <Badge
+                                      variant="outline"
+                                      className={medicationAdministrationStatusClass(dose.status)}
+                                    >
+                                      {medicationAdministrationStatusLabel[dose.status]}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell className="text-sm text-muted-foreground">
+                                    {dose.administeredByName || "-"}
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => openDoseActionDialog(dose)}
+                                    >
+                                      {dose.status === "pending" ? "Registrar" : "Editar registro"}
+                                    </Button>
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      )}
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="historico" className="mt-0">
+                    <div className="rounded-xl border border-border bg-card shadow-sm p-4 space-y-3">
+                      <div>
+                        <h4 className="text-sm font-semibold text-foreground">Historico de administracoes</h4>
+                        <p className="text-xs text-muted-foreground">
+                          Rastreabilidade completa por dose, com status, observacoes e responsavel.
+                        </p>
+                      </div>
+                      {medicationAdministrationHistoryQuery.isLoading ? (
+                        <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                          Carregando historico...
+                        </div>
+                      ) : medicationAdministrationHistoryQuery.error ? (
+                        <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-6 text-sm text-destructive">
+                          {medicationAdministrationHistoryQuery.error instanceof Error
+                            ? medicationAdministrationHistoryQuery.error.message
+                            : "Erro ao carregar historico de administracoes."}
+                        </div>
+                      ) : (medicationAdministrationHistoryQuery.data?.length ?? 0) === 0 ? (
+                        <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                          Nenhuma administracao registrada para este residente.
+                        </div>
+                      ) : (
+                        <div className="rounded-xl border border-border overflow-hidden">
+                          <Table>
+                            <TableHeader className="bg-muted/50">
+                              <TableRow>
+                                <TableHead>Data/Hora da dose</TableHead>
+                                <TableHead>Medicacao</TableHead>
+                                <TableHead>Status</TableHead>
+                                <TableHead>Administrado por</TableHead>
+                                <TableHead>Registro em</TableHead>
+                                <TableHead>Observacoes</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {medicationAdministrationHistoryQuery.data?.map((entry) => (
+                                <TableRow key={entry.id}>
+                                  <TableCell>
+                                    {entry.scheduledFor
+                                      ? format(new Date(entry.scheduledFor), "dd/MM/yyyy HH:mm")
+                                      : "-"}
+                                  </TableCell>
+                                  <TableCell className="font-medium">{entry.medicationName || "-"}</TableCell>
+                                  <TableCell>
+                                    <Badge
+                                      variant="outline"
+                                      className={medicationAdministrationStatusClass(entry.status)}
+                                    >
+                                      {medicationAdministrationStatusLabel[entry.status]}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell className="text-sm text-muted-foreground">
+                                    {entry.administeredByName || "-"}
+                                  </TableCell>
+                                  <TableCell className="text-sm text-muted-foreground">
+                                    {entry.administeredAt
+                                      ? format(new Date(entry.administeredAt), "dd/MM/yyyy HH:mm")
+                                      : "-"}
+                                  </TableCell>
+                                  <TableCell className="max-w-[260px]">
+                                    <span className="text-sm text-muted-foreground">{entry.notes || "-"}</span>
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      )}
+                    </div>
+                  </TabsContent>
+                </Tabs>
               </>
             )}
           </TabsContent>
@@ -1794,7 +2263,7 @@ function ResidentDetailsDialog({
                     )}
                   />
 
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <FormField
                       control={medicationForm.control}
                       name="dosage"
@@ -1814,16 +2283,30 @@ function ResidentDetailsDialog({
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>Frequencia *</FormLabel>
-                          <FormControl>
-                            <Input {...field} placeholder="Ex: 8/8h" />
-                          </FormControl>
+                          <Select onValueChange={field.onChange} value={field.value}>
+                            <FormControl>
+                              <SelectTrigger>
+                                <SelectValue placeholder="Selecionar frequencia" />
+                              </SelectTrigger>
+                            </FormControl>
+                            <SelectContent>
+                              {getMedicationFrequencyOptionsForValue(field.value).map((option) => (
+                                <SelectItem key={option.value} value={option.value}>
+                                  {option.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <p className="text-xs text-muted-foreground">
+                            Para frequencias com mais de 1 dose ao dia, preencha tambem os Horario(s).
+                          </p>
                           <FormMessage />
                         </FormItem>
                       )}
                     />
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <FormField
                       control={medicationForm.control}
                       name="status"
@@ -1859,7 +2342,7 @@ function ResidentDetailsDialog({
                     />
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <FormField
                       control={medicationForm.control}
                       name="startDate"
@@ -1886,16 +2369,21 @@ function ResidentDetailsDialog({
                     />
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <FormField
                       control={medicationForm.control}
                       name="scheduleTime"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Horario(s)</FormLabel>
+                          <FormLabel>
+                            Horario base {frequencyNeedsBaseTime(watchedMedicationFrequency) ? "*" : "(opcional)"}
+                          </FormLabel>
                           <FormControl>
-                            <Input {...field} value={field.value ?? ""} placeholder="Ex: 08:00, 20:00" />
+                            <Input type="time" {...field} value={field.value ?? ""} />
                           </FormControl>
+                          <p className="text-xs text-muted-foreground">
+                            Ex: a cada 6h + 08:00 = 08:00, 14:00, 20:00, 02:00.
+                          </p>
                         </FormItem>
                       )}
                     />
@@ -1936,6 +2424,143 @@ function ResidentDetailsDialog({
                   </div>
                 </form>
               </Form>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog
+            open={isDoseActionDialogOpen}
+            onOpenChange={(isOpen) => {
+              setIsDoseActionDialogOpen(isOpen);
+              if (!isOpen) {
+                setSelectedDoseItem(null);
+              }
+            }}
+          >
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle>Registrar administracao da dose</DialogTitle>
+              </DialogHeader>
+              {selectedDoseItem ? (
+                <div className="space-y-3">
+                  <div className="rounded-lg border border-border bg-muted/30 p-3">
+                    <p className="text-xs text-muted-foreground">Dose selecionada</p>
+                    <p className="text-sm font-medium text-foreground">
+                      {selectedDoseItem.medicationName} ({selectedDoseItem.dosage})
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {format(new Date(selectedDoseItem.scheduledFor), "dd/MM/yyyy HH:mm")}
+                    </p>
+                  </div>
+                  <Form {...medicationDoseActionForm}>
+                    <form
+                      onSubmit={medicationDoseActionForm.handleSubmit((data) => {
+                        if (!isCaregiver && !data.staffId) {
+                          medicationDoseActionForm.setError("staffId", {
+                            type: "manual",
+                            message: "Profissional obrigatorio.",
+                          });
+                          return;
+                        }
+                        registerDoseAdministration.mutate(data);
+                      })}
+                      className="space-y-4"
+                    >
+                      <FormField
+                        control={medicationDoseActionForm.control}
+                        name="status"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Status da dose</FormLabel>
+                            <Select onValueChange={field.onChange} value={field.value}>
+                              <FormControl>
+                                <SelectTrigger>
+                                  <SelectValue />
+                                </SelectTrigger>
+                              </FormControl>
+                              <SelectContent>
+                                <SelectItem value="given">Administrado</SelectItem>
+                                <SelectItem value="skipped">Nao administrado</SelectItem>
+                                <SelectItem value="refused">Recusado</SelectItem>
+                                <SelectItem value="late">Atrasado</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+
+                      {isCaregiver ? (
+                        <div className="rounded-lg border border-border bg-muted/30 p-3">
+                          <p className="text-xs text-muted-foreground">Profissional responsavel</p>
+                          <p className="text-sm font-medium text-foreground">
+                            {user?.name || "Cuidador logado"}
+                          </p>
+                        </div>
+                      ) : (
+                        <FormField
+                          control={medicationDoseActionForm.control}
+                          name="staffId"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Profissional que administrou *</FormLabel>
+                              <Select
+                                onValueChange={(value) => field.onChange(Number(value))}
+                                value={field.value ? String(field.value) : undefined}
+                              >
+                                <FormControl>
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="Selecionar profissional" />
+                                  </SelectTrigger>
+                                </FormControl>
+                                <SelectContent>
+                                  {activeMedicationAdministrators.map((member) => (
+                                    <SelectItem key={member.id} value={String(member.id)}>
+                                      {member.name}{member.role ? ` - ${member.role}` : ""}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      )}
+
+                      <FormField
+                        control={medicationDoseActionForm.control}
+                        name="notes"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Observacoes</FormLabel>
+                            <FormControl>
+                              <Textarea
+                                {...field}
+                                value={field.value ?? ""}
+                                rows={3}
+                                placeholder="Ex: aferido sinais vitais antes da administracao"
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setIsDoseActionDialogOpen(false)}
+                        >
+                          Cancelar
+                        </Button>
+                        <Button type="submit" disabled={registerDoseAdministration.isPending}>
+                          {registerDoseAdministration.isPending ? "Salvando..." : "Salvar dose"}
+                        </Button>
+                      </div>
+                    </form>
+                  </Form>
+                </div>
+              ) : null}
             </DialogContent>
           </Dialog>
 
@@ -2004,7 +2629,7 @@ function ResidentDetailsDialog({
 
                   <div>
                     <Label className="text-sm font-medium">Tipo de Plantao *</Label>
-                    <div className="grid grid-cols-2 gap-2 mt-1.5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1.5">
                       {availableShiftTypes.map((shiftType) => {
                         const meta = shiftTypeMeta[shiftType];
                         const Icon = meta.icon;
@@ -2062,7 +2687,7 @@ function ResidentDetailsDialog({
                       )}
                     />
                   ) : (
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <FormField
                         control={shiftForm.control}
                         name="startTime"
@@ -2154,7 +2779,7 @@ function ResidentDetailsDialog({
                   })}
                   className="space-y-4"
                 >
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <FormField
                       control={occurrenceForm.control}
                       name="type"
@@ -2193,7 +2818,7 @@ function ResidentDetailsDialog({
                     />
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <FormField
                       control={occurrenceForm.control}
                       name="status"
@@ -2384,7 +3009,7 @@ function ResidentDetailsDialog({
                             </FormItem>
                           )}
                         />
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <FormField
                             control={familyForm.control}
                             name="relationship"
@@ -2418,7 +3043,7 @@ function ResidentDetailsDialog({
                           />
                         </div>
 
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <FormField
                             control={familyForm.control}
                             name="phone2"
@@ -2450,7 +3075,7 @@ function ResidentDetailsDialog({
                           />
                         </div>
 
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <FormField
                             control={familyForm.control}
                             name="cpf"
@@ -2522,7 +3147,7 @@ function ResidentDetailsDialog({
                         </div>
 
                         {portalAccessValue && (
-                          <div className="grid grid-cols-2 gap-4">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <FormField
                               control={familyForm.control}
                               name="portalUsername"
@@ -2689,7 +3314,7 @@ function ResidentDetailsDialog({
                         })}
                         className="space-y-4"
                       >
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <FormField
                             control={contractForm.control}
                             name="plan"
@@ -2726,7 +3351,7 @@ function ResidentDetailsDialog({
                           />
                         </div>
 
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <FormField
                             control={contractForm.control}
                             name="startDate"
@@ -2754,7 +3379,7 @@ function ResidentDetailsDialog({
                           />
                         </div>
 
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <FormField
                             control={contractForm.control}
                             name="paymentDay"

@@ -1,0 +1,885 @@
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { addDays, format } from "date-fns";
+import { Pencil, Plus, Trash2 } from "lucide-react";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
+import { useAuth } from "@/hooks/use-auth";
+import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
+import { useToast } from "@/hooks/use-toast";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+import { fetchJsonOrThrow } from "@/lib/fetch-json";
+import type { Medication } from "@shared/schema";
+
+type MedicationWithResident = Medication & { residentName?: string };
+type StaffOption = { id: number; name: string; role?: string | null; active?: boolean | null };
+
+type MedicationDoseScheduleItem = {
+  key: string;
+  medicationId: number;
+  medicationName: string;
+  dosage: string;
+  frequency: string;
+  scheduledFor: string;
+  status: "pending" | "given" | "skipped" | "refused" | "late";
+  isOverdue: boolean;
+  notes: string | null;
+  administeredByName: string | null;
+  administeredByStaffId: number | null;
+};
+
+type MedicationDoseScheduleResponse = {
+  residentId: number;
+  from: string;
+  to: string;
+  doses: MedicationDoseScheduleItem[];
+};
+
+type MedicationAdministrationWithDetails = {
+  id: number;
+  medicationName?: string;
+  scheduledFor: string | null;
+  administeredAt: string | null;
+  administeredByName?: string | null;
+  status: "given" | "skipped" | "refused" | "late";
+  notes: string | null;
+};
+
+const medicationFormSchema = z.object({
+  name: z.string().min(2, "Medicacao obrigatoria"),
+  dosage: z.string().min(1, "Dose obrigatoria"),
+  frequency: z.string().min(1, "Frequencia obrigatoria"),
+  status: z.enum(["active", "suspended"]).default("active"),
+  route: z.string().optional(),
+  scheduleTime: z.string().optional(),
+  prescribedBy: z.string().optional(),
+  notes: z.string().optional(),
+  startDate: z.string().optional(),
+  endDate: z.string().optional(),
+});
+
+const doseActionSchema = z.object({
+  status: z.enum(["given", "skipped", "refused", "late"]).default("given"),
+  notes: z.string().optional(),
+  staffId: z.coerce.number().optional(),
+});
+
+const FREQUENCY_OPTIONS = [
+  { value: "a cada 4h", label: "A cada 4 horas" },
+  { value: "a cada 6h", label: "A cada 6 horas" },
+  { value: "a cada 8h", label: "A cada 8 horas" },
+  { value: "a cada 12h", label: "A cada 12 horas" },
+  { value: "a cada 24h", label: "1x ao dia (24h)" },
+  { value: "2x ao dia", label: "2x ao dia" },
+  { value: "3x ao dia", label: "3x ao dia" },
+  { value: "4x ao dia", label: "4x ao dia" },
+  { value: "semanal", label: "Semanal" },
+  { value: "sob demanda", label: "Sob demanda" },
+] as const;
+
+const MED_STATUS: Record<string, string> = { active: "Ativo", suspended: "Suspenso" };
+const DOSE_STATUS: Record<string, string> = {
+  pending: "Pendente",
+  given: "Administrado",
+  skipped: "Nao administrado",
+  refused: "Recusado",
+  late: "Atrasado",
+};
+
+function getFrequencyLabel(value?: string | null): string {
+  if (!value) return "-";
+  const normalized = value.trim().toLowerCase();
+  return FREQUENCY_OPTIONS.find((option) => option.value.toLowerCase() === normalized)?.label ?? value;
+}
+
+function getFrequencyOptions(value?: string | null): Array<{ value: string; label: string }> {
+  const current = value?.trim();
+  if (!current) return [...FREQUENCY_OPTIONS];
+  if (FREQUENCY_OPTIONS.some((option) => option.value.toLowerCase() === current.toLowerCase())) {
+    return [...FREQUENCY_OPTIONS];
+  }
+  return [{ value: current, label: `Personalizado (${current})` }, ...FREQUENCY_OPTIONS];
+}
+
+function extractPrimaryScheduleTime(value?: string | null): string {
+  const raw = (value ?? "").trim();
+  if (!raw) return "";
+  const token = raw
+    .split(/[\n,;|]+/g)
+    .map((item) => item.trim())
+    .find((item) => /^([01]?\d|2[0-3]):([0-5]\d)$/.test(item));
+  if (!token) return "";
+  const [hourText, minuteText] = token.split(":");
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function normalizeScheduleTimeValue(value?: string | null): string | null {
+  const normalized = (value ?? "").trim();
+  if (!normalized) return null;
+  if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(normalized)) return null;
+  return normalized;
+}
+
+function frequencyNeedsBaseTime(value?: string | null): boolean {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized.includes("sob demanda")) return false;
+  if (normalized.includes("semanal")) return true;
+  if (normalized.match(/(?:a cada\s*)?(\d{1,2})\s*h/)) return true;
+  const timesPerDayMatch = normalized.match(/(\d{1,2})\s*x\s*ao\s*dia/);
+  if (timesPerDayMatch) return true;
+  return false;
+}
+
+function doseStatusClass(status: MedicationDoseScheduleItem["status"]) {
+  if (status === "given") return "bg-emerald-100 text-emerald-800 border-emerald-200";
+  if (status === "skipped") return "bg-amber-100 text-amber-800 border-amber-200";
+  if (status === "refused") return "bg-rose-100 text-rose-800 border-rose-200";
+  if (status === "late") return "bg-violet-100 text-violet-800 border-violet-200";
+  return "bg-slate-100 text-slate-700 border-slate-200";
+}
+
+type Props = { residentId: number; canEdit: boolean };
+
+export function ResidentMedicationSection({ residentId, canEdit }: Props) {
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const { confirm, confirmDialog } = useConfirmDialog();
+  const queryClient = useQueryClient();
+  const isCaregiver = user?.role === "cuidador";
+
+  const [range, setRange] = useState(() => {
+    const base = new Date();
+    return { from: format(base, "yyyy-MM-dd"), to: format(addDays(base, 6), "yyyy-MM-dd") };
+  });
+  const [isMedicationDialogOpen, setIsMedicationDialogOpen] = useState(false);
+  const [editingMedication, setEditingMedication] = useState<MedicationWithResident | null>(null);
+  const [isDoseDialogOpen, setIsDoseDialogOpen] = useState(false);
+  const [selectedDose, setSelectedDose] = useState<MedicationDoseScheduleItem | null>(null);
+
+  const medicationForm = useForm<z.infer<typeof medicationFormSchema>>({
+    resolver: zodResolver(medicationFormSchema),
+    defaultValues: {
+      name: "",
+      dosage: "",
+      frequency: "",
+      status: "active",
+      route: "",
+      scheduleTime: "",
+      prescribedBy: "",
+      notes: "",
+      startDate: "",
+      endDate: "",
+    },
+  });
+  const watchedFrequency = medicationForm.watch("frequency");
+
+  const doseActionForm = useForm<z.infer<typeof doseActionSchema>>({
+    resolver: zodResolver(doseActionSchema),
+    defaultValues: { status: "given", notes: "", staffId: undefined },
+  });
+
+  const medicationsQuery = useQuery<MedicationWithResident[]>({
+    queryKey: ["/api/medications", "prontuario", residentId],
+    enabled: residentId > 0,
+    queryFn: () => fetchJsonOrThrow(`/api/medications?residentId=${residentId}`, "Erro ao carregar medicacoes."),
+  });
+
+  const scheduleQuery = useQuery<MedicationDoseScheduleResponse>({
+    queryKey: ["/api/residents", residentId, "medication-dose-schedule", range.from, range.to],
+    enabled: residentId > 0,
+    queryFn: () =>
+      fetchJsonOrThrow(
+        `/api/residents/${residentId}/medication-dose-schedule?from=${range.from}&to=${range.to}`,
+        "Erro ao carregar agenda de doses.",
+      ),
+  });
+
+  const historyQuery = useQuery<MedicationAdministrationWithDetails[]>({
+    queryKey: ["/api/medication-administrations", "prontuario", residentId],
+    enabled: residentId > 0,
+    queryFn: () =>
+      fetchJsonOrThrow(
+        `/api/medication-administrations?residentId=${residentId}`,
+        "Erro ao carregar historico de medicacoes.",
+      ),
+  });
+
+  const staffQuery = useQuery<StaffOption[]>({
+    queryKey: ["/api/staff", "prontuario", residentId],
+    enabled: residentId > 0 && canEdit,
+    queryFn: async () => {
+      const response = await fetch("/api/staff", { credentials: "include" });
+      if (response.status === 403) return [];
+      const rawBody = await response.text();
+      let payload: unknown = null;
+      if (rawBody.trim()) {
+        try {
+          payload = JSON.parse(rawBody);
+        } catch {
+          payload = null;
+        }
+      }
+      if (!response.ok) {
+        const message =
+          payload && typeof payload === "object" && payload !== null && "message" in payload
+            ? String((payload as { message?: unknown }).message ?? "")
+            : "";
+        throw new Error(message || "Erro ao carregar equipe.");
+      }
+      return Array.isArray(payload) ? (payload as StaffOption[]) : [];
+    },
+  });
+
+  const normalizeName = (value?: string | null) => (value ?? "").trim().toLocaleLowerCase("pt-BR");
+  const linkedCaregiverStaff = useMemo(() => {
+    if (!isCaregiver) return null;
+    const userName = normalizeName(user?.name);
+    if (!userName) return null;
+    return staffQuery.data?.find((item) => normalizeName(item.name) === userName) ?? null;
+  }, [isCaregiver, staffQuery.data, user?.name]);
+
+  const staffAdministrators = useMemo(
+    () => (staffQuery.data ?? []).filter((item) => item.active !== false),
+    [staffQuery.data],
+  );
+
+  useEffect(() => {
+    if (!selectedDose) return;
+    const defaultStatus = selectedDose.status === "pending" ? "given" : selectedDose.status;
+    doseActionForm.reset({
+      status: defaultStatus,
+      notes: selectedDose.notes ?? "",
+      staffId: selectedDose.administeredByStaffId ?? staffAdministrators[0]?.id,
+    });
+  }, [doseActionForm, selectedDose, staffAdministrators]);
+
+  const invalidateMedicationQueries = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/medications"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/medications", "prontuario", residentId] });
+    queryClient.invalidateQueries({ queryKey: ["/api/residents", residentId, "medication-dose-schedule"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/medication-administrations", "prontuario", residentId] });
+  };
+
+  const createMedication = useMutation({
+    mutationFn: async (data: z.infer<typeof medicationFormSchema>) => {
+      const scheduleTime = normalizeScheduleTimeValue(data.scheduleTime);
+      if (frequencyNeedsBaseTime(data.frequency) && !scheduleTime) {
+        throw new Error("Informe o horario base para esta frequencia.");
+      }
+      return fetchJsonOrThrow("/api/medications", "Erro ao cadastrar medicacao.", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          residentId,
+          name: data.name.trim(),
+          dosage: data.dosage.trim(),
+          frequency: data.frequency.trim(),
+          status: data.status,
+          route: data.route?.trim() || null,
+          scheduleTime,
+          prescribedBy: data.prescribedBy?.trim() || null,
+          notes: data.notes?.trim() || null,
+          startDate: data.startDate?.trim() || null,
+          endDate: data.endDate?.trim() || null,
+        }),
+      });
+    },
+    onSuccess: () => {
+      invalidateMedicationQueries();
+      setIsMedicationDialogOpen(false);
+      setEditingMedication(null);
+      medicationForm.reset();
+      toast({ title: "Medicacao cadastrada com sucesso" });
+    },
+    onError: (error: Error) => toast({ variant: "destructive", title: error.message }),
+  });
+
+  const updateMedication = useMutation({
+    mutationFn: async ({ id, data }: { id: number; data: z.infer<typeof medicationFormSchema> }) => {
+      const scheduleTime = normalizeScheduleTimeValue(data.scheduleTime);
+      if (frequencyNeedsBaseTime(data.frequency) && !scheduleTime) {
+        throw new Error("Informe o horario base para esta frequencia.");
+      }
+      return fetchJsonOrThrow(`/api/medications/${id}`, "Erro ao atualizar medicacao.", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          residentId,
+          name: data.name.trim(),
+          dosage: data.dosage.trim(),
+          frequency: data.frequency.trim(),
+          status: data.status,
+          route: data.route?.trim() || null,
+          scheduleTime,
+          prescribedBy: data.prescribedBy?.trim() || null,
+          notes: data.notes?.trim() || null,
+          startDate: data.startDate?.trim() || null,
+          endDate: data.endDate?.trim() || null,
+        }),
+      });
+    },
+    onSuccess: () => {
+      invalidateMedicationQueries();
+      setIsMedicationDialogOpen(false);
+      setEditingMedication(null);
+      toast({ title: "Medicacao atualizada com sucesso" });
+    },
+    onError: (error: Error) => toast({ variant: "destructive", title: error.message }),
+  });
+
+  const deleteMedication = useMutation({
+    mutationFn: (id: number) =>
+      fetchJsonOrThrow(`/api/medications/${id}`, "Erro ao excluir medicacao.", { method: "DELETE" }),
+    onSuccess: () => {
+      invalidateMedicationQueries();
+      toast({ title: "Medicacao removida" });
+    },
+    onError: (error: Error) => toast({ variant: "destructive", title: error.message }),
+  });
+
+  const registerDose = useMutation({
+    mutationFn: async (data: z.infer<typeof doseActionSchema>) => {
+      if (!selectedDose) throw new Error("Nenhuma dose selecionada.");
+      return fetchJsonOrThrow(`/api/residents/${residentId}/medication-dose-records`, "Erro ao registrar dose.", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          medicationId: selectedDose.medicationId,
+          scheduledFor: selectedDose.scheduledFor,
+          status: data.status,
+          notes: data.notes?.trim() || null,
+          staffId: isCaregiver ? undefined : data.staffId ?? undefined,
+          administeredAt: new Date().toISOString(),
+        }),
+      });
+    },
+    onSuccess: () => {
+      invalidateMedicationQueries();
+      setIsDoseDialogOpen(false);
+      setSelectedDose(null);
+      toast({ title: "Administracao registrada com sucesso" });
+    },
+    onError: (error: Error) => toast({ variant: "destructive", title: error.message }),
+  });
+
+  const openCreateMedication = () => {
+    setEditingMedication(null);
+    medicationForm.reset({
+      name: "",
+      dosage: "",
+      frequency: "",
+      status: "active",
+      route: "",
+      scheduleTime: "",
+      prescribedBy: "",
+      notes: "",
+      startDate: "",
+      endDate: "",
+    });
+    setIsMedicationDialogOpen(true);
+  };
+
+  const openEditMedication = (medication: MedicationWithResident) => {
+    setEditingMedication(medication);
+    medicationForm.reset({
+      name: medication.name || "",
+      dosage: medication.dosage || "",
+      frequency: medication.frequency || "",
+      status: (medication.status as "active" | "suspended") || "active",
+      route: medication.route || "",
+      scheduleTime: extractPrimaryScheduleTime(medication.scheduleTime),
+      prescribedBy: medication.prescribedBy || "",
+      notes: medication.notes || "",
+      startDate: medication.startDate || "",
+      endDate: medication.endDate || "",
+    });
+    setIsMedicationDialogOpen(true);
+  };
+
+  return (
+    <div className="space-y-4">
+      {!canEdit ? (
+        <div className="rounded-lg border border-dashed border-muted-foreground/40 px-4 py-3 text-xs text-muted-foreground">
+          Modo somente leitura para este perfil.
+        </div>
+      ) : null}
+
+      <Tabs defaultValue="medicacoes" className="space-y-4">
+        <TabsList className="grid w-full grid-cols-1 sm:grid-cols-3">
+          <TabsTrigger value="medicacoes">Medicacoes</TabsTrigger>
+          <TabsTrigger value="agenda">Agenda de doses</TabsTrigger>
+          <TabsTrigger value="historico">Historico</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="medicacoes" className="space-y-3">
+          {canEdit ? (
+            <div className="flex justify-end">
+              <Button size="sm" onClick={openCreateMedication}>
+                <Plus className="h-4 w-4 mr-1" />
+                Nova Medicacao
+              </Button>
+            </div>
+          ) : null}
+
+          {medicationsQuery.isLoading ? (
+            <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+              Carregando medicacoes...
+            </div>
+          ) : medicationsQuery.error ? (
+            <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-6 text-sm text-destructive">
+              {medicationsQuery.error instanceof Error
+                ? medicationsQuery.error.message
+                : "Erro ao carregar medicacoes."}
+            </div>
+          ) : (medicationsQuery.data?.length ?? 0) === 0 ? (
+            <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+              Nenhuma medicacao cadastrada para este residente.
+            </div>
+          ) : (
+            <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
+              <Table>
+                <TableHeader className="bg-muted/50">
+                  <TableRow>
+                    <TableHead>Medicamento</TableHead>
+                    <TableHead>Dose</TableHead>
+                    <TableHead>Frequencia</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead className="text-right">Acoes</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {medicationsQuery.data?.map((medication) => (
+                    <TableRow key={medication.id}>
+                      <TableCell className="font-medium">{medication.name}</TableCell>
+                      <TableCell>{medication.dosage}</TableCell>
+                      <TableCell>{getFrequencyLabel(medication.frequency)}</TableCell>
+                      <TableCell>{MED_STATUS[medication.status] ?? medication.status}</TableCell>
+                      <TableCell className="text-right">
+                        {canEdit ? (
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0"
+                              onClick={() => openEditMedication(medication)}
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                              onClick={() => {
+                                confirm({
+                                  title: "Excluir medicacao",
+                                  description: `Excluir a medicacao "${medication.name}"?`,
+                                  confirmText: "Excluir",
+                                  pendingText: "Excluindo...",
+                                  variant: "destructive",
+                                  onConfirm: () => deleteMedication.mutateAsync(medication.id),
+                                });
+                              }}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">Somente leitura</span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="agenda" className="space-y-3">
+          <div className="rounded-xl border border-border bg-card shadow-sm p-4 space-y-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h4 className="text-sm font-semibold text-foreground">Agenda de doses</h4>
+                <p className="text-xs text-muted-foreground">
+                  Doses previstas para o periodo selecionado.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">De</Label>
+                  <Input
+                    type="date"
+                    value={range.from}
+                    onChange={(event) => setRange((prev) => ({ ...prev, from: event.target.value }))}
+                    className="h-8 w-full sm:w-[148px]"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Ate</Label>
+                  <Input
+                    type="date"
+                    value={range.to}
+                    onChange={(event) => setRange((prev) => ({ ...prev, to: event.target.value }))}
+                    className="h-8 w-full sm:w-[148px]"
+                  />
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    queryClient.invalidateQueries({
+                      queryKey: ["/api/residents", residentId, "medication-dose-schedule", range.from, range.to],
+                    })
+                  }
+                >
+                  Atualizar
+                </Button>
+              </div>
+            </div>
+
+            {scheduleQuery.isLoading ? (
+              <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                Carregando agenda...
+              </div>
+            ) : scheduleQuery.error ? (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-6 text-sm text-destructive">
+                {scheduleQuery.error instanceof Error
+                  ? scheduleQuery.error.message
+                  : "Erro ao carregar agenda de doses."}
+              </div>
+            ) : (scheduleQuery.data?.doses.length ?? 0) === 0 ? (
+              <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                Nenhuma dose no periodo selecionado.
+              </div>
+            ) : (
+              <div className="rounded-xl border border-border overflow-hidden">
+                <Table>
+                  <TableHeader className="bg-muted/50">
+                    <TableRow>
+                      <TableHead>Data/Hora</TableHead>
+                      <TableHead>Medicacao</TableHead>
+                      <TableHead>Dose</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Administrado por</TableHead>
+                      <TableHead className="text-right">Acoes</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {scheduleQuery.data?.doses.map((dose) => (
+                      <TableRow key={dose.key}>
+                        <TableCell className="font-medium">
+                          <div className="flex flex-col">
+                            <span>{format(new Date(dose.scheduledFor), "dd/MM/yyyy HH:mm")}</span>
+                            {dose.isOverdue && dose.status === "pending" ? (
+                              <span className="text-[11px] text-rose-600">Dose em atraso</span>
+                            ) : null}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex flex-col">
+                            <span className="font-medium">{dose.medicationName}</span>
+                            <span className="text-xs text-muted-foreground">{getFrequencyLabel(dose.frequency)}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell>{dose.dosage}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline" className={doseStatusClass(dose.status)}>
+                            {DOSE_STATUS[dose.status]}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">
+                          {dose.administeredByName || "-"}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {canEdit ? (
+                            <Button size="sm" variant="outline" onClick={() => { setSelectedDose(dose); setIsDoseDialogOpen(true); }}>
+                              {dose.status === "pending" ? "Registrar" : "Editar"}
+                            </Button>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">Somente leitura</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
+        </TabsContent>
+
+        <TabsContent value="historico">
+          <div className="rounded-xl border border-border bg-card shadow-sm p-4">
+            {historyQuery.isLoading ? (
+              <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                Carregando historico...
+              </div>
+            ) : historyQuery.error ? (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-6 text-sm text-destructive">
+                {historyQuery.error instanceof Error
+                  ? historyQuery.error.message
+                  : "Erro ao carregar historico de administracoes."}
+              </div>
+            ) : (historyQuery.data?.length ?? 0) === 0 ? (
+              <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                Nenhuma administracao registrada para este residente.
+              </div>
+            ) : (
+              <div className="rounded-xl border border-border overflow-hidden">
+                <Table>
+                  <TableHeader className="bg-muted/50">
+                    <TableRow>
+                      <TableHead>Data/Hora da dose</TableHead>
+                      <TableHead>Medicacao</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Administrado por</TableHead>
+                      <TableHead>Registro em</TableHead>
+                      <TableHead>Observacoes</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {historyQuery.data?.map((item) => (
+                      <TableRow key={item.id}>
+                        <TableCell>{item.scheduledFor ? format(new Date(item.scheduledFor), "dd/MM/yyyy HH:mm") : "-"}</TableCell>
+                        <TableCell className="font-medium">{item.medicationName || "-"}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline" className={doseStatusClass(item.status)}>
+                            {DOSE_STATUS[item.status]}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{item.administeredByName || "-"}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground">
+                          {item.administeredAt ? format(new Date(item.administeredAt), "dd/MM/yyyy HH:mm") : "-"}
+                        </TableCell>
+                        <TableCell className="max-w-[260px] text-sm text-muted-foreground">{item.notes || "-"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
+        </TabsContent>
+      </Tabs>
+
+      <Dialog open={isMedicationDialogOpen} onOpenChange={setIsMedicationDialogOpen}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>{editingMedication ? "Editar Medicacao" : "Nova Medicacao"}</DialogTitle>
+          </DialogHeader>
+          <Form {...medicationForm}>
+            <form
+              onSubmit={medicationForm.handleSubmit((data) => {
+                if (editingMedication) updateMedication.mutate({ id: editingMedication.id, data });
+                else createMedication.mutate(data);
+              })}
+              className="space-y-4"
+            >
+              <FormField control={medicationForm.control} name="name" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Medicacao *</FormLabel>
+                  <FormControl><Input {...field} /></FormControl>
+                  <FormMessage />
+                </FormItem>
+              )} />
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <FormField control={medicationForm.control} name="dosage" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Dose *</FormLabel>
+                    <FormControl><Input {...field} /></FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+                <FormField control={medicationForm.control} name="frequency" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Frequencia *</FormLabel>
+                    <Select onValueChange={field.onChange} value={field.value}>
+                      <FormControl><SelectTrigger><SelectValue placeholder="Selecionar frequencia" /></SelectTrigger></FormControl>
+                      <SelectContent>
+                        {getFrequencyOptions(field.value).map((option) => (
+                          <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <FormField control={medicationForm.control} name="status" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Status</FormLabel>
+                    <Select onValueChange={field.onChange} value={field.value}>
+                      <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
+                      <SelectContent>
+                        <SelectItem value="active">Ativo</SelectItem>
+                        <SelectItem value="suspended">Suspenso</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+                <FormField control={medicationForm.control} name="route" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Via</FormLabel>
+                    <FormControl><Input {...field} value={field.value ?? ""} /></FormControl>
+                  </FormItem>
+                )} />
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <FormField control={medicationForm.control} name="startDate" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Inicio</FormLabel>
+                    <FormControl><Input type="date" {...field} value={field.value ?? ""} /></FormControl>
+                  </FormItem>
+                )} />
+                <FormField control={medicationForm.control} name="endDate" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Fim</FormLabel>
+                    <FormControl><Input type="date" {...field} value={field.value ?? ""} /></FormControl>
+                  </FormItem>
+                )} />
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <FormField control={medicationForm.control} name="scheduleTime" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>
+                      Horario base {frequencyNeedsBaseTime(watchedFrequency) ? "*" : "(opcional)"}
+                    </FormLabel>
+                    <FormControl>
+                      <Input type="time" {...field} value={field.value ?? ""} />
+                    </FormControl>
+                    <p className="text-xs text-muted-foreground">
+                      Ex: a cada 6h + 08:00 = 08:00, 14:00, 20:00, 02:00.
+                    </p>
+                  </FormItem>
+                )} />
+                <FormField control={medicationForm.control} name="prescribedBy" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Prescrito por</FormLabel>
+                    <FormControl><Input {...field} value={field.value ?? ""} /></FormControl>
+                  </FormItem>
+                )} />
+              </div>
+
+              <FormField control={medicationForm.control} name="notes" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Observacoes</FormLabel>
+                  <FormControl><Textarea {...field} value={field.value ?? ""} rows={3} /></FormControl>
+                </FormItem>
+              )} />
+
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => setIsMedicationDialogOpen(false)}>Cancelar</Button>
+                <Button type="submit" disabled={createMedication.isPending || updateMedication.isPending}>
+                  {editingMedication ? "Salvar" : "Adicionar"}
+                </Button>
+              </div>
+            </form>
+          </Form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isDoseDialogOpen} onOpenChange={setIsDoseDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Registrar administracao da dose</DialogTitle>
+          </DialogHeader>
+          {selectedDose ? (
+            <Form {...doseActionForm}>
+              <form
+                onSubmit={doseActionForm.handleSubmit((data) => {
+                  if (!isCaregiver && !data.staffId) {
+                    doseActionForm.setError("staffId", { type: "manual", message: "Profissional obrigatorio." });
+                    return;
+                  }
+                  registerDose.mutate(data);
+                })}
+                className="space-y-4"
+              >
+                <FormField control={doseActionForm.control} name="status" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Status da dose</FormLabel>
+                    <Select onValueChange={field.onChange} value={field.value}>
+                      <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
+                      <SelectContent>
+                        <SelectItem value="given">Administrado</SelectItem>
+                        <SelectItem value="skipped">Nao administrado</SelectItem>
+                        <SelectItem value="refused">Recusado</SelectItem>
+                        <SelectItem value="late">Atrasado</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+
+                {isCaregiver ? (
+                  <div className="rounded-lg border border-border bg-muted/30 p-3 text-sm">
+                    {linkedCaregiverStaff?.name || user?.name || "Cuidador logado"}
+                  </div>
+                ) : (
+                  <FormField control={doseActionForm.control} name="staffId" render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Profissional que administrou *</FormLabel>
+                      <Select onValueChange={(value) => field.onChange(Number(value))} value={field.value ? String(field.value) : undefined}>
+                        <FormControl><SelectTrigger><SelectValue placeholder="Selecionar profissional" /></SelectTrigger></FormControl>
+                        <SelectContent>
+                          {staffAdministrators.map((member) => (
+                            <SelectItem key={member.id} value={String(member.id)}>
+                              {member.name}{member.role ? ` - ${member.role}` : ""}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+                )}
+
+                <FormField control={doseActionForm.control} name="notes" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Observacoes</FormLabel>
+                    <FormControl><Textarea {...field} value={field.value ?? ""} rows={3} /></FormControl>
+                  </FormItem>
+                )} />
+
+                <div className="flex justify-end gap-2">
+                  <Button type="button" variant="outline" onClick={() => setIsDoseDialogOpen(false)}>Cancelar</Button>
+                  <Button type="submit" disabled={registerDose.isPending}>
+                    {registerDose.isPending ? "Salvando..." : "Salvar dose"}
+                  </Button>
+                </div>
+              </form>
+            </Form>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      {confirmDialog}
+    </div>
+  );
+}

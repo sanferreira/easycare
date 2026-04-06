@@ -784,21 +784,21 @@ export default function Escalas() {
       {/* Header */}
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight text-foreground font-display">Escalas</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground font-display">Escalas</h1>
           <p className="text-muted-foreground mt-1">Plantoes e escalas de trabalho da equipe</p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
           <Button
             variant="outline"
             onClick={() => generateMonthMutation.mutate()}
             disabled={!canEditEscalas || generateMonthMutation.isPending}
             data-testid="button-generate-month"
-            className="gap-2"
+            className="w-full sm:w-auto gap-2"
           >
             <RotateCw className={`h-4 w-4 ${generateMonthMutation.isPending ? "animate-spin" : ""}`} />
             {generateMonthMutation.isPending ? "Gerando..." : "Gerar Agenda do Mês"}
           </Button>
-          <Button onClick={() => openCreate()} data-testid="button-add-shift" className="gap-2 shrink-0" disabled={!canEditEscalas}>
+          <Button onClick={() => openCreate()} data-testid="button-add-shift" className="w-full sm:w-auto gap-2 shrink-0" disabled={!canEditEscalas}>
             <Plus className="h-4 w-4" />
             Novo Plantão
           </Button>
@@ -806,7 +806,7 @@ export default function Escalas() {
       </div>
 
       {/* Stats row */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         <div className="rounded-xl border border-border bg-card px-4 py-3">
           <p className="text-xs text-muted-foreground">Plantoes este mes</p>
           <p className="text-2xl font-bold text-foreground mt-0.5">{monthShiftCount}</p>
@@ -842,10 +842,10 @@ export default function Escalas() {
       </div>
 
       {/* Filter */}
-      <div className="flex items-center gap-3">
+      <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:gap-3">
         <Label className="text-sm font-medium shrink-0">Ver cuidador:</Label>
         <Select value={filterStaff} onValueChange={setFilterStaff}>
-          <SelectTrigger className="w-56" data-testid="select-staff-filter">
+          <SelectTrigger className="w-full sm:w-56" data-testid="select-staff-filter">
             <SelectValue placeholder="Toda equipe" />
           </SelectTrigger>
           <SelectContent>
@@ -861,17 +861,17 @@ export default function Escalas() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Calendar */}
         <Card className="lg:col-span-2">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
+          <CardHeader className="flex flex-col gap-3 pb-4 sm:flex-row sm:items-center sm:justify-between">
             <CardTitle className="text-base capitalize">
               {format(currentDate, "MMMM 'de' yyyy", { locale: ptBR })}
             </CardTitle>
-            <div className="flex gap-1">
+            <div className="flex w-full gap-1 sm:w-auto">
               <Button variant="ghost" size="icon" className="h-8 w-8"
                 onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1))}
                 data-testid="button-prev-month">
                 <ChevronLeft className="h-4 w-4" />
               </Button>
-              <Button variant="outline" size="sm" className="h-8 text-xs"
+              <Button variant="outline" size="sm" className="h-8 flex-1 text-xs sm:flex-none"
                 onClick={() => { setCurrentDate(new Date()); setSelectedDay(new Date()); }}
                 data-testid="button-today">
                 Hoje
@@ -887,85 +887,87 @@ export default function Escalas() {
             {shiftsLoading ? (
               <div className="text-center py-12 text-muted-foreground text-sm">Carregando escalas...</div>
             ) : (
-              <>
-                <div className="grid grid-cols-7 mb-1">
-                  {["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sab"].map((d) => (
-                    <div key={d} className="text-center text-xs font-semibold text-muted-foreground py-2">{d}</div>
-                  ))}
-                </div>
-                <div className="rounded-xl overflow-hidden border border-border/50 bg-border/50">
-                  {weekLayouts.map((week, weekIndex) => {
-                    const barsHeight = week.rowCount > 0 ? (week.rowCount * 22) + 2 : 0;
-                    const weekCellHeight = 86 + barsHeight;
-                    return (
-                      <div key={`week-${weekIndex}`} className={weekIndex > 0 ? "border-t border-border/50" : ""}>
-                        <div className="relative bg-border/50">
-                          <div className="grid grid-cols-7 gap-px">
-                            {week.weekDays.map((day, dayIndex) => {
-                              const inMonth = isSameMonth(day, currentDate);
-                              const isCurrentDay = isToday(day);
-                              const isSelected = isSameDay(day, selectedDay);
-                              return (
-                                <div
-                                  key={dayIndex}
-                                  onClick={() => setSelectedDay(day)}
-                                  className={`p-1.5 cursor-pointer transition-colors
-                                    ${inMonth ? "bg-background hover:bg-muted/50" : "bg-muted/20 hover:bg-muted/30"}
-                                    ${isSelected ? "ring-2 ring-primary ring-inset" : ""}
-                                    ${isCurrentDay && !isSelected ? "bg-primary/5" : ""}
-                                  `}
-                                  style={{ minHeight: `${weekCellHeight}px` }}
-                                  data-testid={`calendar-day-${format(day, "yyyy-MM-dd")}`}
-                                >
-                                  <div className={`w-6 h-6 flex items-center justify-center rounded-full mb-1 font-medium text-xs
-                                    ${isCurrentDay ? "bg-primary text-primary-foreground" : ""}
-                                    ${!inMonth ? "text-muted-foreground/50" : "text-foreground"}
-                                  `}>
-                                    {format(day, "d")}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-
-                          {week.segments.length > 0 && (
-                            <div className="absolute left-1 right-1 top-8 pointer-events-none" style={{ height: `${barsHeight}px` }}>
-                              {week.segments.map(({ shift, startCol, endCol, row }) => {
-                                const meta = SHIFT_TYPES[shift.shiftType as ShiftType] ?? SHIFT_TYPES.avulso;
-                                const colorIdx = staffColorMap[shift.staffId] ?? 0;
-                                const staffColor = STAFF_COLORS[colorIdx];
-                                const leftPercent = (startCol / 7) * 100;
-                                const widthPercent = ((endCol - startCol + 1) / 7) * 100;
+              <div className="overflow-x-auto">
+                <div className="min-w-[720px]">
+                  <div className="grid grid-cols-7 mb-1">
+                    {["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sab"].map((d) => (
+                      <div key={d} className="text-center text-xs font-semibold text-muted-foreground py-2">{d}</div>
+                    ))}
+                  </div>
+                  <div className="rounded-xl overflow-hidden border border-border/50 bg-border/50">
+                    {weekLayouts.map((week, weekIndex) => {
+                      const barsHeight = week.rowCount > 0 ? (week.rowCount * 22) + 2 : 0;
+                      const weekCellHeight = 86 + barsHeight;
+                      return (
+                        <div key={`week-${weekIndex}`} className={weekIndex > 0 ? "border-t border-border/50" : ""}>
+                          <div className="relative bg-border/50">
+                            <div className="grid grid-cols-7 gap-px">
+                              {week.weekDays.map((day, dayIndex) => {
+                                const inMonth = isSameMonth(day, currentDate);
+                                const isCurrentDay = isToday(day);
+                                const isSelected = isSameDay(day, selectedDay);
                                 return (
-                                  <button
-                                    key={`${shift.id}-${weekIndex}-${row}-${startCol}-${endCol}`}
-                                    type="button"
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      setSelectedDay(new Date(shift.startTime));
-                                    }}
-                                    className={`absolute h-5 rounded px-1.5 leading-none truncate text-[10px] font-medium text-left border border-border/40 pointer-events-auto ${staffColor.light}`}
-                                    style={{
-                                      top: `${row * 22}px`,
-                                      left: `${leftPercent}%`,
-                                      width: `${widthPercent}%`,
-                                    }}
-                                    title={`${shift.staffName} - ${meta.label}${shift.residentName ? ` - ${shift.residentName}` : ""}`}
-                                    data-testid={`shift-pill-${shift.id}`}
+                                  <div
+                                    key={dayIndex}
+                                    onClick={() => setSelectedDay(day)}
+                                    className={`p-1.5 cursor-pointer transition-colors
+                                      ${inMonth ? "bg-background hover:bg-muted/50" : "bg-muted/20 hover:bg-muted/30"}
+                                      ${isSelected ? "ring-2 ring-primary ring-inset" : ""}
+                                      ${isCurrentDay && !isSelected ? "bg-primary/5" : ""}
+                                    `}
+                                    style={{ minHeight: `${weekCellHeight}px` }}
+                                    data-testid={`calendar-day-${format(day, "yyyy-MM-dd")}`}
                                   >
-                                    {shift.staffName?.split(" ")[0]} - {meta.short}
-                                    {shift.residentName ? ` / ${shift.residentName.split(" ")[0]}` : ""}
-                                  </button>
+                                    <div className={`w-6 h-6 flex items-center justify-center rounded-full mb-1 font-medium text-xs
+                                      ${isCurrentDay ? "bg-primary text-primary-foreground" : ""}
+                                      ${!inMonth ? "text-muted-foreground/50" : "text-foreground"}
+                                    `}>
+                                      {format(day, "d")}
+                                    </div>
+                                  </div>
                                 );
                               })}
                             </div>
-                          )}
+
+                            {week.segments.length > 0 && (
+                              <div className="absolute left-1 right-1 top-8 pointer-events-none" style={{ height: `${barsHeight}px` }}>
+                                {week.segments.map(({ shift, startCol, endCol, row }) => {
+                                  const meta = SHIFT_TYPES[shift.shiftType as ShiftType] ?? SHIFT_TYPES.avulso;
+                                  const colorIdx = staffColorMap[shift.staffId] ?? 0;
+                                  const staffColor = STAFF_COLORS[colorIdx];
+                                  const leftPercent = (startCol / 7) * 100;
+                                  const widthPercent = ((endCol - startCol + 1) / 7) * 100;
+                                  return (
+                                    <button
+                                      key={`${shift.id}-${weekIndex}-${row}-${startCol}-${endCol}`}
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        setSelectedDay(new Date(shift.startTime));
+                                      }}
+                                      className={`absolute h-5 rounded px-1.5 leading-none truncate text-[10px] font-medium text-left border border-border/40 pointer-events-auto ${staffColor.light}`}
+                                      style={{
+                                        top: `${row * 22}px`,
+                                        left: `${leftPercent}%`,
+                                        width: `${widthPercent}%`,
+                                      }}
+                                      title={`${shift.staffName} - ${meta.label}${shift.residentName ? ` - ${shift.residentName}` : ""}`}
+                                      data-testid={`shift-pill-${shift.id}`}
+                                    >
+                                      {shift.staffName?.split(" ")[0]} - {meta.short}
+                                      {shift.residentName ? ` / ${shift.residentName.split(" ")[0]}` : ""}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
                 </div>
-              </>
+              </div>
             )}
           </CardContent>
         </Card>
@@ -974,7 +976,7 @@ export default function Escalas() {
         <div className="space-y-4">
           <Card>
             <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
+              <div className="flex items-start justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <CalendarDays className="h-4 w-4 text-primary" />
                   <CardTitle className="text-base">
@@ -995,7 +997,7 @@ export default function Escalas() {
                 <div className="flex flex-col items-center justify-center py-10 gap-3 text-center">
                   <AlertCircle className="h-8 w-8 text-muted-foreground/30" />
                   <p className="text-sm text-muted-foreground">Nenhum plantao neste dia</p>
-                  <Button variant="outline" size="sm" className="gap-1 text-xs"
+                  <Button variant="outline" size="sm" className="w-full sm:w-auto gap-1 text-xs"
                     onClick={() => openCreate(selectedDay)} disabled={!canEditEscalas}>
                     <Plus className="h-3 w-3" />
                     Adicionar plantao
@@ -1018,7 +1020,7 @@ export default function Escalas() {
                           <div className="flex items-start justify-between gap-2">
                             <ShiftTypeBadge type={shift.shiftType || "avulso"} />
                             {canEditEscalas && (
-                              <div className="flex items-center gap-1 shrink-0">
+                              <div className="flex flex-wrap items-center justify-end gap-1 shrink-0">
                                 <button
                                   onClick={() => openEdit(shift)}
                                   className="text-muted-foreground hover:text-primary transition-colors p-0.5"
@@ -1051,7 +1053,7 @@ export default function Escalas() {
                             )}
                           </div>
 
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
                             <div className={`h-2 w-2 rounded-full shrink-0 ${staffColor.pill}`} />
                             <div>
                               <p className="text-sm font-semibold leading-tight">{shift.staffName}</p>
@@ -1063,7 +1065,7 @@ export default function Escalas() {
                               )}
                             </div>
                             {isActive && (
-                              <Badge className="ml-auto bg-green-500 text-white text-[10px] px-1.5">Em andamento</Badge>
+                              <Badge className="sm:ml-auto bg-green-500 text-white text-[10px] px-1.5">Em andamento</Badge>
                             )}
                           </div>
 
@@ -1188,7 +1190,7 @@ export default function Escalas() {
             {/* Shift Type */}
             <div>
               <Label className="text-sm font-medium">Tipo de Plantao *</Label>
-              <div className="grid grid-cols-2 gap-2 mt-1.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1.5">
                 {availableShiftTypes.map((key) => {
                   const meta = SHIFT_TYPES[key];
                   const Icon = meta.icon;
@@ -1240,7 +1242,7 @@ export default function Escalas() {
                 )}
               </div>
             ) : (
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <Label className="text-sm font-medium">Inicio *</Label>
                   <Input type="datetime-local" className="mt-1.5"
@@ -1370,4 +1372,3 @@ export default function Escalas() {
     </div>
   );
 }
-

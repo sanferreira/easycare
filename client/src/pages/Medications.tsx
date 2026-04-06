@@ -400,7 +400,7 @@ function MedicationDialog({
               )}
             />
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <FormField
                 control={form.control}
                 name="dosage"
@@ -634,7 +634,7 @@ function AdminDialog({ open, onOpenChange, medications, currentUserName, current
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Status da Administração *</FormLabel>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {(["given", "skipped", "refused", "late"] as const).map((s) => {
                       const info = STATUS_ADMIN[s];
                       return (

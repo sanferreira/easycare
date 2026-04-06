@@ -138,14 +138,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     { pattern: /^\/api\/residents\/[^/]+\/comorbidities(?:\/|$)/, route: "/prontuario" },
     { pattern: /^\/api\/medical-records(?:\/|$)/, route: "/prontuario" },
     { pattern: /^\/api\/comorbidities(?:\/|$)/, route: "/prontuario" },
-    { pattern: /^\/api\/medication-administrations(?:\/|$)/, route: "/medications" },
-    { pattern: /^\/api\/medications(?:\/|$)/, route: "/medications" },
+    { pattern: /^\/api\/residents\/[^/]+\/medication-dose-schedule(?:\/|$)/, route: "/prontuario" },
+    { pattern: /^\/api\/residents\/[^/]+\/medication-dose-records(?:\/|$)/, route: "/prontuario" },
+    { pattern: /^\/api\/medication-administrations(?:\/|$)/, route: "/prontuario" },
+    { pattern: /^\/api\/medications(?:\/|$)/, route: "/prontuario" },
     { pattern: /^\/api\/staff(?:\/|$)/, route: "/staff" },
     { pattern: /^\/api\/shift-assignments(?:\/|$)/, route: "/escalas" },
     { pattern: /^\/api\/contracts(?:\/|$)/, route: "/financeiro" },
     { pattern: /^\/api\/monthly-fees(?:\/|$)/, route: "/financeiro" },
     { pattern: /^\/api\/accounts-payable(?:\/|$)/, route: "/financeiro" },
-    { pattern: /^\/api\/occurrences(?:\/|$)/, route: "/occurrences" },
+    { pattern: /^\/api\/occurrences(?:\/|$)/, route: "/prontuario" },
     { pattern: /^\/api\/family(?:\/|$)/, route: "/prontuario" },
     { pattern: /^\/api\/residents(?:\/|$)/, route: "/residents" },
   ];
@@ -900,17 +902,437 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(await storage.getMedications(orgId, req.query.residentId ? Number(req.query.residentId) : undefined));
   });
   app.post("/api/medications", requireAuth, requireRole(...MEDICATION_ROLES), async (req, res) => {
-    const orgId = getOrgId(req);
-    res.status(201).json(await storage.createMedication({ ...req.body, organizationId: orgId }));
+    try {
+      const orgId = getOrgId(req);
+      const payload = buildMedicationPayload(req.body);
+      res.status(201).json(await storage.createMedication({ ...payload, organizationId: orgId }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Dados de medicacao invalidos.";
+      res.status(400).json({ message });
+    }
   });
   app.put("/api/medications/:id", requireAuth, requireRole(...MEDICATION_ROLES), async (req, res) => {
-    const orgId = getOrgId(req);
-    res.json(await storage.updateMedication(orgId, Number(req.params.id), req.body));
+    try {
+      const orgId = getOrgId(req);
+      const payload = buildMedicationPayload(req.body);
+      res.json(await storage.updateMedication(orgId, Number(req.params.id), payload));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Dados de medicacao invalidos.";
+      res.status(400).json({ message });
+    }
   });
   app.delete("/api/medications/:id", requireAuth, requireRole(...MEDICATION_ROLES), async (req, res) => {
     const orgId = getOrgId(req);
     await storage.deleteMedication(orgId, Number(req.params.id));
     res.status(204).send();
+  });
+
+  const MEDICATION_DATE_REGEX = /^\d{4}-(0[1-9]|1[0-2])-([0][1-9]|[12]\d|3[01])$/;
+  const MEDICATION_TIME_REGEX = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+  const HOUR_IN_MS = 60 * 60 * 1000;
+  const MINUTE_IN_MS = 60 * 1000;
+
+  const toDateOnly = (value: Date): string => {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, "0");
+    const day = String(value.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
+
+  const parseDateOnly = (value: string, endOfDay = false): Date | null => {
+    if (!MEDICATION_DATE_REGEX.test(value)) return null;
+    const [yearStr, monthStr, dayStr] = value.split("-");
+    const year = Number(yearStr);
+    const month = Number(monthStr) - 1;
+    const day = Number(dayStr);
+    if (endOfDay) return new Date(year, month, day, 23, 59, 59, 999);
+    return new Date(year, month, day, 0, 0, 0, 0);
+  };
+
+  type ParsedMedicationTime = { hour: number; minute: number; label: string };
+  const parseMedicationScheduleTimes = (scheduleTime: string | null | undefined): ParsedMedicationTime[] => {
+    const parsedTimes: ParsedMedicationTime[] = [];
+    if (scheduleTime && scheduleTime.trim().length > 0) {
+      const tokens = scheduleTime
+        .split(/[\n,;|]+/g)
+        .map((token) => token.trim())
+        .filter((token) => token.length > 0);
+      for (const token of tokens) {
+        const match = token.match(MEDICATION_TIME_REGEX);
+        if (!match) continue;
+        const hour = Number(match[1]);
+        const minute = Number(match[2]);
+        parsedTimes.push({
+          hour,
+          minute,
+          label: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`,
+        });
+      }
+    }
+
+    if (parsedTimes.length > 0) {
+      const dedupMap = new Map<string, ParsedMedicationTime>();
+      parsedTimes.forEach((item) => dedupMap.set(item.label, item));
+      return Array.from(dedupMap.values()).sort((a, b) => {
+        const left = a.hour * 60 + a.minute;
+        const right = b.hour * 60 + b.minute;
+        return left - right;
+      });
+    }
+    return [];
+  };
+
+  const normalizeMedicationScheduleTime = (scheduleTime: unknown): string | null => {
+    const raw = typeof scheduleTime === "string" ? scheduleTime : "";
+    const parsed = parseMedicationScheduleTimes(raw);
+    if (parsed.length === 0) return null;
+    return parsed.map((item) => item.label).join(", ");
+  };
+
+  const parseMedicationIntervalHours = (frequency: string | null | undefined): number | null => {
+    const normalizedFrequency = (frequency ?? "").trim().toLowerCase();
+    if (!normalizedFrequency) return null;
+    if (normalizedFrequency.includes("sob demanda")) return null;
+    if (normalizedFrequency.includes("semanal")) return 24 * 7;
+
+    // Legacy support: "12h/12h", "8h/8h" and variants.
+    const legacyEveryHourMatch = normalizedFrequency.match(/^(\d{1,2})\s*h\s*\/\s*\d{1,2}\s*h$/);
+    if (legacyEveryHourMatch) {
+      const legacyHours = Number(legacyEveryHourMatch[1]);
+      if (legacyHours >= 1 && legacyHours <= 24) return legacyHours;
+    }
+
+    const everyHourMatch = normalizedFrequency.match(/(?:a cada\s*)?(\d{1,2})\s*h/);
+    if (everyHourMatch) {
+      const everyHours = Number(everyHourMatch[1]);
+      if (everyHours >= 1 && everyHours <= 24) return everyHours;
+    }
+
+    const timesPerDayMatch = normalizedFrequency.match(/(\d{1,2})\s*x\s*ao\s*dia/);
+    if (timesPerDayMatch) {
+      const timesPerDay = Number(timesPerDayMatch[1]);
+      if (timesPerDay >= 1 && timesPerDay <= 24 && 24 % timesPerDay === 0) {
+        return 24 / timesPerDay;
+      }
+    }
+
+    return null;
+  };
+
+  const isOnDemandFrequency = (frequency: string | null | undefined): boolean => {
+    const normalizedFrequency = (frequency ?? "").trim().toLowerCase();
+    return normalizedFrequency.includes("sob demanda");
+  };
+
+  const buildMedicationPayload = (body: any) => {
+    const residentId = Number(body?.residentId);
+    if (!Number.isInteger(residentId) || residentId <= 0) {
+      throw new Error("Residente invalido.");
+    }
+
+    const name = String(body?.name ?? "").trim();
+    if (name.length < 2) throw new Error("Medicamento obrigatorio.");
+
+    const dosage = String(body?.dosage ?? "").trim();
+    if (dosage.length === 0) throw new Error("Dose obrigatoria.");
+
+    const frequency = String(body?.frequency ?? "").trim();
+    if (frequency.length === 0) throw new Error("Frequencia obrigatoria.");
+
+    const normalizedScheduleTime = normalizeMedicationScheduleTime(body?.scheduleTime);
+    const intervalHours = parseMedicationIntervalHours(frequency);
+    const scheduleTime =
+      normalizedScheduleTime ??
+      (intervalHours !== null && !isOnDemandFrequency(frequency) ? "08:00" : null);
+
+    const startDateRaw = typeof body?.startDate === "string" ? body.startDate.trim() : "";
+    const endDateRaw = typeof body?.endDate === "string" ? body.endDate.trim() : "";
+
+    const startDate = startDateRaw.length > 0 ? startDateRaw : null;
+    const endDate = endDateRaw.length > 0 ? endDateRaw : null;
+
+    if (startDate && !MEDICATION_DATE_REGEX.test(startDate)) {
+      throw new Error("Data de inicio invalida. Use yyyy-mm-dd.");
+    }
+    if (endDate && !MEDICATION_DATE_REGEX.test(endDate)) {
+      throw new Error("Data de fim invalida. Use yyyy-mm-dd.");
+    }
+
+    if (startDate && endDate) {
+      const start = parseDateOnly(startDate);
+      const end = parseDateOnly(endDate, true);
+      if (!start || !end || end.getTime() < start.getTime()) {
+        throw new Error("Data de fim deve ser maior ou igual a data de inicio.");
+      }
+    }
+
+    return {
+      residentId,
+      name,
+      dosage,
+      frequency,
+      status: body?.status === "suspended" ? "suspended" : "active",
+      route: typeof body?.route === "string" && body.route.trim().length > 0 ? body.route.trim() : null,
+      scheduleTime,
+      prescribedBy:
+        typeof body?.prescribedBy === "string" && body.prescribedBy.trim().length > 0
+          ? body.prescribedBy.trim()
+          : null,
+      notes: typeof body?.notes === "string" && body.notes.trim().length > 0 ? body.notes.trim() : null,
+      startDate,
+      endDate,
+    };
+  };
+
+  const buildMedicationDoseKey = (medicationId: number, scheduledFor: Date): string => {
+    const minuteBucket = Math.round(scheduledFor.getTime() / MINUTE_IN_MS);
+    return `${medicationId}:${minuteBucket}`;
+  };
+
+  app.get("/api/residents/:residentId/medication-dose-schedule", requireAuth, async (req, res, next) => {
+    try {
+      const residentId = Number(req.params.residentId);
+      if (!Number.isInteger(residentId) || residentId <= 0) {
+        return res.status(400).json({ message: "Residente invalido." });
+      }
+
+      const orgId = getOrgId(req);
+      const resident = await storage.getResident(orgId, residentId);
+      if (!resident) {
+        return res.status(404).json({ message: "Residente nao encontrado." });
+      }
+
+      const fromParam = typeof req.query.from === "string" ? req.query.from.trim() : "";
+      const toParam = typeof req.query.to === "string" ? req.query.to.trim() : "";
+      if (fromParam && !MEDICATION_DATE_REGEX.test(fromParam)) {
+        return res.status(400).json({ message: "Parametro 'from' invalido. Use yyyy-mm-dd." });
+      }
+      if (toParam && !MEDICATION_DATE_REGEX.test(toParam)) {
+        return res.status(400).json({ message: "Parametro 'to' invalido. Use yyyy-mm-dd." });
+      }
+
+      const today = new Date();
+      const defaultFrom = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 0, 0, 0, 0);
+      const defaultTo = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 6, 23, 59, 59, 999);
+      const fromDate = fromParam ? parseDateOnly(fromParam) : defaultFrom;
+      const toDate = toParam ? parseDateOnly(toParam, true) : defaultTo;
+
+      if (!fromDate || !toDate) {
+        return res.status(400).json({ message: "Periodo invalido." });
+      }
+      if (toDate.getTime() < fromDate.getTime()) {
+        return res.status(400).json({ message: "Data final deve ser maior ou igual a data inicial." });
+      }
+
+      const includeSuspended = String(req.query.includeSuspended ?? "").toLowerCase() === "true";
+      const allMedications = await storage.getMedications(orgId, residentId);
+      const medicationsForAgenda = allMedications.filter(
+        (item) => includeSuspended || item.status === "active",
+      );
+      const administrations = await storage.getMedicationAdministrations(orgId, residentId);
+
+      const administrationByDoseKey = new Map<string, (typeof administrations)[number]>();
+      administrations.forEach((admin) => {
+        if (!admin.scheduledFor) return;
+        const scheduledForDate = new Date(admin.scheduledFor);
+        if (Number.isNaN(scheduledForDate.getTime())) return;
+        const key = buildMedicationDoseKey(admin.medicationId, scheduledForDate);
+        const current = administrationByDoseKey.get(key);
+        const currentAdminAt = current?.administeredAt
+          ? new Date(current.administeredAt).getTime()
+          : 0;
+        const nextAdminAt = admin.administeredAt
+          ? new Date(admin.administeredAt).getTime()
+          : 0;
+        if (!current || nextAdminAt >= currentAdminAt) {
+          administrationByDoseKey.set(key, admin);
+        }
+      });
+
+      const doses: Array<{
+        key: string;
+        medicationId: number;
+        medicationName: string;
+        dosage: string;
+        frequency: string;
+        route: string | null;
+        scheduledFor: string;
+        scheduledDate: string;
+        scheduledTime: string;
+        status: "pending" | "given" | "skipped" | "refused" | "late";
+        isOverdue: boolean;
+        notes: string | null;
+        administeredAt: string | null;
+        administeredByName: string | null;
+        administeredByStaffId: number | null;
+      }> = [];
+
+      const nowTimestamp = Date.now();
+      for (const medication of medicationsForAgenda) {
+        if (isOnDemandFrequency(medication.frequency)) continue;
+
+        const medicationStart = medication.startDate
+          ? parseDateOnly(String(medication.startDate))
+          : null;
+        const medicationEnd = medication.endDate
+          ? parseDateOnly(String(medication.endDate), true)
+          : null;
+
+        const effectiveStart = new Date(Math.max(
+          fromDate.getTime(),
+          medicationStart ? medicationStart.getTime() : fromDate.getTime(),
+        ));
+        const effectiveEnd = new Date(Math.min(
+          toDate.getTime(),
+          medicationEnd ? medicationEnd.getTime() : toDate.getTime(),
+        ));
+        if (effectiveStart.getTime() > effectiveEnd.getTime()) continue;
+
+        const scheduleTimes = parseMedicationScheduleTimes(medication.scheduleTime);
+        const intervalHours = parseMedicationIntervalHours(medication.frequency);
+
+        if (intervalHours !== null && scheduleTimes.length <= 1) {
+          const baseScheduleTime = scheduleTimes[0] ?? { hour: 8, minute: 0, label: "08:00" };
+          const stepInMs = intervalHours * HOUR_IN_MS;
+          const anchorDate = medicationStart ?? effectiveStart;
+          let occurrenceCursor = new Date(
+            anchorDate.getFullYear(),
+            anchorDate.getMonth(),
+            anchorDate.getDate(),
+            baseScheduleTime.hour,
+            baseScheduleTime.minute,
+            0,
+            0,
+          );
+
+          if (occurrenceCursor.getTime() < effectiveStart.getTime()) {
+            const diffInMs = effectiveStart.getTime() - occurrenceCursor.getTime();
+            const stepsToAdvance = Math.ceil(diffInMs / stepInMs);
+            occurrenceCursor = new Date(occurrenceCursor.getTime() + stepsToAdvance * stepInMs);
+          }
+
+          while (occurrenceCursor.getTime() <= effectiveEnd.getTime()) {
+            const doseKey = buildMedicationDoseKey(medication.id, occurrenceCursor);
+            const administration = administrationByDoseKey.get(doseKey);
+            const baseStatus = administration?.status;
+            const normalizedStatus =
+              baseStatus === "given" || baseStatus === "skipped" || baseStatus === "refused" || baseStatus === "late"
+                ? baseStatus
+                : "pending";
+
+            const timeLabel = `${String(occurrenceCursor.getHours()).padStart(2, "0")}:${String(
+              occurrenceCursor.getMinutes(),
+            ).padStart(2, "0")}`;
+
+            doses.push({
+              key: doseKey,
+              medicationId: medication.id,
+              medicationName: medication.name,
+              dosage: medication.dosage,
+              frequency: medication.frequency,
+              route: medication.route ?? null,
+              scheduledFor: occurrenceCursor.toISOString(),
+              scheduledDate: toDateOnly(occurrenceCursor),
+              scheduledTime: timeLabel,
+              status: normalizedStatus,
+              isOverdue: normalizedStatus === "pending" && occurrenceCursor.getTime() < nowTimestamp,
+              notes: administration?.notes ?? null,
+              administeredAt: administration?.administeredAt
+                ? new Date(administration.administeredAt).toISOString()
+                : null,
+              administeredByName: administration?.administeredByName ?? null,
+              administeredByStaffId: administration?.staffId ?? null,
+            });
+
+            occurrenceCursor = new Date(occurrenceCursor.getTime() + stepInMs);
+          }
+          continue;
+        }
+
+        const explicitTimes = scheduleTimes.length > 0 ? scheduleTimes : [{ hour: 8, minute: 0, label: "08:00" }];
+        const dayCursor = new Date(
+          effectiveStart.getFullYear(),
+          effectiveStart.getMonth(),
+          effectiveStart.getDate(),
+          0,
+          0,
+          0,
+          0,
+        );
+        const endCursor = new Date(
+          effectiveEnd.getFullYear(),
+          effectiveEnd.getMonth(),
+          effectiveEnd.getDate(),
+          0,
+          0,
+          0,
+          0,
+        );
+
+        while (dayCursor.getTime() <= endCursor.getTime()) {
+          for (const scheduledTime of explicitTimes) {
+            const scheduledForDate = new Date(
+              dayCursor.getFullYear(),
+              dayCursor.getMonth(),
+              dayCursor.getDate(),
+              scheduledTime.hour,
+              scheduledTime.minute,
+              0,
+              0,
+            );
+            if (scheduledForDate.getTime() < effectiveStart.getTime()) continue;
+            if (scheduledForDate.getTime() > effectiveEnd.getTime()) continue;
+
+            const doseKey = buildMedicationDoseKey(medication.id, scheduledForDate);
+            const administration = administrationByDoseKey.get(doseKey);
+            const baseStatus = administration?.status;
+            const normalizedStatus =
+              baseStatus === "given" || baseStatus === "skipped" || baseStatus === "refused" || baseStatus === "late"
+                ? baseStatus
+                : "pending";
+
+            doses.push({
+              key: doseKey,
+              medicationId: medication.id,
+              medicationName: medication.name,
+              dosage: medication.dosage,
+              frequency: medication.frequency,
+              route: medication.route ?? null,
+              scheduledFor: scheduledForDate.toISOString(),
+              scheduledDate: toDateOnly(scheduledForDate),
+              scheduledTime: scheduledTime.label,
+              status: normalizedStatus,
+              isOverdue: normalizedStatus === "pending" && scheduledForDate.getTime() < nowTimestamp,
+              notes: administration?.notes ?? null,
+              administeredAt: administration?.administeredAt
+                ? new Date(administration.administeredAt).toISOString()
+                : null,
+              administeredByName: administration?.administeredByName ?? null,
+              administeredByStaffId: administration?.staffId ?? null,
+            });
+          }
+
+          dayCursor.setDate(dayCursor.getDate() + 1);
+        }
+      }
+
+      doses.sort((left, right) => {
+        const scheduledDiff =
+          new Date(left.scheduledFor).getTime() - new Date(right.scheduledFor).getTime();
+        if (scheduledDiff !== 0) return scheduledDiff;
+        return left.medicationName.localeCompare(right.medicationName, "pt-BR");
+      });
+
+      return res.json({
+        residentId,
+        from: toDateOnly(fromDate),
+        to: toDateOnly(toDate),
+        generatedAt: new Date().toISOString(),
+        doses,
+      });
+    } catch (error) {
+      next(error);
+    }
   });
 
   // ===== MEDICATION ADMINISTRATIONS =====
@@ -920,6 +1342,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     status: z.enum(["given", "skipped", "refused", "late"]).default("given"),
     notes: z.string().optional().nullable(),
     scheduledFor: z.coerce.date().optional().nullable(),
+    administeredAt: z.coerce.date().optional().nullable(),
+  });
+  const medicationDoseRecordInputSchema = z.object({
+    medicationId: z.coerce.number().int().positive("Medicamento invalido."),
+    scheduledFor: z.coerce.date(),
+    staffId: z.coerce.number().int().positive().optional().nullable(),
+    status: z.enum(["given", "skipped", "refused", "late"]).default("given"),
+    notes: z.string().optional().nullable(),
     administeredAt: z.coerce.date().optional().nullable(),
   });
 
@@ -980,6 +1410,65 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
 
       res.status(201).json(created);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+      }
+      if (error instanceof Error) {
+        return res.status(400).json({ message: error.message });
+      }
+      next(error);
+    }
+  });
+  app.post("/api/residents/:residentId/medication-dose-records", requireAuth, async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      const residentId = Number(req.params.residentId);
+      if (!Number.isInteger(residentId) || residentId <= 0) {
+        return res.status(400).json({ message: "Residente invalido." });
+      }
+
+      const sessionUser = req.session.user;
+      if (!sessionUser) {
+        return res.status(401).json({ message: "Nao autorizado." });
+      }
+
+      const input = medicationDoseRecordInputSchema.parse(req.body);
+      const medications = await storage.getMedications(orgId, residentId);
+      const medication = medications.find((item) => item.id === input.medicationId);
+      if (!medication) {
+        return res.status(404).json({ message: "Medicamento nao encontrado para este residente." });
+      }
+
+      const linkedStaff = await resolveLinkedStaffForSessionUser(orgId, sessionUser);
+      let effectiveStaffId = await enforceCaregiverOwnStaffId(orgId, sessionUser, input.staffId);
+
+      if (sessionUser.role !== "cuidador") {
+        if (effectiveStaffId) {
+          const selectedStaff = await storage.getStaffMember(orgId, effectiveStaffId);
+          if (!selectedStaff || selectedStaff.active === false) {
+            return res.status(400).json({ message: "Profissional selecionado nao esta disponivel." });
+          }
+        } else if (linkedStaff && linkedStaff.active !== false) {
+          effectiveStaffId = linkedStaff.id;
+        }
+      }
+      if (!effectiveStaffId) {
+        return res.status(400).json({ message: "Selecione quem administrou a medicacao." });
+      }
+
+      const saved = await storage.upsertMedicationAdministrationForDose({
+        organizationId: orgId,
+        medicationId: medication.id,
+        residentId,
+        staffId: effectiveStaffId,
+        scheduledFor: input.scheduledFor,
+        administeredAt: input.administeredAt ?? new Date(),
+        status: input.status,
+        notes: input.notes?.trim() || null,
+      });
+
+      return res.status(200).json(saved);
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });

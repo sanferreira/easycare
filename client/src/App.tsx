@@ -12,9 +12,7 @@ import { canAccessRoute } from "@/lib/permissions";
 import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
 import Residents from "@/pages/Residents";
-import Medications from "@/pages/Medications";
 import Staff from "@/pages/Staff";
-import Occurrences from "@/pages/Occurrences";
 import Escalas from "@/pages/Escalas";
 import Admin from "@/pages/Admin";
 import Prontuario from "@/pages/Prontuario";
@@ -74,7 +72,7 @@ function PrivateRoute({ component: Component, superAdminOnly = false, route }: P
       <div className="min-h-screen bg-background flex">
         <Sidebar />
         <main className="flex-1 md:pl-64">
-          <div className="p-6 h-full overflow-y-auto">
+          <div className="p-3 sm:p-4 lg:p-6 h-full overflow-y-auto">
             <AccessDenied />
           </div>
         </main>
@@ -86,7 +84,7 @@ function PrivateRoute({ component: Component, superAdminOnly = false, route }: P
     <div className="min-h-screen bg-background flex">
       <Sidebar />
       <main className="flex-1 md:pl-64">
-        <div className="p-6 h-full overflow-y-auto">
+        <div className="p-3 sm:p-4 lg:p-6 h-full overflow-y-auto">
           <Component />
         </div>
       </main>
@@ -106,7 +104,7 @@ function Router() {
         <PrivateRoute component={Residents} route="/residents" />
       </Route>
       <Route path="/medications">
-        <PrivateRoute component={Medications} route="/medications" />
+        <Redirect to="/residents" />
       </Route>
       <Route path="/staff">
         <PrivateRoute component={Staff} route="/staff" />
@@ -115,7 +113,7 @@ function Router() {
         <PrivateRoute component={Escalas} route="/escalas" />
       </Route>
       <Route path="/occurrences">
-        <PrivateRoute component={Occurrences} route="/occurrences" />
+        <Redirect to="/residents" />
       </Route>
       <Route path="/prontuario">
         <PrivateRoute component={Prontuario} route="/prontuario" />

@@ -230,7 +230,7 @@ export default function Dashboard() {
   if (isLoading) {
     return (
       <div className="space-y-6 animate-pulse">
-        <div className="h-10 w-72 bg-muted rounded-xl" />
+        <div className="h-10 w-full max-w-72 bg-muted rounded-xl" />
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           {[1, 2, 3, 4].map((i) => <div key={i} className="h-36 bg-muted rounded-2xl" />)}
         </div>
@@ -262,10 +262,10 @@ export default function Dashboard() {
             <p className="text-muted-foreground mt-0.5 text-sm">{user.organizationName}</p>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:gap-3">
           <Button
             variant="outline" size="sm"
-            className="gap-2 shadow-sm hover:shadow-md transition-all"
+            className="w-full justify-center gap-2 shadow-sm hover:shadow-md transition-all sm:w-auto"
             onClick={handleDownloadReport}
             data-testid="button-download-report"
           >
@@ -274,7 +274,7 @@ export default function Dashboard() {
           </Button>
           <button
             onClick={() => navigate("/escalas")}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-border bg-card shadow-sm hover:shadow-md hover:border-primary/30 transition-all cursor-pointer group"
+            className="flex w-full items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-border bg-card shadow-sm hover:shadow-md hover:border-primary/30 transition-all cursor-pointer group sm:w-auto"
             data-testid="button-active-shifts-header"
           >
             <div className={`h-2 w-2 rounded-full shrink-0 ${activeShifts.length > 0 ? "bg-green-500 animate-pulse" : "bg-muted-foreground/40"}`} />
@@ -292,7 +292,7 @@ export default function Dashboard() {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard title="Residentes Ativos" value={stats.totalResidents} desc="Cadastrados no sistema" icon={Users} color={BRAND.blue} gradient={BRAND.cyan} to="/residents" />
         <KpiCard title="Taxa de Ocupação" value={`${stats.occupancyRate}%`} desc={`${stats.totalResidents} de ${stats.capacity} vagas ocupadas`} icon={BedDouble} color={BRAND.cyan} gradient={BRAND.blue} to="/residents" />
-        <KpiCard title="Medicações Ativas" value={stats.activeMedications} desc="Prescrições vigentes" icon={Pill} color={BRAND.green} gradient={BRAND.cyan} to="/medications" />
+        <KpiCard title="Medicações Ativas" value={stats.activeMedications} desc="Prescrições vigentes" icon={Pill} color={BRAND.green} gradient={BRAND.cyan} to="/residents" />
         <KpiCard title="Plantões Agora" value={activeShifts.length} desc="Em andamento agora" icon={Activity} color={BRAND.purple} gradient={BRAND.blue} to="/escalas" />
       </div>
 
@@ -301,7 +301,7 @@ export default function Dashboard() {
         {/* Bar chart — financial by month */}
         <Card className="lg:col-span-2 shadow-sm">
           <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <CardTitle className="text-base flex items-center gap-2">
                 <BarChart2 className="h-4 w-4 text-primary" />
                 Resumo Financeiro por Competência
@@ -381,7 +381,7 @@ export default function Dashboard() {
         {/* Recent residents */}
         <Card className="lg:col-span-2 shadow-sm">
           <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <CardTitle className="text-base">Residentes</CardTitle>
               <button onClick={() => navigate("/residents")} className="flex items-center gap-1 text-xs text-primary hover:text-primary/80 font-medium transition-colors" data-testid="button-view-all-residents">
                 Ver todos <ArrowRight className="h-3 w-3" />
@@ -429,12 +429,12 @@ export default function Dashboard() {
           {/* Occurrences bar */}
           <Card className="shadow-sm">
             <CardHeader className="pb-2">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <CardTitle className="text-sm flex items-center gap-2">
                   <AlertCircle className="h-4 w-4" style={{ color: BRAND.yellow }} />
                   Ocorrências por Tipo
                 </CardTitle>
-                <button onClick={() => navigate("/occurrences")} className="text-xs text-primary hover:text-primary/80 font-medium" data-testid="button-view-occurrences">
+                <button onClick={() => navigate("/residents")} className="text-xs text-primary hover:text-primary/80 font-medium" data-testid="button-view-occurrences">
                   Ver <ArrowRight className="h-3 w-3 inline" />
                 </button>
               </div>
@@ -470,9 +470,9 @@ export default function Dashboard() {
               <div className="space-y-3">
                 {[
                   { label: "Residentes", val: `${stats.totalResidents} / ${stats.capacity}`, color: BRAND.blue, to: "/residents" },
-                  { label: "Medicações", val: stats.activeMedications, color: BRAND.green, to: "/medications" },
+                  { label: "Medicações", val: stats.activeMedications, color: BRAND.green, to: "/residents" },
                   { label: "Plantões ativos", val: activeShifts.length, color: BRAND.cyan, to: "/escalas" },
-                  { label: "Ocorrências abertas", val: stats.pendingOccurrences, color: BRAND.yellow, to: "/occurrences" },
+                  { label: "Ocorrências abertas", val: stats.pendingOccurrences, color: BRAND.yellow, to: "/residents" },
                   { label: "Mensalidades vencidas", val: stats.overdueFeesCount, color: BRAND.red, to: "/financeiro" },
                 ].map((item) => (
                   <button key={item.label} onClick={() => navigate(item.to)}
@@ -495,7 +495,7 @@ export default function Dashboard() {
       {/* Shifts row */}
       <Card className="shadow-sm">
         <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <CardTitle className="text-base flex items-center gap-2">
               <Calendar className="h-4 w-4 text-primary" />
               Plantões em Andamento

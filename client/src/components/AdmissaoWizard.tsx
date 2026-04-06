@@ -246,9 +246,9 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
     return (
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <FormField control={form.control} name="name" render={({ field }) => (
-              <FormItem className="col-span-2">
+              <FormItem className="sm:col-span-2">
                 <FormLabel>Nome completo *</FormLabel>
                 <FormControl><Input placeholder="Ex: Maria Aparecida da Silva" {...field} data-testid="wizard-name" /></FormControl>
                 <FormMessage />
@@ -330,13 +330,13 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
               </FormItem>
             )} />
             <FormField control={form.control} name="healthNotes" render={({ field }) => (
-              <FormItem className="col-span-2">
+              <FormItem className="sm:col-span-2">
                 <FormLabel>Observações de saúde</FormLabel>
                 <FormControl><Textarea placeholder="Diagnósticos, condições relevantes..." rows={2} {...field} /></FormControl>
               </FormItem>
             )} />
             <FormField control={form.control} name="allergies" render={({ field }) => (
-              <FormItem className="col-span-2">
+              <FormItem className="sm:col-span-2">
                 <FormLabel>Alergias</FormLabel>
                 <FormControl><Input placeholder="Ex: Dipirona, Lactose" {...field} /></FormControl>
               </FormItem>
@@ -396,9 +396,9 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
           )} />
 
           {!skip && (
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <FormField control={form.control} name="name" render={({ field }) => (
-                <FormItem className="col-span-2">
+                <FormItem className="sm:col-span-2">
                   <FormLabel>Nome do familiar *</FormLabel>
                   <FormControl><Input placeholder="Ex: Ana Silva" {...field} data-testid="wizard-family-name" /></FormControl>
                   <FormMessage />
@@ -434,13 +434,13 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
                 </FormItem>
               )} />
               <FormField control={form.control} name="email" render={({ field }) => (
-                <FormItem className="col-span-2">
+                <FormItem className="sm:col-span-2">
                   <FormLabel>E-mail</FormLabel>
                   <FormControl><Input type="email" placeholder="familiar@email.com" {...field} /></FormControl>
                 </FormItem>
               )} />
               <FormField control={form.control} name="portalAccess" render={({ field }) => (
-                <FormItem className="col-span-2">
+                <FormItem className="sm:col-span-2">
                   <div className="flex items-center gap-3 bg-primary/5 rounded-xl p-3 border border-primary/20">
                     <FormControl>
                       <Switch checked={field.value} onCheckedChange={field.onChange} data-testid="wizard-portal-access" />
@@ -527,7 +527,7 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
           )} />
 
           {!skip && (
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <FormField control={form.control} name="plan" render={({ field }) => (
                 <FormItem>
                   <FormLabel>Plano *</FormLabel>
@@ -578,7 +578,7 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
                 </FormItem>
               )} />
               <FormField control={form.control} name="notes" render={({ field }) => (
-                <FormItem className="col-span-2">
+                <FormItem className="sm:col-span-2">
                   <FormLabel>Observações do contrato</FormLabel>
                   <FormControl><Textarea rows={2} placeholder="Observações sobre serviços, condições especiais..." {...field} /></FormControl>
                 </FormItem>

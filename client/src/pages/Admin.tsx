@@ -798,7 +798,7 @@ export default function Admin() {
         </Button>
       </div>
 
-      <div className="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3">
+      <div className="flex flex-col items-start gap-3 rounded-xl border border-border bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-sm font-medium text-foreground">Mostrar organizações inativas</p>
           <p className="text-xs text-muted-foreground">Por padrão, organizações inativas ficam ocultas da lista.</p>
@@ -842,7 +842,7 @@ export default function Admin() {
             </div>
             <div>
               <Label className="text-sm font-medium">CEP</Label>
-              <div className="mt-1.5 flex gap-2">
+              <div className="mt-1.5 flex flex-col gap-2 sm:flex-row">
                 <Input
                   placeholder="00000-000"
                   maxLength={9}
@@ -853,7 +853,7 @@ export default function Admin() {
                 <Button
                   type="button"
                   variant="outline"
-                  className="shrink-0"
+                  className="w-full shrink-0 sm:w-auto"
                   onClick={handleLookupOrgCep}
                   disabled={isLookingUpOrgCep}
                   data-testid="button-org-cep-lookup"
