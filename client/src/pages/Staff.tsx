@@ -300,6 +300,10 @@ function getStaffDocument(member: StaffMember): string {
   return member.cpf || "-";
 }
 
+function formatCurrencyBRL(value: number): string {
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
+}
+
 function getWorkScheduleSummary(raw?: string | null): string {
   const schedule = parseWorkSchedule(raw);
   const weeklyCount = WEEKDAY_ROWS.reduce((acc, day) => {
@@ -444,6 +448,9 @@ export default function Staff() {
                           <div className="text-[11px] text-muted-foreground">
                             {getWorkScheduleSummary(member.workSchedule)}
                           </div>
+                          <div className="text-[11px] text-muted-foreground">
+                            Plantao: {formatCurrencyBRL(Number(member.shiftValue ?? 0))}
+                          </div>
                         </div>
                       </div>
                     </TableCell>
@@ -560,6 +567,7 @@ function StaffDialog({
     employmentType: "clt",
     cpf: "",
     cnpj: "",
+    shiftValue: 0,
     phone: "",
     cep: "",
     address: "",
@@ -676,6 +684,7 @@ function StaffDialog({
         employmentType: normalizeEmploymentType(staff.employmentType),
         cpf: maskCpf(staff.cpf ?? ""),
         cnpj: maskCnpj(staff.cnpj ?? ""),
+        shiftValue: Number.isFinite(Number(staff.shiftValue ?? 0)) ? Number(staff.shiftValue ?? 0) : 0,
         phone: maskPhoneBR(staff.phone ?? ""),
         cep: maskCep(staff.cep ?? ""),
         address: staff.address ?? "",
@@ -777,6 +786,7 @@ function StaffDialog({
     const selectedEmploymentType = normalizeEmploymentType(data.employmentType);
     const selectedRoleKey = normalizeStaffRoleValue(data.role);
     const selectedProfile = normalizeShiftProfile(data.shift);
+    const shiftValueNumber = Number(data.shiftValue ?? 0);
     const scheduleAllowedForProfile = normalizedScheduleConfigurableProfiles.has(selectedProfile);
     const cpfDigits = digitsOnly(data.cpf || "");
     const cnpjDigits = digitsOnly(data.cnpj || "");
@@ -796,6 +806,10 @@ function StaffDialog({
     }
     if (!selectedRoleKey) {
       form.setError("role", { type: "manual", message: "Selecione um cargo valido." });
+      return;
+    }
+    if (!Number.isFinite(shiftValueNumber) || shiftValueNumber < 0) {
+      form.setError("shiftValue", { type: "manual", message: "Valor do plantao invalido." });
       return;
     }
 
@@ -852,6 +866,7 @@ function StaffDialog({
       employmentType: selectedEmploymentType,
       cpf: selectedEmploymentType === "clt" ? (data.cpf?.trim() || null) : null,
       cnpj: selectedEmploymentType === "pj" ? (data.cnpj?.trim() || null) : null,
+      shiftValue: Math.round((shiftValueNumber + Number.EPSILON) * 100) / 100,
       phone: data.phone?.trim() || null,
       cep: data.cep?.trim() || null,
       address: data.address?.trim() || null,
@@ -1305,7 +1320,7 @@ function StaffDialog({
               </div>
             )}
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <FormField
                 control={form.control}
                 name="employmentType"
@@ -1363,6 +1378,33 @@ function StaffDialog({
                         placeholder="00.000.000/0000-00"
                       />
                     </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="shiftValue"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Valor do plantao (R$)</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        value={typeof field.value === "number" ? field.value : Number(field.value ?? 0)}
+                        onChange={(event) => {
+                          const nextValue = event.target.value;
+                          field.onChange(nextValue === "" ? 0 : Number(nextValue));
+                        }}
+                        placeholder="0,00"
+                      />
+                    </FormControl>
+                    <p className="text-xs text-muted-foreground">
+                      Base usada para gerar contas a pagar automáticas da escala mensal.
+                    </p>
                     <FormMessage />
                   </FormItem>
                 )}

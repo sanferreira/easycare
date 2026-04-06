@@ -38,6 +38,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import type { ShiftAssignment } from "@shared/schema";
 import { DEFAULT_ENVIRONMENT_SETTINGS, getShiftProfileRule } from "@shared/environment";
 
@@ -72,12 +73,24 @@ type GenerateMonthResponse = {
   skippedByOverlap: number;
   skippedByValidation: number;
   clearedGenerated: boolean;
+  payablesCreated?: number;
+  payablesUpdated?: number;
+  payablesDeleted?: number;
+  payablesSkippedLocked?: number;
 };
 type ExcludeDayResponse = {
   message: string;
   shiftId: number;
   staffId: number;
   blockedDate: string;
+};
+type ShiftPayableResponse = {
+  shiftId: number;
+  linked: boolean;
+  payableId: number | null;
+  amount: number | null;
+  status: string | null;
+  title: string | null;
 };
 const AUTO_MONTH_NOTE_PREFIX = "[AUTO-MONTH:";
 
@@ -180,6 +193,20 @@ function buildShiftRuleHint(rule: ReturnType<typeof getShiftProfileRule>): strin
   return `Regra do perfil: ${parts.join(" | ")}.`;
 }
 
+function parsePayableAmountInput(rawValue: string): number | null {
+  const trimmed = rawValue.trim();
+  if (!trimmed) return null;
+  let normalized = trimmed.replace(/\s+/g, "").replace(/[Rr]\$/g, "");
+  if (normalized.includes(",") && normalized.includes(".")) {
+    normalized = normalized.replace(/\./g, "").replace(",", ".");
+  } else {
+    normalized = normalized.replace(",", ".");
+  }
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed)) return null;
+  return parsed;
+}
+
 export default function Escalas() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDay, setSelectedDay] = useState<Date>(new Date());
@@ -195,6 +222,8 @@ export default function Escalas() {
     startTime: "",
     endTime: "",
     notes: "",
+    payableAmount: "",
+    applyPayableAsDefault: true,
   });
   const { toast } = useToast();
   const { user } = useAuth();
@@ -238,6 +267,16 @@ export default function Escalas() {
     },
   });
   const { data: residents = [] } = useResidents();
+  const { data: editingShiftPayable } = useQuery<ShiftPayableResponse | null>({
+    queryKey: ["/api/shift-assignments", editingShiftId, "payable"],
+    enabled: Boolean(openDialog && editingShiftId),
+    queryFn: async () => {
+      if (!editingShiftId) return null;
+      const res = await fetch(`/api/shift-assignments/${editingShiftId}/payable`);
+      if (!res.ok) return null;
+      return res.json();
+    },
+  });
 
   const linkedStaffForCaregiver = useMemo(() => {
     if (!isCaregiver) return null;
@@ -261,6 +300,12 @@ export default function Escalas() {
     () => selectableStaff.find((member) => String(member.id) === form.staffId),
     [selectableStaff, form.staffId],
   );
+  const resolveDefaultPayableAmount = (staffId: string): string => {
+    const member = selectableStaff.find((item) => String(item.id) === staffId);
+    const value = Number(member?.shiftValue ?? 0);
+    if (!Number.isFinite(value) || value <= 0) return "";
+    return value.toFixed(2);
+  };
   const selectedStaffRule = useMemo(
     () => getShiftProfileRule(selectedStaff?.shift, configuredShiftProfiles),
     [configuredShiftProfiles, selectedStaff?.shift],
@@ -293,7 +338,11 @@ export default function Escalas() {
     if (!isCaregiver) return;
     const linkedStaffId = linkedStaffForCaregiver ? String(linkedStaffForCaregiver.id) : "";
     if (!linkedStaffId || form.staffId === linkedStaffId) return;
-    setForm((prev) => ({ ...prev, staffId: linkedStaffId }));
+    setForm((prev) => ({
+      ...prev,
+      staffId: linkedStaffId,
+      payableAmount: editingShiftId ? prev.payableAmount : resolveDefaultPayableAmount(linkedStaffId),
+    }));
   }, [isCaregiver, linkedStaffForCaregiver, form.staffId]);
 
   useEffect(() => {
@@ -301,6 +350,19 @@ export default function Escalas() {
       setSelectedDay(startOfMonth(currentDate));
     }
   }, [currentDate, selectedDay]);
+  useEffect(() => {
+    if (!editingShiftId || !editingShiftPayable) return;
+    if (editingShiftPayable.amount === null || editingShiftPayable.amount === undefined) return;
+    const value = Number(editingShiftPayable.amount);
+    if (!Number.isFinite(value)) return;
+    setForm((prev) => {
+      if (prev.payableAmount.trim() !== "") return prev;
+      return {
+        ...prev,
+        payableAmount: value.toFixed(2),
+      };
+    });
+  }, [editingShiftId, editingShiftPayable]);
 
   // Map staffId -> color index
   const staffColorMap = useMemo(() => {
@@ -314,6 +376,10 @@ export default function Escalas() {
       const times = form.shiftType !== "avulso"
         ? getDefaultTimes(form.shiftType, form.date)
         : { startTime: form.startTime, endTime: form.endTime };
+      const parsedPayableAmount = parsePayableAmountInput(form.payableAmount);
+      if (form.payableAmount.trim() && parsedPayableAmount === null) {
+        throw new Error("Valor do plantao invalido. Use apenas numeros (ex.: 300 ou 300,50).");
+      }
 
       const res = await fetch("/api/shift-assignments", {
         method: "POST",
@@ -325,6 +391,8 @@ export default function Escalas() {
           startTime: new Date(times.startTime),
           endTime: new Date(times.endTime),
           notes: form.notes || null,
+          payableAmount: parsedPayableAmount,
+          promoteToStaffDefault: form.applyPayableAsDefault,
         }),
       });
       if (!res.ok) {
@@ -336,8 +404,19 @@ export default function Escalas() {
     onSuccess: () => {
       toast({ title: "Escala criada com sucesso!" });
       queryClient.invalidateQueries({ queryKey: ["/api/shift-assignments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/accounts-payable"] });
       setOpenDialog(false);
-      setForm({ staffId: defaultStaffIdForForm, residentId: "none", shiftType: "12h_manha", date: format(new Date(), "yyyy-MM-dd"), startTime: "", endTime: "", notes: "" });
+      setForm({
+        staffId: defaultStaffIdForForm,
+        residentId: "none",
+        shiftType: "12h_manha",
+        date: format(new Date(), "yyyy-MM-dd"),
+        startTime: "",
+        endTime: "",
+        notes: "",
+        payableAmount: resolveDefaultPayableAmount(defaultStaffIdForForm),
+        applyPayableAsDefault: true,
+      });
     },
     onError: (err: Error) => {
       toast({ title: "Erro", description: err.message, variant: "destructive" });
@@ -349,6 +428,10 @@ export default function Escalas() {
       const times = form.shiftType !== "avulso"
         ? getDefaultTimes(form.shiftType, form.date)
         : { startTime: form.startTime, endTime: form.endTime };
+      const parsedPayableAmount = parsePayableAmountInput(form.payableAmount);
+      if (form.payableAmount.trim() && parsedPayableAmount === null) {
+        throw new Error("Valor do plantao invalido. Use apenas numeros (ex.: 300 ou 300,50).");
+      }
 
       const res = await fetch(`/api/shift-assignments/${id}`, {
         method: "PUT",
@@ -360,20 +443,58 @@ export default function Escalas() {
           startTime: new Date(times.startTime),
           endTime: new Date(times.endTime),
           notes: form.notes || null,
+          ...(form.payableAmount.trim() !== "" && parsedPayableAmount !== null
+            ? {
+              payableAmount: parsedPayableAmount,
+              promoteToStaffDefault: form.applyPayableAsDefault,
+            }
+            : {}),
         }),
       });
       if (!res.ok) {
         const data = await res.json();
         throw new Error(data.message || "Erro");
       }
-      return res.json();
+      const updatedShift = await res.json();
+
+      if (form.payableAmount.trim() !== "" && parsedPayableAmount !== null) {
+        const syncRes = await fetch(`/api/shift-assignments/${id}/payable`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            payableAmount: parsedPayableAmount,
+            promoteToStaffDefault: form.applyPayableAsDefault,
+          }),
+        });
+        if (!syncRes.ok) {
+          const syncData = await syncRes.json().catch(() => ({}));
+          throw new Error(
+            (typeof syncData.message === "string" && syncData.message)
+              || "Escala salva, mas nao foi possivel atualizar o contas a pagar deste plantao.",
+          );
+        }
+      }
+
+      return updatedShift;
     },
-    onSuccess: () => {
+    onSuccess: (_data, id) => {
       toast({ title: "Escala atualizada!" });
       queryClient.invalidateQueries({ queryKey: ["/api/shift-assignments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/accounts-payable"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/shift-assignments", id, "payable"] });
       setOpenDialog(false);
       setEditingShiftId(null);
-      setForm({ staffId: defaultStaffIdForForm, residentId: "none", shiftType: "12h_manha", date: format(new Date(), "yyyy-MM-dd"), startTime: "", endTime: "", notes: "" });
+      setForm({
+        staffId: defaultStaffIdForForm,
+        residentId: "none",
+        shiftType: "12h_manha",
+        date: format(new Date(), "yyyy-MM-dd"),
+        startTime: "",
+        endTime: "",
+        notes: "",
+        payableAmount: resolveDefaultPayableAmount(defaultStaffIdForForm),
+        applyPayableAsDefault: true,
+      });
     },
     onError: (err: Error) => {
       toast({ title: "Erro", description: err.message, variant: "destructive" });
@@ -388,6 +509,7 @@ export default function Escalas() {
     onSuccess: () => {
       toast({ title: "Escala removida" });
       queryClient.invalidateQueries({ queryKey: ["/api/shift-assignments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/accounts-payable"] });
     },
   });
   const excludeSingleDayMutation = useMutation({
@@ -407,6 +529,7 @@ export default function Escalas() {
         description: `${result.blockedDate} foi removido da escala recorrente deste colaborador.`,
       });
       queryClient.invalidateQueries({ queryKey: ["/api/shift-assignments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/accounts-payable"] });
       queryClient.invalidateQueries({ queryKey: ["/api/staff"] });
     },
     onError: (err: Error) => {
@@ -434,11 +557,20 @@ export default function Escalas() {
       if (result.skipped > 0) {
         parts.push(`${result.skipped} ignorado(s)`);
       }
+      if ((result.payablesCreated ?? 0) > 0 || (result.payablesUpdated ?? 0) > 0) {
+        parts.push(
+          `${result.payablesCreated ?? 0} conta(s) criada(s), ${result.payablesUpdated ?? 0} atualizada(s)`,
+        );
+      }
+      if ((result.payablesSkippedLocked ?? 0) > 0) {
+        parts.push(`${result.payablesSkippedLocked} bloqueada(s) por pagamento ja registrado`);
+      }
       toast({
         title: `Agenda de ${result.month} atualizada`,
         description: parts.join(" - "),
       });
       queryClient.invalidateQueries({ queryKey: ["/api/shift-assignments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/accounts-payable"] });
     },
     onError: (err: Error) => {
       toast({ title: "Erro", description: err.message, variant: "destructive" });
@@ -609,7 +741,17 @@ export default function Escalas() {
       return;
     }
     setEditingShiftId(null);
-    setForm({ staffId: defaultStaffIdForForm, residentId: "none", shiftType: "12h_manha", date: format(day ?? new Date(), "yyyy-MM-dd"), startTime: "", endTime: "", notes: "" });
+    setForm({
+      staffId: defaultStaffIdForForm,
+      residentId: "none",
+      shiftType: "12h_manha",
+      date: format(day ?? new Date(), "yyyy-MM-dd"),
+      startTime: "",
+      endTime: "",
+      notes: "",
+      payableAmount: resolveDefaultPayableAmount(defaultStaffIdForForm),
+      applyPayableAsDefault: true,
+    });
     setOpenDialog(true);
   }
 
@@ -619,6 +761,7 @@ export default function Escalas() {
       return;
     }
     setEditingShiftId(shift.id);
+    queryClient.invalidateQueries({ queryKey: ["/api/shift-assignments", shift.id, "payable"] });
     const startDate = new Date(shift.startTime);
     const endDate = new Date(shift.endTime);
     const shiftType = (shift.shiftType as ShiftType) || "avulso";
@@ -630,6 +773,8 @@ export default function Escalas() {
       startTime: format(startDate, "yyyy-MM-dd'T'HH:mm"),
       endTime: format(endDate, "yyyy-MM-dd'T'HH:mm"),
       notes: shift.notes || "",
+      payableAmount: "",
+      applyPayableAsDefault: true,
     });
     setOpenDialog(true);
   }
@@ -988,7 +1133,12 @@ export default function Escalas() {
               <Label className="text-sm font-medium">Cuidador / Funcionario *</Label>
               <Select
                 value={form.staffId}
-                onValueChange={(v) => setForm({ ...form, staffId: v })}
+                onValueChange={(v) =>
+                  setForm((current) => ({
+                    ...current,
+                    staffId: v,
+                    payableAmount: editingShiftId ? current.payableAmount : resolveDefaultPayableAmount(v),
+                  }))}
                 disabled={isCaregiver}
               >
                 <SelectTrigger className="mt-1.5" data-testid="select-staff">
@@ -1116,6 +1266,40 @@ export default function Escalas() {
                 value={form.notes}
                 onChange={(e) => setForm({ ...form, notes: e.target.value })}
                 data-testid="textarea-notes" />
+            </div>
+
+            <div>
+              <Label className="text-sm font-medium">Valor do plantao (R$)</Label>
+              <Input
+                type="text"
+                inputMode="decimal"
+                className="mt-1.5"
+                value={form.payableAmount}
+                onChange={(e) => setForm({ ...form, payableAmount: e.target.value })}
+                data-testid="input-payable-amount"
+              />
+              <p className="text-xs text-muted-foreground mt-1.5">
+                {editingShiftId
+                  ? "No modo edicao, informe um valor para atualizar o contas a pagar deste plantao (use 0 para remover)."
+                  : "Ao criar o plantao, este valor sera lancado automaticamente em contas a pagar."}
+              </p>
+              <div className="mt-3 rounded-md border border-border bg-muted/20 px-3 py-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="space-y-0.5">
+                    <p className="text-xs font-medium text-foreground">Aplicar como valor padrao do colaborador</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      Quando ligado, esse valor vira base para as proximas geracoes de agenda do mes.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={form.applyPayableAsDefault}
+                    onCheckedChange={(checked) =>
+                      setForm((current) => ({ ...current, applyPayableAsDefault: Boolean(checked) }))
+                    }
+                    data-testid="switch-apply-payable-as-default"
+                  />
+                </div>
+              </div>
             </div>
 
             <div className="flex gap-3 pt-1">

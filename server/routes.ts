@@ -1272,6 +1272,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     startTime: z.coerce.date(),
     endTime: z.coerce.date(),
     notes: z.string().optional().nullable(),
+    payableAmount: z.coerce.number().min(0).optional().nullable(),
+    promoteToStaffDefault: z.boolean().optional(),
+  });
+  const shiftPayableInputSchema = z.object({
+    payableAmount: z.coerce.number().min(0).optional().nullable(),
+    promoteToStaffDefault: z.boolean().optional(),
   });
   const generateMonthInputSchema = z.object({
     month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Mes invalido. Use YYYY-MM."),
@@ -1300,6 +1306,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   };
 
   const AUTO_MONTH_NOTE_PREFIX = "[AUTO-MONTH:";
+  const AUTO_MONTH_PAYABLE_NOTE_PREFIX = "[AUTO-MONTH-PAYABLE:";
+  const MANUAL_SHIFT_PAYABLE_NOTE_PREFIX = "[SHIFT-PAYABLE]";
+  const MANUAL_PAYABLE_SHIFT_ID_REGEX = /\[SHIFT:(\d+)\]/;
+  const AUTO_PAYABLE_NOTE_REGEX = /\[AUTO-MONTH-PAYABLE:(\d{4}-(0[1-9]|1[0-2]))\]\[STAFF:(\d+)\]/;
+  const AUTO_PAYABLE_UNIT_REGEX = /(\d+)x([0-9]+(?:\.[0-9]+)?)/;
+  const AUTO_PAYABLE_IDS_REGEX = /ids:([0-9,]+)/;
+  const SHIFT_TYPE_LABELS: Record<ShiftAssignmentType, string> = {
+    "12h_manha": "Diurno (12h)",
+    "12h_noite": "Noturno (12h)",
+    "24h": "24h",
+    "avulso": "Avulso",
+  };
   const WEEKDAY_KEYS: WeekdayKey[] = [
     "sunday",
     "monday",
@@ -1521,6 +1539,161 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   const FIVE_MINUTES_MS = 5 * 60 * 1000;
   const HOUR_MS = 60 * 60 * 1000;
+  const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+  const formatHourMinute = (value: Date): string =>
+    `${String(value.getHours()).padStart(2, "0")}:${String(value.getMinutes()).padStart(2, "0")}`;
+  const getManualShiftPayableKey = (shiftId: number): string =>
+    `${MANUAL_SHIFT_PAYABLE_NOTE_PREFIX}[SHIFT:${shiftId}]`;
+  const buildManualShiftPayableNote = (shift: {
+    id: number;
+    startTime: Date;
+    endTime: Date;
+    shiftType: string;
+    notes?: string | null;
+  }): string => {
+    const shiftStart = new Date(shift.startTime);
+    const shiftEnd = new Date(shift.endTime);
+    const shiftTypeLabel =
+      SHIFT_TYPE_LABELS[(shift.shiftType as ShiftAssignmentType) ?? "avulso"] ?? shift.shiftType;
+    const detailLabel =
+      `${toDateKey(shiftStart)} ${formatHourMinute(shiftStart)} - ${toDateKey(shiftEnd)} ${formatHourMinute(shiftEnd)}`;
+    return `${getManualShiftPayableKey(shift.id)} ${detailLabel} ${shiftTypeLabel}${shift.notes ? ` | ${shift.notes}` : ""}`;
+  };
+  const buildManualShiftPayableBasePayload = async (
+    orgId: number,
+    shift: {
+      id: number;
+      staffId: number;
+      startTime: Date;
+      endTime: Date;
+      shiftType: string;
+      notes?: string | null;
+    },
+  ) => {
+    const shiftStart = new Date(shift.startTime);
+    const staffMember = await storage.getStaffMember(orgId, shift.staffId);
+    const dueDate = toDateKey(shiftStart);
+    const referenceMonth = `${shiftStart.getFullYear()}-${String(shiftStart.getMonth() + 1).padStart(2, "0")}`;
+    return {
+      staffId: shift.staffId,
+      title: `Plantao ${dueDate} - ${staffMember?.name ?? "colaborador"}`,
+      category: "staff" as const,
+      referenceMonth,
+      dueDate,
+      notes: buildManualShiftPayableNote(shift),
+    };
+  };
+  const listManualShiftPayablesByShiftId = async (orgId: number, shiftId: number) => {
+    const shiftPayableKey = getManualShiftPayableKey(shiftId);
+    const payables = await storage.getAccountsPayable(orgId);
+    return payables
+      .filter((item) => typeof item.notes === "string" && item.notes.includes(shiftPayableKey))
+      .sort((left, right) => left.id - right.id);
+  };
+  const buildShiftPayableLinkResponse = async (
+    orgId: number,
+    shift: { id: number },
+  ) => {
+    const linkedPayables = await listManualShiftPayablesByShiftId(orgId, shift.id);
+    const linkedPayable = linkedPayables[0];
+    return {
+      shiftId: shift.id,
+      linked: Boolean(linkedPayable),
+      payableId: linkedPayable?.id ?? null,
+      amount: linkedPayable ? Number(linkedPayable.amount ?? 0) : null,
+      status: linkedPayable?.status ?? null,
+      title: linkedPayable?.title ?? null,
+    };
+  };
+  const maybeApplyShiftValueAsStaffDefault = async (input: {
+    orgId: number;
+    staffId: number;
+    value: number;
+  }) => {
+    const staffMember = await storage.getStaffMember(input.orgId, input.staffId);
+    if (!staffMember) return;
+    const currentShiftValue = Number(staffMember.shiftValue ?? 0);
+    if (!Number.isFinite(currentShiftValue) || currentShiftValue <= 0) {
+      await storage.updateStaff(input.orgId, staffMember.id, {
+        shiftValue: input.value,
+      });
+    }
+  };
+  const syncManualShiftPayableForShift = async (input: {
+    orgId: number;
+    shift: {
+      id: number;
+      staffId: number;
+      startTime: Date;
+      endTime: Date;
+      shiftType: string;
+      notes?: string | null;
+    };
+    payableAmount?: number | null;
+    remove?: boolean;
+    promoteToStaffDefault?: boolean;
+  }) => {
+    const linkedPayables = await listManualShiftPayablesByShiftId(input.orgId, input.shift.id);
+    const rawExplicitAmount = Number(input.payableAmount ?? NaN);
+    const hasExplicitAmount =
+      input.payableAmount !== undefined && input.payableAmount !== null && Number.isFinite(rawExplicitAmount);
+    const explicitAmount = hasExplicitAmount ? roundMoney(Math.max(0, rawExplicitAmount)) : null;
+    if (hasExplicitAmount && (explicitAmount ?? 0) > 0 && input.promoteToStaffDefault) {
+      await maybeApplyShiftValueAsStaffDefault({
+        orgId: input.orgId,
+        staffId: input.shift.staffId,
+        value: explicitAmount ?? 0,
+      });
+    }
+    const shouldDelete = Boolean(input.remove || (hasExplicitAmount && (explicitAmount ?? 0) <= 0));
+
+    if (shouldDelete) {
+      for (const payable of linkedPayables) {
+        await storage.deleteAccountPayable(input.orgId, payable.id);
+      }
+      return;
+    }
+
+    const primaryPayable = linkedPayables[0];
+    const duplicatedPayables = linkedPayables.slice(primaryPayable ? 1 : 0);
+    for (const duplicatedPayable of duplicatedPayables) {
+      await storage.deleteAccountPayable(input.orgId, duplicatedPayable.id);
+    }
+
+    if (!primaryPayable && !hasExplicitAmount) {
+      return;
+    }
+
+    const basePayload = await buildManualShiftPayableBasePayload(input.orgId, input.shift);
+    if (primaryPayable) {
+      const currentAmount = roundMoney(Math.max(0, Number(primaryPayable.amount ?? 0)));
+      const nextAmount = hasExplicitAmount ? (explicitAmount ?? 0) : currentAmount;
+      if (nextAmount <= 0) {
+        await storage.deleteAccountPayable(input.orgId, primaryPayable.id);
+        return;
+      }
+      await storage.updateAccountPayable(input.orgId, primaryPayable.id, {
+        ...basePayload,
+        amount: nextAmount,
+      });
+      return;
+    }
+
+    const createAmount = explicitAmount ?? 0;
+    if (createAmount <= 0) {
+      return;
+    }
+    await storage.createAccountPayable({
+      organizationId: input.orgId,
+      ...basePayload,
+      amount: createAmount,
+      discount: 0,
+      extra: 0,
+      status: "pending",
+      paidAt: null,
+      paymentMethod: null,
+    });
+  };
 
   const assertShiftWindow = (startTime: Date, endTime: Date) => {
     if (Number.isNaN(startTime.getTime()) || Number.isNaN(endTime.getTime())) {
@@ -1648,8 +1821,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       );
     }
 
+    const isAvulsoShift = input.shiftType === "avulso";
     const durationMs = input.endTime.getTime() - input.startTime.getTime();
-    if (shiftRule.exactShiftHours) {
+    // Plantao avulso ignora regra fixa de duracao do perfil (ex.: 12x36).
+    if (!isAvulsoShift && shiftRule.exactShiftHours) {
       const expectedDurationMs = shiftRule.exactShiftHours * HOUR_MS;
       if (Math.abs(durationMs - expectedDurationMs) > FIVE_MINUTES_MS) {
         throw new ShiftValidationError(
@@ -1658,7 +1833,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
     }
 
-    if (shiftRule.minRestHours) {
+    // Plantao avulso tambem ignora descanso minimo entre escalas do perfil.
+    if (!isAvulsoShift && shiftRule.minRestHours) {
       const minimumRestMs = shiftRule.minRestHours * HOUR_MS;
       const violatesRest = otherShifts.some((shift) => {
         const existingStartMs = new Date(shift.startTime).getTime();
@@ -1693,8 +1869,54 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       end: end ? new Date(end as string) : undefined,
     }));
   });
+  app.get("/api/shift-assignments/:id/payable", requireAuth, async (req, res) => {
+    const orgId = getOrgId(req);
+    const shiftId = Number(req.params.id);
+    if (!Number.isInteger(shiftId) || shiftId <= 0) {
+      return res.status(400).json({ message: "ID de escala invalido." });
+    }
+
+    const shifts = await storage.getShiftAssignments(orgId);
+    const targetShift = shifts.find((shift) => shift.id === shiftId);
+    if (!targetShift) {
+      return res.status(404).json({ message: "Escala nao encontrada." });
+    }
+
+    await enforceCaregiverOwnStaffId(orgId, req.session.user, targetShift.staffId);
+    return res.json(await buildShiftPayableLinkResponse(orgId, targetShift));
+  });
   // Escrita de escalas: admin + enfermeiro + tecnico + recepcionista + administrativo
   const SHIFT_WRITE_ROLES = ["admin", "enfermeiro", "tecnico_enfermagem", "recepcionista", "administrativo"];
+  app.put("/api/shift-assignments/:id/payable", requireAuth, requireRole(...SHIFT_WRITE_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      const shiftId = Number(req.params.id);
+      if (!Number.isInteger(shiftId) || shiftId <= 0) {
+        return res.status(400).json({ message: "ID de escala invalido." });
+      }
+      const input = shiftPayableInputSchema.parse(req.body ?? {});
+
+      const shifts = await storage.getShiftAssignments(orgId);
+      const targetShift = shifts.find((shift) => shift.id === shiftId);
+      if (!targetShift) {
+        return res.status(404).json({ message: "Escala nao encontrada." });
+      }
+
+      await enforceCaregiverOwnStaffId(orgId, req.session.user, targetShift.staffId);
+      await syncManualShiftPayableForShift({
+        orgId,
+        shift: targetShift,
+        payableAmount: input.payableAmount,
+        promoteToStaffDefault: input.promoteToStaffDefault !== false,
+      });
+
+      return res.json(await buildShiftPayableLinkResponse(orgId, targetShift));
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      if (err instanceof Error) return res.status(400).json({ message: err.message });
+      next(err);
+    }
+  });
   app.post("/api/shift-assignments/generate-month", requireAuth, requireRole(...SHIFT_WRITE_ROLES), async (req, res, next) => {
     try {
       const orgId = getOrgId(req);
@@ -1735,6 +1957,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         );
 
         for (const generatedShift of generatedShifts) {
+          await syncManualShiftPayableForShift({
+            orgId,
+            shift: generatedShift,
+            remove: true,
+          });
           await storage.deleteShiftAssignment(orgId, generatedShift.id);
         }
 
@@ -1918,6 +2145,103 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         shiftRangesByStaff.set(member.id, memberRanges);
       }
 
+      const monthShiftsAfterGeneration = await storage.getShiftAssignments(orgId, {
+        start: monthStart,
+        end: monthEnd,
+      });
+      const getAutoPayableKey = (staffId: number) =>
+        `${AUTO_MONTH_PAYABLE_NOTE_PREFIX}${input.month}][STAFF:${staffId}]`;
+      const isAutoPayableForStaff = (note: unknown, staffId: number) =>
+        typeof note === "string" && note.includes(getAutoPayableKey(staffId));
+
+      const monthDueDate = `${input.month}-${String(totalDaysInMonth).padStart(2, "0")}`;
+      let payablesCreated = 0;
+      let payablesUpdated = 0;
+      let payablesDeleted = 0;
+      let payablesSkippedLocked = 0;
+
+      for (const member of targetStaff) {
+        if (member.active === false) continue;
+
+        const shiftValueRaw = Number(member.shiftValue ?? 0);
+        const shiftValue = Number.isFinite(shiftValueRaw) && shiftValueRaw > 0
+          ? roundMoney(shiftValueRaw)
+          : 0;
+        const generatedShiftsForStaff = monthShiftsAfterGeneration
+          .filter((shift) => shift.staffId === member.id && isGeneratedShift(shift.notes))
+          .sort((left, right) =>
+            new Date(left.startTime).getTime() - new Date(right.startTime).getTime(),
+          );
+        const generatedShiftCount = generatedShiftsForStaff.length;
+
+        const payablesForStaffMonth = await storage.getAccountsPayable(orgId, {
+          staffId: member.id,
+          referenceMonth: input.month,
+        });
+        const autoPayables = payablesForStaffMonth.filter((item) =>
+          isAutoPayableForStaff(item.notes, member.id),
+        );
+        const paidAutoPayables = autoPayables.filter((item) => item.status === "paid");
+        const editableAutoPayables = autoPayables.filter((item) => item.status !== "paid");
+
+        if (paidAutoPayables.length > 0) {
+          for (const payable of editableAutoPayables) {
+            await storage.deleteAccountPayable(orgId, payable.id);
+            payablesDeleted++;
+          }
+          payablesSkippedLocked += paidAutoPayables.length;
+          continue;
+        }
+
+        const primaryEditable = editableAutoPayables[0];
+        const duplicatedEditable = editableAutoPayables.slice(primaryEditable ? 1 : 0);
+        for (const duplicated of duplicatedEditable) {
+          await storage.deleteAccountPayable(orgId, duplicated.id);
+          payablesDeleted++;
+        }
+
+        if (shiftValue <= 0 || generatedShiftCount <= 0) {
+          if (primaryEditable) {
+            await storage.deleteAccountPayable(orgId, primaryEditable.id);
+            payablesDeleted++;
+          }
+          continue;
+        }
+
+        const amount = roundMoney(generatedShiftCount * shiftValue);
+        const consideredShiftIds = generatedShiftsForStaff.map((shift) => shift.id).join(",");
+        const autoPayableNote = `${getAutoPayableKey(member.id)} ${generatedShiftCount}x${shiftValue.toFixed(2)} ids:${consideredShiftIds}`;
+        const basePayablePayload = {
+          organizationId: orgId,
+          staffId: member.id,
+          title: `Plantoes ${input.month} - ${member.name}`,
+          category: "staff",
+          referenceMonth: input.month,
+          dueDate: monthDueDate,
+          amount,
+          discount: 0,
+          extra: 0,
+          paymentMethod: null,
+          notes: autoPayableNote,
+        } as const;
+
+        if (primaryEditable) {
+          await storage.updateAccountPayable(orgId, primaryEditable.id, {
+            ...basePayablePayload,
+            status: "pending",
+            paidAt: null,
+          });
+          payablesUpdated++;
+        } else {
+          await storage.createAccountPayable({
+            ...basePayablePayload,
+            status: "pending",
+            paidAt: null,
+          });
+          payablesCreated++;
+        }
+      }
+
       res.json({
         month: input.month,
         staffProcessed: targetStaff.length,
@@ -1928,6 +2252,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         skippedByOverlap: overlapSkipCount,
         skippedByValidation: validationSkipCount,
         clearedGenerated: Boolean(input.clearGenerated),
+        payablesCreated,
+        payablesUpdated,
+        payablesDeleted,
+        payablesSkippedLocked,
       });
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
@@ -1964,6 +2292,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await storage.updateStaff(orgId, staffMember.id, {
         workSchedule: JSON.stringify(schedule),
       });
+      await syncManualShiftPayableForShift({
+        orgId,
+        shift: targetShift,
+        remove: true,
+      });
       await storage.deleteShiftAssignment(orgId, targetShift.id);
 
       res.json({
@@ -1996,7 +2329,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         endTime: normalizedInput.endTime,
         environmentSettings,
       });
-      res.status(201).json(await storage.createShiftAssignment({ ...normalizedInput, organizationId: orgId }));
+      const { payableAmount, promoteToStaffDefault, ...shiftPayload } = normalizedInput;
+      const createdShift = await storage.createShiftAssignment({ ...shiftPayload, organizationId: orgId });
+      await syncManualShiftPayableForShift({
+        orgId,
+        shift: createdShift,
+        payableAmount,
+        promoteToStaffDefault: promoteToStaffDefault !== false,
+      });
+
+      res.status(201).json(createdShift);
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       if (err instanceof ShiftValidationError) return res.status(400).json({ message: err.message });
@@ -2012,6 +2354,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ?? DEFAULT_ENVIRONMENT_SETTINGS;
       const shiftId = Number(req.params.id);
       const updates = shiftInputSchema.partial().parse(req.body);
+      const { payableAmount, promoteToStaffDefault, ...shiftUpdates } = updates;
 
       const currentShifts = await storage.getShiftAssignments(orgId);
       const currentShift = currentShifts.find((shift) => shift.id === shiftId);
@@ -2019,15 +2362,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(404).json({ message: "Escala não encontrada" });
       }
 
-      const requestedStaffId = updates.staffId ?? currentShift.staffId;
+      const requestedStaffId = shiftUpdates.staffId ?? currentShift.staffId;
       const enforcedStaffId = await enforceCaregiverOwnStaffId(orgId, req.session.user, requestedStaffId);
       if (!enforcedStaffId) {
         return res.status(400).json({ message: "Profissional da escala nao informado." });
       }
       const nextStaffId = enforcedStaffId;
-      const nextShiftType = (updates.shiftType ?? currentShift.shiftType ?? "avulso") as "12h_manha" | "12h_noite" | "24h" | "avulso";
-      const nextStartTime = updates.startTime ?? new Date(currentShift.startTime);
-      const nextEndTime = updates.endTime ?? new Date(currentShift.endTime);
+      const nextShiftType = (shiftUpdates.shiftType ?? currentShift.shiftType ?? "avulso") as "12h_manha" | "12h_noite" | "24h" | "avulso";
+      const nextStartTime = shiftUpdates.startTime ?? new Date(currentShift.startTime);
+      const nextEndTime = shiftUpdates.endTime ?? new Date(currentShift.endTime);
 
       await assertShiftAssignmentAllowed({
         orgId,
@@ -2039,11 +2382,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         environmentSettings,
       });
 
-      const normalizedUpdates = updates.staffId !== undefined || req.session.user?.role === "cuidador"
-        ? { ...updates, staffId: nextStaffId }
-        : updates;
+      const normalizedUpdates = shiftUpdates.staffId !== undefined || req.session.user?.role === "cuidador"
+        ? { ...shiftUpdates, staffId: nextStaffId }
+        : shiftUpdates;
+      const updatedShift = await storage.updateShiftAssignment(orgId, shiftId, normalizedUpdates);
+      await syncManualShiftPayableForShift({
+        orgId,
+        shift: updatedShift,
+        payableAmount,
+        promoteToStaffDefault: promoteToStaffDefault !== false,
+      });
 
-      res.json(await storage.updateShiftAssignment(orgId, shiftId, normalizedUpdates));
+      res.json(updatedShift);
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       if (err instanceof ShiftValidationError) return res.status(400).json({ message: err.message });
@@ -2065,6 +2415,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     await enforceCaregiverOwnStaffId(orgId, req.session.user, targetShift.staffId);
+    await syncManualShiftPayableForShift({
+      orgId,
+      shift: targetShift,
+      remove: true,
+    });
     await storage.deleteShiftAssignment(orgId, shiftId);
     res.status(204).send();
   });
@@ -2129,6 +2484,169 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       status: req.query.status as string | undefined,
       referenceMonth: req.query.referenceMonth as string | undefined,
     }));
+  });
+  app.get("/api/accounts-payable/:id/details", requireAuth, requireRole(...FINANCIAL_ROLES), async (req, res) => {
+    const orgId = getOrgId(req);
+    const payableId = Number(req.params.id);
+    if (!Number.isInteger(payableId) || payableId <= 0) {
+      return res.status(400).json({ message: "ID invalido." });
+    }
+
+    const payable = await storage.getAccountPayable(orgId, payableId);
+    if (!payable) {
+      return res.status(404).json({ message: "Conta a pagar nao encontrada." });
+    }
+
+    const noteText = typeof payable.notes === "string" ? payable.notes : "";
+    const autoMatch = noteText.match(AUTO_PAYABLE_NOTE_REGEX);
+    const manualShiftMatch = noteText.match(MANUAL_PAYABLE_SHIFT_ID_REGEX);
+    const isAutoGenerated = Boolean(autoMatch);
+    const isManualShiftPayable = noteText.includes(MANUAL_SHIFT_PAYABLE_NOTE_PREFIX);
+    const parsedManualShiftId = manualShiftMatch?.[1] ? Number(manualShiftMatch[1]) : NaN;
+    const manualShiftId = Number.isInteger(parsedManualShiftId) && parsedManualShiftId > 0
+      ? parsedManualShiftId
+      : null;
+    const parsedReferenceMonth = autoMatch?.[1];
+    const parsedStaffId = autoMatch?.[3] ? Number(autoMatch[3]) : undefined;
+    const referenceMonth = payable.referenceMonth || parsedReferenceMonth || null;
+    const resolvedStaffId = payable.staffId ?? parsedStaffId ?? null;
+
+    let periodStart: string | null = null;
+    let periodEnd: string | null = null;
+    let shiftsConsidered: Array<{
+      id: number;
+      startTime: Date;
+      endTime: Date;
+      shiftType: ShiftAssignmentType;
+      notes?: string | null;
+    }> = [];
+
+    if (manualShiftId) {
+      const shifts = await storage.getShiftAssignments(orgId, {
+        staffId: resolvedStaffId ?? undefined,
+      });
+      const linkedShift = shifts.find((shift) => shift.id === manualShiftId);
+      if (linkedShift) {
+        const shiftStart = new Date(linkedShift.startTime);
+        const shiftEnd = new Date(linkedShift.endTime);
+        periodStart = toDateKey(shiftStart);
+        periodEnd = toDateKey(shiftEnd);
+        shiftsConsidered = [{
+          id: linkedShift.id,
+          startTime: shiftStart,
+          endTime: shiftEnd,
+          shiftType: linkedShift.shiftType as ShiftAssignmentType,
+          notes: linkedShift.notes,
+        }];
+      } else if (payable.dueDate) {
+        periodStart = payable.dueDate;
+        periodEnd = payable.dueDate;
+      }
+    } else if (resolvedStaffId && referenceMonth) {
+      const [year, monthNumber] = referenceMonth.split("-").map(Number);
+      if (Number.isFinite(year) && Number.isFinite(monthNumber) && monthNumber >= 1 && monthNumber <= 12) {
+        const monthStart = new Date(year, monthNumber - 1, 1, 0, 0, 0, 0);
+        const monthEnd = new Date(year, monthNumber, 0, 23, 59, 59, 999);
+        periodStart = `${referenceMonth}-01`;
+        periodEnd = `${referenceMonth}-${String(monthEnd.getDate()).padStart(2, "0")}`;
+
+        const shiftsInMonth = await storage.getShiftAssignments(orgId, {
+          staffId: resolvedStaffId,
+          start: monthStart,
+          end: monthEnd,
+        });
+
+        const idsMatch = noteText.match(AUTO_PAYABLE_IDS_REGEX);
+        const consideredIds = idsMatch?.[1]
+          ? idsMatch[1]
+              .split(",")
+              .map((value) => Number(value))
+              .filter((value) => Number.isInteger(value) && value > 0)
+          : [];
+
+        if (consideredIds.length > 0) {
+          const idSet = new Set(consideredIds);
+          shiftsConsidered = shiftsInMonth
+            .filter((shift) => idSet.has(shift.id))
+            .map((shift) => ({
+              id: shift.id,
+              startTime: new Date(shift.startTime),
+              endTime: new Date(shift.endTime),
+              shiftType: shift.shiftType as ShiftAssignmentType,
+              notes: shift.notes,
+            }));
+        } else if (isAutoGenerated) {
+          const monthShiftPrefix = `${AUTO_MONTH_NOTE_PREFIX}${referenceMonth}]`;
+          shiftsConsidered = shiftsInMonth
+            .filter((shift) => typeof shift.notes === "string" && shift.notes.startsWith(monthShiftPrefix))
+            .map((shift) => ({
+              id: shift.id,
+              startTime: new Date(shift.startTime),
+              endTime: new Date(shift.endTime),
+              shiftType: shift.shiftType as ShiftAssignmentType,
+              notes: shift.notes,
+            }));
+        } else {
+          // Lançamentos manuais sem vínculo explícito não devem puxar todos os plantões do mês.
+          if (isManualShiftPayable) {
+            shiftsConsidered = [];
+          }
+          if (!isManualShiftPayable) {
+            shiftsConsidered = shiftsInMonth.map((shift) => ({
+              id: shift.id,
+              startTime: new Date(shift.startTime),
+              endTime: new Date(shift.endTime),
+              shiftType: shift.shiftType as ShiftAssignmentType,
+              notes: shift.notes,
+            }));
+          }
+        }
+
+        shiftsConsidered.sort((left, right) => left.startTime.getTime() - right.startTime.getTime());
+      }
+    }
+
+    const unitMatch = noteText.match(AUTO_PAYABLE_UNIT_REGEX);
+    const parsedUnitValue = unitMatch?.[2] ? Number(unitMatch[2]) : NaN;
+    const fallbackUnitValue = shiftsConsidered.length > 0
+      ? Number(payable.amount ?? 0) / shiftsConsidered.length
+      : 0;
+    const resolvedUnitValueRaw = Number.isFinite(parsedUnitValue) ? parsedUnitValue : fallbackUnitValue;
+    const unitValue = roundMoney(Math.max(0, Number.isFinite(resolvedUnitValueRaw) ? resolvedUnitValueRaw : 0));
+    const totalShifts = shiftsConsidered.length;
+    const calculatedTotal = roundMoney(unitValue * totalShifts);
+
+    return res.json({
+      id: payable.id,
+      status: payable.status,
+      title: payable.title,
+      category: payable.category,
+      referenceMonth,
+      dueDate: payable.dueDate,
+      paidAt: payable.paidAt,
+      paymentMethod: payable.paymentMethod,
+      notes: payable.notes,
+      amount: payable.amount,
+      discount: payable.discount ?? 0,
+      extra: payable.extra ?? 0,
+      isAutoGenerated,
+      staffId: resolvedStaffId,
+      staffName: payable.staffName ?? null,
+      periodStart,
+      periodEnd,
+      totalShifts,
+      unitValue,
+      calculatedTotal,
+      shifts: shiftsConsidered.map((shift) => ({
+        id: shift.id,
+        date: toDateKey(shift.startTime),
+        startTime: shift.startTime,
+        endTime: shift.endTime,
+        shiftType: shift.shiftType,
+        shiftTypeLabel: SHIFT_TYPE_LABELS[shift.shiftType] ?? shift.shiftType,
+        notes: shift.notes ?? null,
+      })),
+    });
   });
   app.post("/api/accounts-payable", requireAuth, requireRole(...FINANCIAL_ROLES), async (req, res) => {
     const orgId = getOrgId(req);

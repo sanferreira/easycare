@@ -123,6 +123,7 @@ export interface IStorage {
     orgId: number,
     query?: { staffId?: number; status?: string; referenceMonth?: string },
   ): Promise<(AccountPayable & { staffName?: string })[]>;
+  getAccountPayable(orgId: number, id: number): Promise<(AccountPayable & { staffName?: string }) | undefined>;
   createAccountPayable(item: InsertAccountPayable): Promise<AccountPayable>;
   updateAccountPayable(orgId: number, id: number, updates: UpdateAccountPayableRequest): Promise<AccountPayable>;
   deleteAccountPayable(orgId: number, id: number): Promise<void>;
@@ -607,6 +608,32 @@ export class DatabaseStorage implements IStorage {
       .leftJoin(staff, eq(accountsPayable.staffId, staff.id))
       .where(and(...filters))
       .orderBy(desc(accountsPayable.dueDate)) as any;
+  }
+  async getAccountPayable(
+    orgId: number,
+    id: number,
+  ): Promise<(AccountPayable & { staffName?: string }) | undefined> {
+    const [payable] = await db.select({
+      id: accountsPayable.id,
+      organizationId: accountsPayable.organizationId,
+      staffId: accountsPayable.staffId,
+      title: accountsPayable.title,
+      category: accountsPayable.category,
+      referenceMonth: accountsPayable.referenceMonth,
+      dueDate: accountsPayable.dueDate,
+      amount: accountsPayable.amount,
+      discount: accountsPayable.discount,
+      extra: accountsPayable.extra,
+      status: accountsPayable.status,
+      paidAt: accountsPayable.paidAt,
+      paymentMethod: accountsPayable.paymentMethod,
+      notes: accountsPayable.notes,
+      createdAt: accountsPayable.createdAt,
+      staffName: staff.name,
+    }).from(accountsPayable)
+      .leftJoin(staff, eq(accountsPayable.staffId, staff.id))
+      .where(and(eq(accountsPayable.organizationId, orgId), eq(accountsPayable.id, id))) as any;
+    return payable;
   }
   async createAccountPayable(item: InsertAccountPayable): Promise<AccountPayable> {
     const [created] = await db.insert(accountsPayable).values(item).returning();

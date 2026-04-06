@@ -163,6 +163,7 @@ export const staff = pgTable("staff", {
   employmentType: text("employment_type").default("clt"), // clt | pj
   cpf: text("cpf"),
   cnpj: text("cnpj"),
+  shiftValue: real("shift_value").default(0), // valor base por plantao
   role: text("role").notNull(),   // cuidador, enfermeiro, técnico de enfermagem, fisioterapeuta, médico, nutricionista, recepcionista, administrativo
   specialty: text("specialty"),
   coren: text("coren"),           // registration number for nurses

@@ -52,6 +52,7 @@ export async function ensureDatabaseCompatibility() {
       ADD COLUMN IF NOT EXISTS employment_type text DEFAULT 'clt',
       ADD COLUMN IF NOT EXISTS cpf text,
       ADD COLUMN IF NOT EXISTS cnpj text,
+      ADD COLUMN IF NOT EXISTS shift_value real DEFAULT 0,
       ADD COLUMN IF NOT EXISTS specialty text,
       ADD COLUMN IF NOT EXISTS coren text,
       ADD COLUMN IF NOT EXISTS crm text,
@@ -100,6 +101,12 @@ export async function ensureDatabaseCompatibility() {
   await pool.query(`
     UPDATE staff
     SET employument_type = COALESCE(NULLIF(employument_type, ''), employment_type);
+  `);
+
+  await pool.query(`
+    UPDATE staff
+    SET shift_value = COALESCE(shift_value, 0)
+    WHERE shift_value IS NULL;
   `);
 
   await pool.query(`
