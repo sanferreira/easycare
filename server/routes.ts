@@ -147,6 +147,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     { pattern: /^\/api\/contracts(?:\/|$)/, route: "/financeiro" },
     { pattern: /^\/api\/monthly-fees(?:\/|$)/, route: "/financeiro" },
     { pattern: /^\/api\/accounts-payable(?:\/|$)/, route: "/financeiro" },
+    { pattern: /^\/api\/crm(?:\/|$)/, route: "/crm" },
     { pattern: /^\/api\/occurrences(?:\/|$)/, route: "/prontuario" },
     { pattern: /^\/api\/family(?:\/|$)/, route: "/prontuario" },
     { pattern: /^\/api\/residents(?:\/|$)/, route: "/residents" },
@@ -318,11 +319,40 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   const STAFF_MGMT_ROLES = ["admin"];
   // Papéis com acesso a medicações
   const MEDICATION_ROLES = ["admin", "enfermeiro", "medico", "tecnico_enfermagem"];
+  // Papéis com acesso ao CRM
+  const CRM_ROLES = ["admin"];
 
   const getOrgId = (req: Request): number => {
     const orgId = req.session.user?.organizationId;
     if (!orgId) throw new Error("Organization não encontrada na sessão");
     return orgId;
+  };
+
+  const resolveOrgIdForCrm = async (
+    req: Request,
+    organizationIdCandidate?: unknown,
+  ): Promise<number> => {
+    const sessionUser = req.session.user;
+    if (!sessionUser) throw new Error("Nao autorizado.");
+
+    if (!sessionUser.isSuperAdmin) {
+      return getOrgId(req);
+    }
+
+    const parsedOrgId = Number(organizationIdCandidate);
+    if (!Number.isInteger(parsedOrgId) || parsedOrgId <= 0) {
+      const error = new Error("Superadmin deve informar organizationId valido.");
+      (error as Error & { status?: number }).status = 400;
+      throw error;
+    }
+
+    const organization = await storage.getOrganization(parsedOrgId);
+    if (!organization) {
+      const error = new Error("Organizacao nao encontrada.");
+      (error as Error & { status?: number }).status = 404;
+      throw error;
+    }
+    return parsedOrgId;
   };
 
   const normalizeComparableText = (value: string | null | undefined) =>
@@ -1801,6 +1831,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   const AUTO_PAYABLE_NOTE_REGEX = /\[AUTO-MONTH-PAYABLE:(\d{4}-(0[1-9]|1[0-2]))\]\[STAFF:(\d+)\]/;
   const AUTO_PAYABLE_UNIT_REGEX = /(\d+)x([0-9]+(?:\.[0-9]+)?)/;
   const AUTO_PAYABLE_IDS_REGEX = /ids:([0-9,]+)/;
+  const parseManualPayableShiftId = (notes: unknown): number | null => {
+    if (typeof notes !== "string") return null;
+    const match = notes.match(MANUAL_PAYABLE_SHIFT_ID_REGEX);
+    if (!match) return null;
+    const shiftId = Number(match[1]);
+    if (!Number.isInteger(shiftId) || shiftId <= 0) return null;
+    return shiftId;
+  };
   const SHIFT_TYPE_LABELS: Record<ShiftAssignmentType, string> = {
     "12h_manha": "Diurno (12h)",
     "12h_noite": "Noturno (12h)",
@@ -2430,6 +2468,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(404).json({ message: "Funcionario nao encontrado." });
       }
 
+      const targetStaffIds = new Set<number>(targetStaff.map((member) => member.id));
+      const payablesForMonth = await storage.getAccountsPayable(orgId, {
+        referenceMonth: input.month,
+      });
+      const manualPayableShiftIdsForTargetStaff = new Set<number>(
+        payablesForMonth
+          .filter((item) => Number.isInteger(item.staffId) && targetStaffIds.has(Number(item.staffId)))
+          .map((item) => parseManualPayableShiftId(item.notes))
+          .filter((shiftId): shiftId is number => shiftId !== null),
+      );
+
       let monthlyShifts = await storage.getShiftAssignments(orgId, {
         start: monthStart,
         end: monthEnd,
@@ -2444,8 +2493,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             isGeneratedShift(shift.notes) &&
             (!input.staffId || shift.staffId === input.staffId),
         );
+        const generatedShiftsToPreserve = generatedShifts.filter((shift) =>
+          manualPayableShiftIdsForTargetStaff.has(shift.id),
+        );
+        const generatedShiftsToDelete = generatedShifts.filter((shift) =>
+          !manualPayableShiftIdsForTargetStaff.has(shift.id),
+        );
 
-        for (const generatedShift of generatedShifts) {
+        for (const generatedShift of generatedShiftsToDelete) {
           await syncManualShiftPayableForShift({
             orgId,
             shift: generatedShift,
@@ -2458,6 +2513,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           start: monthStart,
           end: monthEnd,
         });
+
+        if (generatedShiftsToPreserve.length > 0) {
+          console.log(
+            `[generate-month] preservados ${generatedShiftsToPreserve.length} plantao(oes) com valor manual em ${input.month}`,
+          );
+        }
       }
 
       type ShiftRange = { start: Date; end: Date };
@@ -2656,17 +2717,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const shiftValue = Number.isFinite(shiftValueRaw) && shiftValueRaw > 0
           ? roundMoney(shiftValueRaw)
           : 0;
-        const generatedShiftsForStaff = monthShiftsAfterGeneration
-          .filter((shift) => shift.staffId === member.id && isGeneratedShift(shift.notes))
-          .sort((left, right) =>
-            new Date(left.startTime).getTime() - new Date(right.startTime).getTime(),
-          );
-        const generatedShiftCount = generatedShiftsForStaff.length;
-
         const payablesForStaffMonth = await storage.getAccountsPayable(orgId, {
           staffId: member.id,
           referenceMonth: input.month,
         });
+        const manualPayableShiftIdsForStaff = new Set<number>(
+          payablesForStaffMonth
+            .map((item) => parseManualPayableShiftId(item.notes))
+            .filter((shiftId): shiftId is number => shiftId !== null),
+        );
+        const generatedShiftsForStaff = monthShiftsAfterGeneration
+          .filter(
+            (shift) =>
+              shift.staffId === member.id
+              && isGeneratedShift(shift.notes)
+              && !manualPayableShiftIdsForStaff.has(shift.id),
+          )
+          .sort((left, right) =>
+            new Date(left.startTime).getTime() - new Date(right.startTime).getTime(),
+          );
+        const generatedShiftCount = generatedShiftsForStaff.length;
         const autoPayables = payablesForStaffMonth.filter((item) =>
           isAutoPayableForStaff(item.notes, member.id),
         );
@@ -2939,13 +3009,144 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // ===== MONTHLY FEES =====
+  type MonthlyFeeGenerationSummary = {
+    month: string;
+    totalContracts: number;
+    activeContracts: number;
+    created: number;
+    skippedExisting: number;
+    skippedInvalidValue: number;
+    skippedInvalidDueDate: number;
+  };
+  const generateMonthlyFeesInputSchema = z.object({
+    month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Mes invalido. Use YYYY-MM."),
+  });
+  const clampDayInMonth = (year: number, monthNumber: number, day: number) => {
+    const maxDay = new Date(year, monthNumber, 0).getDate();
+    const normalizedDay = Number.isFinite(day) ? Math.trunc(day) : 1;
+    return Math.min(Math.max(1, normalizedDay), maxDay);
+  };
+  const buildMonthlyFeeDueDate = (referenceMonth: string, paymentDay: unknown) => {
+    const [year, monthNumber] = referenceMonth.split("-").map(Number);
+    if (!Number.isFinite(year) || !Number.isFinite(monthNumber) || monthNumber < 1 || monthNumber > 12) {
+      return null;
+    }
+    const parsedPaymentDay = Number(paymentDay ?? 5);
+    const dueDay = clampDayInMonth(year, monthNumber, parsedPaymentDay);
+    return `${referenceMonth}-${String(dueDay).padStart(2, "0")}`;
+  };
+  const isContractActiveInReferenceMonth = (
+    contract: {
+      status?: string | null;
+      startDate?: string | null;
+      endDate?: string | null;
+    },
+    referenceMonth: string,
+  ) => {
+    if ((contract.status ?? "active") !== "active") return false;
+    const [year, monthNumber] = referenceMonth.split("-").map(Number);
+    if (!Number.isFinite(year) || !Number.isFinite(monthNumber) || monthNumber < 1 || monthNumber > 12) {
+      return false;
+    }
+    const monthStart = new Date(year, monthNumber - 1, 1, 0, 0, 0, 0);
+    const monthEnd = new Date(year, monthNumber, 0, 23, 59, 59, 999);
+
+    if (!contract.startDate) return false;
+    const startDate = parseDateOnly(contract.startDate);
+    if (!startDate) return false;
+
+    const endDate = contract.endDate ? parseDateOnly(contract.endDate, true) : null;
+    const startsBeforeOrDuringMonth = startDate.getTime() <= monthEnd.getTime();
+    const endsAfterOrDuringMonth = !endDate || endDate.getTime() >= monthStart.getTime();
+    return startsBeforeOrDuringMonth && endsAfterOrDuringMonth;
+  };
+  const generateMonthlyFeesForOrganizationMonth = async (
+    orgId: number,
+    month: string,
+  ): Promise<MonthlyFeeGenerationSummary> => {
+    const [contracts, monthFees] = await Promise.all([
+      storage.getContracts(orgId),
+      storage.getMonthlyFees(orgId, { referenceMonth: month }),
+    ]);
+
+    const activeContracts = contracts.filter((contract) =>
+      isContractActiveInReferenceMonth(contract, month),
+    );
+    const existingContractIds = new Set(
+      monthFees
+        .filter((fee) => fee.referenceMonth === month)
+        .map((fee) => fee.contractId),
+    );
+
+    let created = 0;
+    let skippedExisting = 0;
+    let skippedInvalidValue = 0;
+    let skippedInvalidDueDate = 0;
+
+    for (const contract of activeContracts) {
+      if (existingContractIds.has(contract.id)) {
+        skippedExisting++;
+        continue;
+      }
+
+      const amount = roundMoney(Math.max(0, Number(contract.monthlyValue ?? 0)));
+      if (!Number.isFinite(amount) || amount <= 0) {
+        skippedInvalidValue++;
+        continue;
+      }
+
+      const dueDate = buildMonthlyFeeDueDate(month, contract.paymentDay);
+      if (!dueDate) {
+        skippedInvalidDueDate++;
+        continue;
+      }
+
+      await storage.createMonthlyFee({
+        organizationId: orgId,
+        contractId: contract.id,
+        residentId: contract.residentId,
+        referenceMonth: month,
+        dueDate,
+        amount,
+        status: "pending",
+        discount: 0,
+        fine: 0,
+        paymentMethod: contract.paymentMethod ?? null,
+        notes: "Gerada automaticamente com base no contrato mensal.",
+      });
+      existingContractIds.add(contract.id);
+      created++;
+    }
+
+    return {
+      month,
+      totalContracts: contracts.length,
+      activeContracts: activeContracts.length,
+      created,
+      skippedExisting,
+      skippedInvalidValue,
+      skippedInvalidDueDate,
+    };
+  };
   app.get("/api/monthly-fees", requireAuth, requireRole(...FINANCIAL_ROLES), async (req, res) => {
     const orgId = getOrgId(req);
     res.json(await storage.getMonthlyFees(orgId, {
       contractId: req.query.contractId ? Number(req.query.contractId) : undefined,
       residentId: req.query.residentId ? Number(req.query.residentId) : undefined,
       status: req.query.status as string | undefined,
+      referenceMonth: req.query.referenceMonth as string | undefined,
     }));
+  });
+  app.post("/api/monthly-fees/generate-month", requireAuth, requireRole(...FINANCIAL_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      const input = generateMonthlyFeesInputSchema.parse(req.body);
+      const summary = await generateMonthlyFeesForOrganizationMonth(orgId, input.month);
+      res.status(201).json(summary);
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      next(err);
+    }
   });
   app.post("/api/monthly-fees", requireAuth, requireRole(...FINANCIAL_ROLES), async (req, res) => {
     const orgId = getOrgId(req);
@@ -3155,13 +3356,426 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.status(204).send();
   });
 
+  // ===== CRM (KANBAN) =====
+  const normalizeLegacyCrmStage = (value: unknown) => {
+    if (typeof value !== "string") return value;
+    const normalized = value
+      .trim()
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    return normalized === "lost" ? "no_interest" : normalized;
+  };
+  const CRM_STAGE_KEY_REGEX = /^[a-z0-9_]{2,40}$/;
+  const CRM_STAGE_COLOR_REGEX = /^#[0-9a-fA-F]{6}$/;
+  const crmStageSchema = z.preprocess(
+    normalizeLegacyCrmStage,
+    z.string().regex(CRM_STAGE_KEY_REGEX, "Etapa invalida."),
+  );
+  const stageUsesLostReason = (stage?: string | null) => stage === "no_interest";
+  const getCrmStageValuesFromSettings = (settings: EnvironmentSettings): string[] =>
+    settings.crmKanban.stages.map((stage) => stage.value);
+  const loadEnvironmentSettingsForOrg = async (orgId: number) => {
+    const settingsResult = await getOrganizationEnvironmentSettings(orgId);
+    if (!settingsResult) {
+      const error = new Error("Organizacao nao encontrada.");
+      (error as Error & { status?: number }).status = 404;
+      throw error;
+    }
+    return settingsResult;
+  };
+
+  const CRM_FOLLOW_UP_DATE_REGEX = /^\d{4}-(0[1-9]|1[0-2])-([0][1-9]|[12]\d|3[01])$/;
+  const crmFollowUpTaskSchema = z.object({
+    id: z.string().trim().min(1).max(80).optional(),
+    title: z.string().trim().min(1, "Titulo da tarefa obrigatorio").max(140),
+    dueDate: z.string().regex(CRM_FOLLOW_UP_DATE_REGEX, "Data da tarefa invalida. Use YYYY-MM-DD."),
+    done: z.boolean().optional().default(false),
+    notes: z.string().trim().optional().nullable(),
+    assigneeName: z.string().trim().optional().nullable(),
+    createdAt: z.string().optional(),
+    completedAt: z.string().optional().nullable(),
+  });
+  const normalizeCrmFollowUpTasks = (tasks: unknown): string => {
+    const parsedTasks = z
+      .array(crmFollowUpTaskSchema)
+      .max(100, "Limite de 100 tarefas de follow-up por oportunidade.")
+      .parse(tasks ?? []);
+    const nowIso = new Date().toISOString();
+    const normalized = parsedTasks.map((task, index) => {
+      const parsedCreatedAt = task.createdAt ? new Date(task.createdAt) : null;
+      const createdAtIso = parsedCreatedAt && !Number.isNaN(parsedCreatedAt.getTime())
+        ? parsedCreatedAt.toISOString()
+        : nowIso;
+      const parsedCompletedAt = task.completedAt ? new Date(task.completedAt) : null;
+      const completedAtIso = task.done
+        ? (parsedCompletedAt && !Number.isNaN(parsedCompletedAt.getTime())
+            ? parsedCompletedAt.toISOString()
+            : nowIso)
+        : null;
+      const stableId = task.id && task.id.trim().length > 0
+        ? task.id.trim().slice(0, 80)
+        : `fu_${Date.now()}_${index + 1}`;
+      return {
+        id: stableId,
+        title: task.title.trim(),
+        dueDate: task.dueDate,
+        done: Boolean(task.done),
+        notes: task.notes?.trim() ? task.notes.trim() : null,
+        assigneeName: task.assigneeName?.trim() ? task.assigneeName.trim() : null,
+        createdAt: createdAtIso,
+        completedAt: completedAtIso,
+      };
+    });
+    return JSON.stringify(normalized);
+  };
+  const crmCreateSchema = z.object({
+    organizationId: z.coerce.number().int().positive().optional(),
+    title: z.string().trim().min(2, "Titulo obrigatorio"),
+    contactName: z.string().trim().optional().nullable(),
+    contactPhone: z.string().trim().optional().nullable(),
+    contactEmail: z.string().trim().optional().nullable(),
+    source: z.string().trim().optional().nullable(),
+    stage: crmStageSchema.optional(),
+    amount: z.coerce.number().min(0).optional().default(0),
+    expectedCloseDate: z.string().trim().optional().nullable(),
+    ownerId: z.coerce.number().int().positive().optional().nullable(),
+    notes: z.string().trim().optional().nullable(),
+    followUpTasks: z.array(crmFollowUpTaskSchema).optional().default([]),
+    lostReason: z.string().trim().optional().nullable(),
+    position: z.coerce.number().int().min(0).optional().default(0),
+  });
+  const crmUpdateSchema = crmCreateSchema.partial();
+  const crmMoveSchema = z.object({
+    stage: crmStageSchema,
+    position: z.coerce.number().int().min(0).optional(),
+  });
+  const crmKanbanStageSchema = z.object({
+    value: crmStageSchema,
+    label: z.string().trim().min(1).max(80),
+    color: z.string().trim().regex(CRM_STAGE_COLOR_REGEX, "Cor invalida. Use #RRGGBB."),
+  });
+  const crmStagesUpdateSchema = z.object({
+    organizationId: z.coerce.number().int().positive().optional(),
+    stages: z.array(crmKanbanStageSchema).min(1).max(20),
+  }).superRefine((payload, ctx) => {
+    const seen = new Set<string>();
+    payload.stages.forEach((stage, index) => {
+      const key = stage.value.toLowerCase();
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["stages", index, "value"],
+          message: "Etapa duplicada.",
+        });
+      } else {
+        seen.add(key);
+      }
+    });
+  });
+  const crmFollowUpsUpdateSchema = z.object({
+    organizationId: z.coerce.number().int().positive().optional(),
+    followUpTasks: z.array(crmFollowUpTaskSchema).max(100),
+  });
+
+  app.get("/api/crm/stages", requireAuth, requireRole(...CRM_ROLES), async (req, res, next) => {
+    try {
+      const orgId = await resolveOrgIdForCrm(req, req.query.organizationId);
+      const settingsResult = await loadEnvironmentSettingsForOrg(orgId);
+      res.json({
+        stages: settingsResult.settings.crmKanban.stages,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.put("/api/crm/stages", requireAuth, requireRole(...CRM_ROLES), async (req, res, next) => {
+    try {
+      const parsed = crmStagesUpdateSchema.parse(req.body);
+      const orgId = await resolveOrgIdForCrm(req, parsed.organizationId ?? req.query.organizationId);
+      const settingsResult = await loadEnvironmentSettingsForOrg(orgId);
+      const currentSettings = settingsResult.settings;
+      const previousStageValues = getCrmStageValuesFromSettings(currentSettings);
+      const nextSettings = normalizeEnvironmentSettings({
+        ...currentSettings,
+        crmKanban: {
+          stages: parsed.stages,
+        },
+      });
+      const nextStageValues = getCrmStageValuesFromSettings(nextSettings);
+      const fallbackStage = nextStageValues[0];
+      const removedStageValues = previousStageValues.filter((stage) => !nextStageValues.includes(stage));
+
+      let migratedCount = 0;
+      if (removedStageValues.length > 0 && fallbackStage) {
+        migratedCount = await storage.reassignCrmOpportunityStages(orgId, removedStageValues, fallbackStage);
+      }
+
+      await storage.updateOrganization(orgId, {
+        environmentSettings: JSON.stringify(nextSettings),
+      });
+
+      res.json({
+        stages: nextSettings.crmKanban.stages,
+        migratedCount,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/crm/opportunities", requireAuth, requireRole(...CRM_ROLES), async (req, res, next) => {
+    try {
+      const orgId = await resolveOrgIdForCrm(req, req.query.organizationId);
+      const settingsResult = await loadEnvironmentSettingsForOrg(orgId);
+      const allowedStages = getCrmStageValuesFromSettings(settingsResult.settings);
+      const stageRaw = typeof req.query.stage === "string" ? req.query.stage : undefined;
+      const stage = stageRaw ? String(normalizeLegacyCrmStage(stageRaw)) : undefined;
+      if (stage && !allowedStages.includes(stage)) {
+        return res.status(400).json({ message: "Etapa invalida para esta organizacao." });
+      }
+      const search = typeof req.query.search === "string" ? req.query.search : undefined;
+      const ownerId = req.query.ownerId ? Number(req.query.ownerId) : undefined;
+      const opportunities = await storage.getCrmOpportunities(orgId, {
+        stage,
+        search,
+        ownerId: Number.isInteger(ownerId) ? ownerId : undefined,
+      });
+      res.json(opportunities);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/crm/opportunities/:id", requireAuth, requireRole(...CRM_ROLES), async (req, res, next) => {
+    try {
+      const orgId = await resolveOrgIdForCrm(req, req.query.organizationId);
+      const opportunityId = Number(req.params.id);
+      if (!Number.isInteger(opportunityId) || opportunityId <= 0) {
+        return res.status(400).json({ message: "ID invalido." });
+      }
+      const opportunity = await storage.getCrmOpportunity(orgId, opportunityId);
+      if (!opportunity) {
+        return res.status(404).json({ message: "Oportunidade nao encontrada." });
+      }
+      res.json(opportunity);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/crm/opportunities", requireAuth, requireRole(...CRM_ROLES), async (req, res, next) => {
+    try {
+      const parsed = crmCreateSchema.parse(req.body);
+      const orgId = await resolveOrgIdForCrm(req, parsed.organizationId);
+      const settingsResult = await loadEnvironmentSettingsForOrg(orgId);
+      const allowedStages = getCrmStageValuesFromSettings(settingsResult.settings);
+      const resolvedStage = parsed.stage ?? allowedStages[0];
+      if (!resolvedStage || !allowedStages.includes(resolvedStage)) {
+        return res.status(400).json({ message: "Etapa invalida para esta organizacao." });
+      }
+      const created = await storage.createCrmOpportunity({
+        organizationId: orgId,
+        title: parsed.title,
+        contactName: parsed.contactName || null,
+        contactPhone: parsed.contactPhone || null,
+        contactEmail: parsed.contactEmail || null,
+        source: parsed.source || null,
+        stage: resolvedStage,
+        amount: parsed.amount,
+        expectedCloseDate: parsed.expectedCloseDate || null,
+        ownerId: parsed.ownerId ?? null,
+        notes: parsed.notes || null,
+        followUpTasks: normalizeCrmFollowUpTasks(parsed.followUpTasks),
+        lostReason: stageUsesLostReason(resolvedStage) ? (parsed.lostReason || null) : null,
+        position: parsed.position,
+      });
+      res.status(201).json(created);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.put("/api/crm/opportunities/:id", requireAuth, requireRole(...CRM_ROLES), async (req, res, next) => {
+    try {
+      const opportunityId = Number(req.params.id);
+      if (!Number.isInteger(opportunityId) || opportunityId <= 0) {
+        return res.status(400).json({ message: "ID invalido." });
+      }
+
+      const parsed = crmUpdateSchema.parse(req.body);
+      const orgId = await resolveOrgIdForCrm(req, parsed.organizationId ?? req.query.organizationId);
+      const settingsResult = await loadEnvironmentSettingsForOrg(orgId);
+      const allowedStages = getCrmStageValuesFromSettings(settingsResult.settings);
+      if (parsed.stage && !allowedStages.includes(parsed.stage)) {
+        return res.status(400).json({ message: "Etapa invalida para esta organizacao." });
+      }
+      const updated = await storage.updateCrmOpportunity(orgId, opportunityId, {
+        ...parsed,
+        contactName: parsed.contactName === undefined ? undefined : (parsed.contactName || null),
+        contactPhone: parsed.contactPhone === undefined ? undefined : (parsed.contactPhone || null),
+        contactEmail: parsed.contactEmail === undefined ? undefined : (parsed.contactEmail || null),
+        source: parsed.source === undefined ? undefined : (parsed.source || null),
+        expectedCloseDate: parsed.expectedCloseDate === undefined ? undefined : (parsed.expectedCloseDate || null),
+        ownerId: parsed.ownerId === undefined ? undefined : (parsed.ownerId ?? null),
+        notes: parsed.notes === undefined ? undefined : (parsed.notes || null),
+        followUpTasks: parsed.followUpTasks === undefined
+          ? undefined
+          : normalizeCrmFollowUpTasks(parsed.followUpTasks),
+        lostReason: stageUsesLostReason(parsed.stage)
+          ? (parsed.lostReason === undefined ? undefined : (parsed.lostReason || null))
+          : (parsed.stage ? null : undefined),
+      });
+      res.json(updated);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch("/api/crm/opportunities/:id/stage", requireAuth, requireRole(...CRM_ROLES), async (req, res, next) => {
+    try {
+      const opportunityId = Number(req.params.id);
+      if (!Number.isInteger(opportunityId) || opportunityId <= 0) {
+        return res.status(400).json({ message: "ID invalido." });
+      }
+      const parsed = crmMoveSchema.parse(req.body);
+      const orgId = await resolveOrgIdForCrm(req, req.body?.organizationId ?? req.query.organizationId);
+      const settingsResult = await loadEnvironmentSettingsForOrg(orgId);
+      const allowedStages = getCrmStageValuesFromSettings(settingsResult.settings);
+      if (!allowedStages.includes(parsed.stage)) {
+        return res.status(400).json({ message: "Etapa invalida para esta organizacao." });
+      }
+      const updated = await storage.updateCrmOpportunity(orgId, opportunityId, {
+        stage: parsed.stage,
+        position: parsed.position,
+        lostReason: stageUsesLostReason(parsed.stage) ? undefined : null,
+      });
+      res.json(updated);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch("/api/crm/opportunities/:id/follow-ups", requireAuth, requireRole(...CRM_ROLES), async (req, res, next) => {
+    try {
+      const opportunityId = Number(req.params.id);
+      if (!Number.isInteger(opportunityId) || opportunityId <= 0) {
+        return res.status(400).json({ message: "ID invalido." });
+      }
+      const parsed = crmFollowUpsUpdateSchema.parse(req.body);
+      const orgId = await resolveOrgIdForCrm(req, parsed.organizationId ?? req.query.organizationId);
+      const updated = await storage.updateCrmOpportunity(orgId, opportunityId, {
+        followUpTasks: normalizeCrmFollowUpTasks(parsed.followUpTasks),
+      });
+      res.json(updated);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/crm/opportunities/:id", requireAuth, requireRole(...CRM_ROLES), async (req, res, next) => {
+    try {
+      const opportunityId = Number(req.params.id);
+      if (!Number.isInteger(opportunityId) || opportunityId <= 0) {
+        return res.status(400).json({ message: "ID invalido." });
+      }
+      const orgId = await resolveOrgIdForCrm(req, req.query.organizationId);
+      await storage.deleteCrmOpportunity(orgId, opportunityId);
+      res.status(204).send();
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // ===== STATS =====
   app.get("/api/stats", requireAuth, async (req, res) => {
     const orgId = getOrgId(req);
     res.json(await storage.getDashboardStats(orgId));
   });
 
+  const resolveCurrentMonthKey = () => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  };
+  const parseBooleanEnv = (value: string | undefined, fallback: boolean) => {
+    if (typeof value !== "string") return fallback;
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on", "sim"].includes(normalized)) return true;
+    if (["0", "false", "no", "off", "nao", "não"].includes(normalized)) return false;
+    return fallback;
+  };
+  const parsePositiveIntegerEnv = (value: string | undefined, fallback: number, min: number) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    const intValue = Math.trunc(parsed);
+    if (intValue < min) return fallback;
+    return intValue;
+  };
+  const autoMonthlyFeesEnabled = parseBooleanEnv(process.env.MONTHLY_FEES_AUTO_ENABLED, true);
+  const autoMonthlyFeesIntervalMinutes = parsePositiveIntegerEnv(
+    process.env.MONTHLY_FEES_AUTO_INTERVAL_MINUTES,
+    180,
+    10,
+  );
+  let monthlyFeeAutoGenerationRunning = false;
+  const runAutoMonthlyFeesGeneration = async (source: "startup" | "interval") => {
+    if (monthlyFeeAutoGenerationRunning) return;
+    monthlyFeeAutoGenerationRunning = true;
+    try {
+      const referenceMonth = resolveCurrentMonthKey();
+      const organizations = await storage.getOrganizations(true);
+      let createdTotal = 0;
+      let skippedExistingTotal = 0;
+      let activeOrgs = 0;
+
+      for (const organization of organizations) {
+        if (normalizeOrgStatus(organization) !== "active") continue;
+        activeOrgs++;
+        try {
+          const summary = await generateMonthlyFeesForOrganizationMonth(organization.id, referenceMonth);
+          createdTotal += summary.created;
+          skippedExistingTotal += summary.skippedExisting;
+        } catch (error) {
+          console.error(
+            `[monthly-fees:auto] falha na organização ${organization.id} (${organization.name})`,
+            error,
+          );
+        }
+      }
+
+      if (createdTotal > 0 || source === "startup") {
+        console.log(
+          `[monthly-fees:auto:${source}] mês ${referenceMonth} | organizações ativas=${activeOrgs} | criadas=${createdTotal} | já existentes=${skippedExistingTotal}`,
+        );
+      }
+    } catch (error) {
+      console.error("[monthly-fees:auto] erro na rotina automática", error);
+    } finally {
+      monthlyFeeAutoGenerationRunning = false;
+    }
+  };
+
   await seedDatabase();
+  if (autoMonthlyFeesEnabled) {
+    setTimeout(() => {
+      void runAutoMonthlyFeesGeneration("startup");
+    }, 1_000);
+
+    const autoTimer = setInterval(() => {
+      void runAutoMonthlyFeesGeneration("interval");
+    }, autoMonthlyFeesIntervalMinutes * 60 * 1_000);
+    autoTimer.unref?.();
+
+    console.log(
+      `[monthly-fees:auto] habilitado | intervalo=${autoMonthlyFeesIntervalMinutes}min`,
+    );
+  } else {
+    console.log("[monthly-fees:auto] desabilitado por variável de ambiente.");
+  }
+
   return httpServer;
 }
 

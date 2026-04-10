@@ -4,6 +4,7 @@ import { useStaff, useCreateStaff, useUpdateStaff } from "@/hooks/use-staff";
 import { useEnvironmentSettings } from "@/hooks/use-environment-settings";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
 import { useToast } from "@/hooks/use-toast";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -906,6 +907,21 @@ function StaffDialog({
         </DialogHeader>
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            <Accordion
+              type="multiple"
+              defaultValue={["basic"]}
+              className="rounded-xl border border-border bg-card overflow-hidden"
+            >
+              <AccordionItem value="basic" className="border-b border-border">
+                <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                  <div className="text-left">
+                    <p className="text-sm font-semibold text-foreground">Dados basicos do colaborador</p>
+                    <p className="text-xs text-muted-foreground">
+                      Foto, contato, endereco e perfil de jornada.
+                    </p>
+                  </div>
+                </AccordionTrigger>
+                <AccordionContent className="px-4 pb-4">
             <div className="rounded-xl border border-border p-4 space-y-3">
               <p className="text-sm font-medium text-foreground">Foto do profissional</p>
               <div className="flex items-center gap-4">
@@ -1105,19 +1121,26 @@ function StaffDialog({
               </div>
             )}
 
+                </AccordionContent>
+              </AccordionItem>
+
+              <AccordionItem value="schedule" className="border-b-0">
+                <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                  <div className="text-left">
+                    <p className="text-sm font-semibold text-foreground">Agenda recorrente de trabalho</p>
+                    <p className="text-xs text-muted-foreground">
+                      Configure horarios por dia da semana e regras de dias pares/impares.
+                    </p>
+                  </div>
+                </AccordionTrigger>
+                <AccordionContent className="px-4 pb-4">
             {canConfigureRecurringSchedule ? (
               <div className="rounded-xl border border-border p-4 space-y-4">
-              <div>
-                <p className="text-sm font-medium text-foreground">Agenda recorrente de trabalho</p>
-                <p className="text-xs text-muted-foreground">
-                  Configure horários por dia da semana e também regras de dias pares/ímpares.
+              {hasParityBasedSchedule && (
+                <p className="text-xs text-amber-700">
+                  Dias pares/impares ativos: a grade por dia da semana fica desconsiderada.
                 </p>
-                {hasParityBasedSchedule && (
-                  <p className="text-xs text-amber-700 mt-1">
-                    Dias pares/ímpares ativos: a grade por dia da semana fica desconsiderada.
-                  </p>
-                )}
-              </div>
+              )}
 
               <div className="space-y-3">
                 {WEEKDAY_ROWS.map((day) => {
@@ -1319,205 +1342,260 @@ function StaffDialog({
                 Ative a opcao de agenda recorrente na Configuracao de Ambiente quando necessario.
               </div>
             )}
+                </AccordionContent>
+              </AccordionItem>
+            </Accordion>
 
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <FormField
-                control={form.control}
-                name="employmentType"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Regime *</FormLabel>
-                    <Select onValueChange={field.onChange} value={normalizeEmploymentType(field.value)}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        <SelectItem value="clt">CLT</SelectItem>
-                        <SelectItem value="pj">PJ</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name="cpf"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>CPF {employmentType === "clt" ? "*" : ""}</FormLabel>
-                    <FormControl>
-                      <Input
-                        {...field}
-                        maxLength={14}
-                        value={field.value ?? ""}
-                        onChange={(e) => field.onChange(maskCpf(e.target.value))}
-                        placeholder="000.000.000-00"
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name="cnpj"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>CNPJ {employmentType === "pj" ? "*" : ""}</FormLabel>
-                    <FormControl>
-                      <Input
-                        {...field}
-                        maxLength={18}
-                        value={field.value ?? ""}
-                        onChange={(e) => field.onChange(maskCnpj(e.target.value))}
-                        placeholder="00.000.000/0000-00"
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name="shiftValue"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Valor do plantao (R$)</FormLabel>
-                    <FormControl>
-                      <Input
-                        type="number"
-                        min={0}
-                        step="0.01"
-                        value={typeof field.value === "number" ? field.value : Number(field.value ?? 0)}
-                        onChange={(event) => {
-                          const nextValue = event.target.value;
-                          field.onChange(nextValue === "" ? 0 : Number(nextValue));
-                        }}
-                        placeholder="0,00"
-                      />
-                    </FormControl>
+            <Accordion
+              type="multiple"
+              defaultValue={[]}
+              className="rounded-xl border border-border bg-card overflow-hidden"
+            >
+              <AccordionItem value="contract" className="border-b border-border">
+                <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                  <div className="text-left">
+                    <p className="text-sm font-semibold text-foreground">Dados contratuais</p>
                     <p className="text-xs text-muted-foreground">
-                      Base usada para gerar contas a pagar automáticas da escala mensal.
+                      Regime, documentos, valor do plantao, e-mail e status do colaborador.
                     </p>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <FormField
-                control={form.control}
-                name="email"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>E-mail</FormLabel>
-                    <FormControl>
-                      <Input type="email" {...field} value={field.value ?? ""} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
-
-            <div className="rounded-xl border border-border p-4 space-y-3">
-              <FormField
-                control={form.control}
-                name="portalAccess"
-                render={({ field }) => (
-                  <FormItem className="space-y-0">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <FormLabel className="m-0 text-sm font-medium">Acesso ao portal do colaborador</FormLabel>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          Ative para criar login e permitir que este profissional acesse o sistema.
-                        </p>
+                  </div>
+                </AccordionTrigger>
+                <AccordionContent className="px-4 pb-4">
+                  <div className="rounded-xl border border-border/80 bg-muted/20 p-4 space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="md:col-span-2">
+                        <FormField
+                          control={form.control}
+                          name="active"
+                          render={({ field }) => (
+                            <FormItem className="rounded-xl border border-border bg-background px-4 py-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <FormLabel className="m-0 text-sm font-medium">Colaborador ativo</FormLabel>
+                                  <p className="mt-1 text-xs text-muted-foreground">
+                                    Colaboradores inativos nao aparecem para novos plantoes.
+                                  </p>
+                                </div>
+                                <FormControl>
+                                  <Switch checked={!!field.value} onCheckedChange={field.onChange} />
+                                </FormControl>
+                              </div>
+                            </FormItem>
+                          )}
+                        />
                       </div>
-                      <FormControl>
-                        <Switch checked={!!field.value} onCheckedChange={field.onChange} />
-                      </FormControl>
                     </div>
-                  </FormItem>
-                )}
-              />
 
-              {portalAccessEnabled && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <FormField
-                    control={form.control}
-                    name="portalUsername"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Usuario de acesso *</FormLabel>
-                        <FormControl>
-                          <Input
-                            {...field}
-                            value={field.value ?? ""}
-                            placeholder="ex: maria.cuidador"
-                            onChange={(event) => field.onChange(event.target.value.toLowerCase())}
-                          />
-                        </FormControl>
-                        <p className="text-xs text-muted-foreground">
-                          Use letras minusculas, numeros e ponto.
-                        </p>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormItem>
-                    <FormLabel>
-                      Senha {staff?.portalUserId ? "(opcional para alterar)" : "*"}
-                    </FormLabel>
-                    <div className="relative">
-                      <Input
-                        type={showPortalPassword ? "text" : "password"}
-                        value={portalPassword}
-                        placeholder={staff?.portalUserId ? "Deixe em branco para manter" : "Senha de acesso"}
-                        onChange={(event) => setPortalPassword(event.target.value)}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <FormField
+                        control={form.control}
+                        name="employmentType"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Regime *</FormLabel>
+                            <Select onValueChange={field.onChange} value={normalizeEmploymentType(field.value)}>
+                              <FormControl>
+                                <SelectTrigger>
+                                  <SelectValue />
+                                </SelectTrigger>
+                              </FormControl>
+                              <SelectContent>
+                                <SelectItem value="clt">CLT</SelectItem>
+                                <SelectItem value="pj">PJ</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <FormMessage />
+                          </FormItem>
+                        )}
                       />
-                      <button
-                        type="button"
-                        onClick={() => setShowPortalPassword((current) => !current)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                      >
-                        {showPortalPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                      </button>
+
+                      <FormField
+                        control={form.control}
+                        name="cpf"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>CPF {employmentType === "clt" ? "*" : ""}</FormLabel>
+                            <FormControl>
+                              <Input
+                                {...field}
+                                maxLength={14}
+                                value={field.value ?? ""}
+                                onChange={(e) => field.onChange(maskCpf(e.target.value))}
+                                placeholder="000.000.000-00"
+                                disabled={employmentType !== "clt"}
+                                className={employmentType !== "clt" ? "bg-muted/60" : ""}
+                              />
+                            </FormControl>
+                            {employmentType !== "clt" ? (
+                              <p className="text-xs text-muted-foreground">Disponivel quando o regime for CLT.</p>
+                            ) : null}
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+
+                      <FormField
+                        control={form.control}
+                        name="cnpj"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>CNPJ {employmentType === "pj" ? "*" : ""}</FormLabel>
+                            <FormControl>
+                              <Input
+                                {...field}
+                                maxLength={18}
+                                value={field.value ?? ""}
+                                onChange={(e) => field.onChange(maskCnpj(e.target.value))}
+                                placeholder="00.000.000/0000-00"
+                                disabled={employmentType !== "pj"}
+                                className={employmentType !== "pj" ? "bg-muted/60" : ""}
+                              />
+                            </FormControl>
+                            {employmentType !== "pj" ? (
+                              <p className="text-xs text-muted-foreground">Disponivel quando o regime for PJ.</p>
+                            ) : null}
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
                     </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <FormField
+                        control={form.control}
+                        name="shiftValue"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Valor do plantao (R$)</FormLabel>
+                            <FormControl>
+                              <Input
+                                type="number"
+                                min={0}
+                                step="0.01"
+                                value={typeof field.value === "number" ? field.value : Number(field.value ?? 0)}
+                                onChange={(event) => {
+                                  const nextValue = event.target.value;
+                                  field.onChange(nextValue === "" ? 0 : Number(nextValue));
+                                }}
+                                placeholder="0,00"
+                              />
+                            </FormControl>
+                            <p className="text-xs text-muted-foreground">
+                              Base usada para gerar contas a pagar automaticas da escala mensal.
+                            </p>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+
+                      <FormField
+                        control={form.control}
+                        name="email"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>E-mail</FormLabel>
+                            <FormControl>
+                              <Input type="email" {...field} value={field.value ?? ""} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+                  </div>
+                </AccordionContent>
+              </AccordionItem>
+
+              <AccordionItem value="portal" className="border-b-0">
+                <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                  <div className="text-left">
+                    <p className="text-sm font-semibold text-foreground">Acesso ao portal</p>
                     <p className="text-xs text-muted-foreground">
-                      {staff?.portalUserId
-                        ? "Preencha apenas se quiser trocar a senha."
-                        : "Senha usada no primeiro acesso do colaborador."}
+                      Defina se o colaborador tera login para acessar o sistema.
                     </p>
-                  </FormItem>
-                </div>
-              )}
-            </div>
+                  </div>
+                </AccordionTrigger>
+                <AccordionContent className="px-4 pb-4">
+                  <div className="rounded-xl border border-border bg-card p-4 space-y-4">
+                    <FormField
+                      control={form.control}
+                      name="portalAccess"
+                      render={({ field }) => (
+                        <FormItem className="space-y-0 rounded-lg border border-border/80 bg-muted/10 p-3">
+                          <div className="flex items-center justify-between gap-4">
+                            <div>
+                              <FormLabel className="m-0 text-sm font-medium">Acesso ao portal do colaborador</FormLabel>
+                              <p className="text-xs text-muted-foreground mt-1">
+                                Ative para criar login e permitir que este profissional acesse o sistema.
+                              </p>
+                            </div>
+                            <FormControl>
+                              <Switch checked={!!field.value} onCheckedChange={field.onChange} />
+                            </FormControl>
+                          </div>
+                        </FormItem>
+                      )}
+                    />
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <FormField
-                control={form.control}
-                name="active"
-                render={({ field }) => (
-                  <FormItem className="rounded-lg border border-border px-3 py-2">
-                    <div className="flex items-center justify-between">
-                      <FormLabel className="m-0">Colaborador ativo</FormLabel>
-                      <FormControl>
-                        <Switch checked={!!field.value} onCheckedChange={field.onChange} />
-                      </FormControl>
-                    </div>
-                  </FormItem>
-                )}
-              />
-            </div>
+                    {portalAccessEnabled ? (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <FormField
+                          control={form.control}
+                          name="portalUsername"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Usuario de acesso *</FormLabel>
+                              <FormControl>
+                                <Input
+                                  {...field}
+                                  value={field.value ?? ""}
+                                  placeholder="ex: maria.cuidador"
+                                  onChange={(event) => field.onChange(event.target.value.toLowerCase())}
+                                />
+                              </FormControl>
+                              <p className="text-xs text-muted-foreground">
+                                Use letras minusculas, numeros e ponto.
+                              </p>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
 
+                        <FormItem>
+                          <FormLabel>
+                            Senha {staff?.portalUserId ? "(opcional para alterar)" : "*"}
+                          </FormLabel>
+                          <div className="relative">
+                            <Input
+                              type={showPortalPassword ? "text" : "password"}
+                              value={portalPassword}
+                              placeholder={staff?.portalUserId ? "Deixe em branco para manter" : "Senha de acesso"}
+                              onChange={(event) => setPortalPassword(event.target.value)}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowPortalPassword((current) => !current)}
+                              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                            >
+                              {showPortalPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                            </button>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            {staff?.portalUserId
+                              ? "Preencha apenas se quiser trocar a senha."
+                              : "Senha usada no primeiro acesso do colaborador."}
+                          </p>
+                        </FormItem>
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">
+                        Portal desativado. Ative para criar o usuario e senha de acesso deste colaborador.
+                      </div>
+                    )}
+                  </div>
+                </AccordionContent>
+              </AccordionItem>
+            </Accordion>
             <div className="flex justify-end gap-2 pt-4">
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
                 Cancelar
@@ -1532,6 +1610,8 @@ function StaffDialog({
     </Dialog>
   );
 }
+
+
 
 
 

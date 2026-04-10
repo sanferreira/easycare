@@ -10,6 +10,7 @@ import {
   UserCheck,
   FileText,
   DollarSign,
+  KanbanSquare,
   SlidersHorizontal,
 } from "lucide-react";
 import { useState } from "react";
@@ -26,11 +27,13 @@ const allNavItems = [
   { href: "/staff", label: "Equipe", icon: UserCheck },
   { href: "/escalas", label: "Escalas", icon: Calendar },
   { href: "/financeiro", label: "Financeiro", icon: DollarSign },
+  { href: "/crm", label: "CRM", icon: KanbanSquare },
   { href: "/environment", label: "Ambiente", icon: SlidersHorizontal },
 ];
 
 const superAdminItems = [
   { href: "/admin", label: "Organizacoes", icon: Building2 },
+  { href: "/crm", label: "CRM", icon: KanbanSquare },
 ];
 
 function NavContent({ onClose }: { onClose?: () => void }) {

@@ -6,6 +6,7 @@ export const MODULE_ROUTE_VALUES = [
   "/escalas",
   "/occurrences",
   "/financeiro",
+  "/crm",
   "/environment",
 ] as const;
 
@@ -30,7 +31,7 @@ export const APP_ROLE_VALUES = [
 export type AppRole = (typeof APP_ROLE_VALUES)[number];
 
 export const DEFAULT_ROLE_ROUTES: Record<string, ModuleRoute[]> = {
-  admin: ["/", "/residents", "/prontuario", "/staff", "/escalas", "/occurrences", "/financeiro", "/environment"],
+  admin: ["/", "/residents", "/prontuario", "/staff", "/escalas", "/occurrences", "/financeiro", "/crm", "/environment"],
   enfermeiro: ["/", "/residents", "/prontuario", "/escalas", "/occurrences"],
   medico: ["/", "/residents", "/prontuario", "/occurrences"],
   tecnico_enfermagem: ["/", "/residents", "/prontuario", "/escalas", "/occurrences"],
@@ -68,6 +69,16 @@ export type ShiftProfileRule = {
 
 export type ModulePermissionAction = "view" | "edit";
 
+export type CrmKanbanStage = {
+  value: string;
+  label: string;
+  color: string;
+};
+
+export type CrmKanbanSettings = {
+  stages: CrmKanbanStage[];
+};
+
 type ShiftProfilesSettings = {
   available: string[];
   scheduleConfigurable: string[];
@@ -79,6 +90,7 @@ export type EnvironmentSettings = {
   roleEditRoutes: Record<string, ModuleRoute[]>;
   availableStaffRoles: StaffRoleOption[];
   shiftProfiles: ShiftProfilesSettings;
+  crmKanban: CrmKanbanSettings;
 };
 
 const allowedRouteSet = new Set<string>(MODULE_ROUTE_VALUES);
@@ -115,6 +127,18 @@ function toRoleKey(value: string): string {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "");
+}
+
+function toCrmStageKey(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (normalized === "lost") return "no_interest";
+  return normalized;
 }
 
 export function normalizeShiftProfileKey(value: string | null | undefined): string {
@@ -166,6 +190,42 @@ export const DEFAULT_SHIFT_PROFILES: ShiftProfilesSettings = {
     "12x36": DEFAULT_SHIFT_PROFILE_RULES["12x36"],
     comercial: DEFAULT_SHIFT_PROFILE_RULES.comercial,
   },
+};
+
+const DEFAULT_CRM_STAGES: CrmKanbanStage[] = [
+  { value: "lead", label: "Lead", color: "#64748B" },
+  { value: "qualified", label: "Qualificado", color: "#0EA5E9" },
+  { value: "proposal", label: "Proposta", color: "#F59E0B" },
+  { value: "negotiation", label: "Negociacao", color: "#8B5CF6" },
+  { value: "won", label: "Ganho", color: "#10B981" },
+  { value: "no_interest", label: "Nao tem interesse", color: "#F97316" },
+];
+const CRM_STAGE_FALLBACK_COLORS = [
+  "#64748B",
+  "#0EA5E9",
+  "#F59E0B",
+  "#8B5CF6",
+  "#10B981",
+  "#F97316",
+  "#6366F1",
+  "#14B8A6",
+  "#D946EF",
+  "#EF4444",
+] as const;
+const CRM_STAGE_COLOR_REGEX = /^#[0-9a-fA-F]{6}$/;
+
+const resolveDefaultCrmStageColor = (stageValue: string, index: number): string => {
+  const normalizedStage = toCrmStageKey(stageValue);
+  const exact = DEFAULT_CRM_STAGES.find((stage) => stage.value === normalizedStage);
+  if (exact) return exact.color;
+  return CRM_STAGE_FALLBACK_COLORS[index % CRM_STAGE_FALLBACK_COLORS.length];
+};
+
+const normalizeCrmStageColor = (value: unknown, fallback: string): string => {
+  if (typeof value !== "string") return fallback;
+  const normalized = value.trim();
+  if (!CRM_STAGE_COLOR_REGEX.test(normalized)) return fallback;
+  return normalized.toUpperCase();
 };
 
 const normalizeRoutes = (value: unknown, fallback: ModuleRoute[]): ModuleRoute[] => {
@@ -347,6 +407,40 @@ const normalizeShiftProfiles = (value: unknown): EnvironmentSettings["shiftProfi
   };
 };
 
+const normalizeCrmKanban = (value: unknown): CrmKanbanSettings => {
+  const candidate = value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : {};
+  const inputStages = Array.isArray(candidate.stages)
+    ? candidate.stages
+    : value && Array.isArray(value)
+      ? value
+      : [];
+
+  const parsedStages: CrmKanbanStage[] = inputStages
+    .map((item, index) => {
+      if (!item || typeof item !== "object") return null;
+      const raw = item as Record<string, unknown>;
+      const valueKey = toCrmStageKey(typeof raw.value === "string" ? raw.value : "");
+      const label = typeof raw.label === "string" ? raw.label.trim() : "";
+      if (!valueKey || !label) return null;
+      const fallbackColor = resolveDefaultCrmStageColor(valueKey, index);
+      return {
+        value: valueKey.slice(0, 40),
+        label: label.slice(0, 80),
+        color: normalizeCrmStageColor(raw.color, fallbackColor),
+      };
+    })
+    .filter((item): item is CrmKanbanStage => !!item)
+    .filter((item, index, source) =>
+      source.findIndex((current) => current.value.toLowerCase() === item.value.toLowerCase()) === index,
+    );
+
+  return {
+    stages: parsedStages.length > 0 ? parsedStages : [...DEFAULT_CRM_STAGES],
+  };
+};
+
 const syncStaffRolesWithRoleRoutes = (
   roleRoutes: Record<string, ModuleRoute[]>,
   staffRoles: StaffRoleOption[],
@@ -365,6 +459,7 @@ export const DEFAULT_ENVIRONMENT_SETTINGS: EnvironmentSettings = {
   roleEditRoutes: {},
   availableStaffRoles: [],
   shiftProfiles: normalizeShiftProfiles(DEFAULT_SHIFT_PROFILES),
+  crmKanban: normalizeCrmKanban(DEFAULT_CRM_STAGES),
 };
 
 const defaultStaffRoles = normalizeStaffRoleOptions(DEFAULT_STAFF_ROLE_OPTIONS);
@@ -402,6 +497,7 @@ export function normalizeEnvironmentSettings(value: unknown): EnvironmentSetting
     roleEditRoutes: syncedRoutes.roleEditRoutes,
     availableStaffRoles,
     shiftProfiles: normalizeShiftProfiles(candidate.shiftProfiles),
+    crmKanban: normalizeCrmKanban(candidate.crmKanban),
   };
 }
 

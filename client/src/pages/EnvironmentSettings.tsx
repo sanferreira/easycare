@@ -26,6 +26,7 @@ const MODULE_LABELS: Record<ModuleRoute, string> = {
   "/escalas": "Escalas",
   "/occurrences": "Ocorrencias (prontuario)",
   "/financeiro": "Financeiro",
+  "/crm": "CRM",
   "/environment": "Configuracao de ambiente",
 };
 

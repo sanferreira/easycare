@@ -1,82 +1,82 @@
-# Documentacao Completa do Sistema EasyCare
+﻿# Documentação Completa do Sistema EasyCare
 
-## 1. Visao Geral
+## 1. Visão Geral
 
-O EasyCare e um sistema web para gestao de ILPI (Instituicao de Longa Permanencia para Idosos), com arquitetura multi-tenant.
+O EasyCare é um sistema web para gestão de ILPI (Instituição de Longa Permanência para Idosos), com arquitetura multi-tenant.
 
-Cada organizacao possui seus proprios dados de:
+Cada organização possui seus próprios dados de:
 - residentes
 - equipe
-- prontuario
-- medicacoes
+- prontuário
+- medicações
 - escalas
-- ocorrencias
+- ocorrências
 - financeiro
 
-Existe tambem:
-- painel de super admin (cross-organizacao)
-- portal da familia
+Existe também:
+- painel de superadmin (cross-organização)
+- portal da família
 
-## 2. Arquitetura Tecnica
+## 2. Arquitetura Técnica
 
 ### 2.1 Stack
 
 - Frontend: React 18 + TypeScript + Vite + Wouter + TanStack Query + Tailwind/shadcn
 - Backend: Node.js + Express + TypeScript
 - Banco: PostgreSQL + Drizzle ORM
-- Sessao: `express-session` + `connect-pg-simple`
-- Seguranca de senha: PBKDF2-SHA256 com rehash automatico
+- Sessão: `express-session` + `connect-pg-simple`
+- Segurança de senha: PBKDF2-SHA256 com rehash automático
 
 ### 2.2 Estrutura de pastas
 
 - `client/`: interface web
-- `server/`: API, autenticacao, regras de negocio
+- `server/`: API, autenticação, regras de negócio
 - `shared/`: contratos compartilhados (schema, rotas, regras de ambiente)
-- `script/build.ts`: build de frontend + backend para producao
+- `script/build.ts`: build de frontend + backend para produção
 
-## 3. Multi-Tenancy e Autenticacao
+## 3. Multi-Tenancy e Autenticação
 
 ### 3.1 Modelo de isolamento
 
-- Usuario de organizacao sempre trabalha dentro de `organizationId`
-- Super admin e global e gerencia todas as organizacoes
-- Portal de familia tem sessao separada (`session.familyMember`)
+- Usuário de organização sempre trabalha dentro de `organizationId`
+- Superadmin é global e gerencia todas as organizações
+- Portal da família tem sessão separada (`session.familyMember`)
 
 ### 3.2 Login
 
 - Rota principal: `POST /api/auth/login`
-- Login por organizacao usando `organizationCnpj` + `username` + `password`
-- Super admin loga sem organizacao
-- Usuarios inativos nao entram
-- Organizacoes inativas/restritas bloqueiam acesso
+- Login por organização usando `organizationCnpj` + `username` + `password`
+- Superadmin faz login sem organização
+- Usuários inativos não entram
+- Organizações inativas/restritas bloqueiam acesso
 
-### 3.3 Sessao
+### 3.3 Sessão
 
-- Cookie de sessao: `easycare.sid`
+- Cookie de sessão: `easycare.sid`
 - Store em tabela `user_sessions`
 
-## 4. Permissoes (RBAC)
+## 4. Permissões (RBAC)
 
-O sistema usa dois niveis por modulo:
-- `view` (visualizacao)
-- `edit` (edicao)
+O sistema usa dois níveis por módulo:
+- `view` (visualização)
+- `edit` (edição)
 
 ### 4.1 Conceitos
 
-- `roleRoutes`: modulos que o papel pode ver
-- `roleEditRoutes`: modulos que o papel pode editar
+- `roleRoutes`: módulos que o papel pode ver
+- `roleEditRoutes`: módulos que o papel pode editar
 
-### 4.2 Regra forte de seguranca
+### 4.2 Regra forte de segurança
 
 No backend:
-- requisicoes `GET/HEAD/OPTIONS` exigem permissao de `view`
-- requisicoes `POST/PUT/PATCH/DELETE` exigem permissao de `edit`
+- requisições `GET/HEAD/OPTIONS` exigem permissão de `view`
+- requisições `POST/PUT/PATCH/DELETE` exigem permissão de `edit`
 
-Ou seja: quem tem so visualizacao nao salva/edita nada em nenhum modulo.
+Ou seja: quem tem só visualização não salva/edita nada em nenhum módulo.
 
-### 4.3 Papeis padrao
+### 4.3 Papéis padrão
 
-Papeis de sistema padrao:
+Papéis de sistema padrão:
 - `admin`
 - `enfermeiro`
 - `medico`
@@ -88,7 +88,7 @@ Papeis de sistema padrao:
 - `administrativo`
 - `staff` (colaborador)
 
-Cargos de equipe padrao (select da tela Equipe):
+Cargos de equipe padrão (select da tela Equipe):
 - `cuidador`
 - `enfermeiro`
 - `tecnico_enfermagem`
@@ -98,64 +98,64 @@ Cargos de equipe padrao (select da tela Equipe):
 - `recepcionista`
 - `administrativo`
 
-## 5. Modulos Funcionais
+## 5. Módulos Funcionais
 
 ### 5.1 Dashboard
 
-- KPIs principais da organizacao
-- ocupacao
-- medicacoes ativas
-- ocorrencias pendentes
+- KPIs principais da organização
+- ocupação
+- medicações ativas
+- ocorrências pendentes
 - dados financeiros
 
 ### 5.2 Residentes
 
-- cadastro completo (dados pessoais, saude e contato)
+- cadastro completo (dados pessoais, saúde e contato)
 - status do residente
 - foto do residente
 - abertura de detalhes por linha
 
-### 5.3 Prontuario
+### 5.3 Prontuário
 
-- registros clinicos (`medical_records`)
-- comorbidades/diagnosticos (`comorbidities`)
+- registros clínicos (`medical_records`)
+- comorbidades/diagnósticos (`comorbidities`)
 - familiares (`family_members`)
 
-### 5.4 Medicacoes
+### 5.4 Medicações
 
 - cadastro de medicamento por residente
-- registro de administracao (`medication_administrations`)
+- registro de administração (`medication_administrations`)
 - rastreabilidade de quem administrou
-- para cuidador: so pode registrar como ele mesmo
+- para cuidador: só pode registrar como ele mesmo
 
 ### 5.5 Equipe
 
 - cadastro completo de colaborador (CLT/PJ, docs, contato, foto)
 - jornada recorrente por:
   - dia da semana
-  - dias pares/impares
+  - dias pares/ímpares
   - datas bloqueadas
 - acesso ao portal por colaborador:
   - `portalAccess`
   - `portalUsername`
-  - senha inicial/alteracao
-- sincronizacao com tabela `users` para login real
+  - senha inicial/alteração
+- sincronização com tabela `users` para login real
 
 ### 5.6 Escalas
 
-- criacao manual de plantao
-- geracao mensal automatica
-- validacoes:
-  - sem sobreposicao
+- criação manual de plantão
+- geração mensal automática
+- validações:
+  - sem sobreposição
   - respeita jornada do colaborador
-  - respeita regras do perfil (ex: 12x36)
-  - respeita descanso minimo entre plantoes
-- dispensar dia especifico (bloqueia data e remove plantao daquele dia)
+  - respeita regras do perfil (ex.: 12x36)
+  - respeita descanso mínimo entre plantões
+- dispensar dia específico (bloqueia data e remove plantão daquele dia)
 
-### 5.7 Ocorrencias
+### 5.7 Ocorrências
 
 - abertura e acompanhamento por gravidade e status
-- resolucao e data de resolucao
+- resolução e data de resolução
 
 ### 5.8 Financeiro
 
@@ -163,78 +163,78 @@ Cargos de equipe padrao (select da tela Equipe):
 - mensalidades por contrato/residente
 - status de pagamento e indicadores
 
-### 5.9 Configuracao de Ambiente
+### 5.9 Configuração de Ambiente
 
-- cadastro de papeis/cargos
-- matriz de permissao por modulo (ver/editar)
-- perfis de jornada e regras (duracao, descanso, tipos permitidos)
+- cadastro de papéis/cargos
+- matriz de permissão por módulo (ver/editar)
+- perfis de jornada e regras (duração, descanso, tipos permitidos)
 
-### 5.10 Super Admin
+### 5.10 Superadmin
 
-- CRUD de organizacoes
-- status da organizacao: `active`, `inactive`, `restricted`
-- CRUD de usuarios por organizacao
+- CRUD de organizações
+- status da organização: `active`, `inactive`, `restricted`
+- CRUD de usuários por organização
 
-### 5.11 Portal da Familia
+### 5.11 Portal da Família
 
 - login de familiar
-- visao de residente, registros compartilhados, medicacoes e ocorrencias filtradas
+- visão de residente, registros compartilhados, medicações e ocorrências filtradas
 
-## 6. Regras de Negocio Relevantes
+## 6. Regras de Negócio Relevantes
 
-## 6.1 Status de organizacao
+## 6.1 Status de organização
 
 - `active`: acesso normal
 - `inactive`: acesso bloqueado
-- `restricted`: acesso bloqueado com mensagem de restricao
+- `restricted`: acesso bloqueado com mensagem de restrição
 
-## 6.2 Cuidador so atua em si mesmo
+## 6.2 Cuidador só atua em si mesmo
 
-Em acoes sensiveis (escala e administracao de medicamento):
-- se papel for `cuidador`, o sistema obriga vinculo ao proprio colaborador
-- nao pode selecionar outro profissional
+Em ações sensíveis (escala e administração de medicamento):
+- se papel for `cuidador`, o sistema obriga vínculo ao próprio colaborador
+- não pode selecionar outro profissional
 
-## 6.3 Geracao mensal de escalas
+## 6.3 Geração mensal de escalas
 
 - usa agenda recorrente configurada no colaborador
-- pares/impares tem prioridade sobre dia da semana
+- pares/ímpares têm prioridade sobre dia da semana
 - ignora datas bloqueadas
 - cria notas internas com prefixo `[AUTO-MONTH:YYYY-MM]`
 - pode limpar escalas geradas automaticamente antes de gerar novamente
 
-## 6.4 Perfil de jornada com regra (ex: 12x36)
+## 6.4 Perfil de jornada com regra (ex.: 12x36)
 
 Permite definir:
-- horas exatas do plantao
-- descanso minimo entre plantoes
-- tipos de plantao permitidos (`12h_manha`, `12h_noite`, `24h`, `avulso`)
+- horas exatas do plantão
+- descanso mínimo entre plantões
+- tipos de plantão permitidos (`12h_manha`, `12h_noite`, `24h`, `avulso`)
 
 ## 6.5 Acesso ao portal para colaborador
 
 Ao ativar/desativar no cadastro de equipe:
-- cria/atualiza/desativa usuario em `users`
+- cria/atualiza/desativa usuário em `users`
 - vincula via `portalUserId` + `portalUsername`
 
 ## 7. Modelo de Dados (Resumo)
 
 Tabelas principais:
 
-- `organizations`: tenant, dados da instituicao, status, configuracoes do ambiente
-- `users`: login de sistema por organizacao e super admin
+- `organizations`: tenant, dados da instituição, status, configurações do ambiente
+- `users`: login de sistema por organização e superadmin
 - `residents`: residentes
-- `family_members`: familiares e acesso portal familia
+- `family_members`: familiares e acesso ao portal da família
 - `staff`: colaboradores e jornada
 - `shift_assignments`: escalas
 - `medications`: medicamentos prescritos
-- `medication_administrations`: administracoes realizadas
-- `medical_records`: registros de prontuario
-- `comorbidities`: diagnosticos/comorbidades
-- `occurrences`: ocorrencias operacionais
+- `medication_administrations`: administrações realizadas
+- `medical_records`: registros de prontuário
+- `comorbidities`: diagnósticos/comorbidades
+- `occurrences`: ocorrências operacionais
 - `contracts`: contratos financeiros
 - `monthly_fees`: mensalidades
-- `user_sessions`: sessoes web
+- `user_sessions`: sessões web
 
-## 8. API (Resumo por Dominio)
+## 8. API (Resumo por Domínio)
 
 ### 8.1 Auth
 
@@ -242,7 +242,7 @@ Tabelas principais:
 - `POST /api/auth/logout`
 - `GET /api/auth/me`
 
-### 8.2 Portal Familia
+### 8.2 Portal da Família
 
 - `POST /api/family-portal/login`
 - `POST /api/family-portal/logout`
@@ -253,7 +253,7 @@ Tabelas principais:
 - `GET /api/family-portal/occurrences`
 - `GET /api/family-portal/comorbidities`
 
-### 8.3 Super Admin / Organizacoes
+### 8.3 Superadmin / Organizações
 
 - `GET /api/organizations`
 - `GET /api/organizations/:id`
@@ -265,7 +265,7 @@ Tabelas principais:
 - `PATCH /api/users/:id`
 - `DELETE /api/users/:id`
 
-### 8.4 Residentes e Prontuario
+### 8.4 Residentes e Prontuário
 
 - `GET /api/residents`
 - `GET /api/residents/:id`
@@ -285,7 +285,7 @@ Tabelas principais:
 - `PUT /api/medical-records/:id`
 - `DELETE /api/medical-records/:id`
 
-### 8.5 Medicacoes
+### 8.5 Medicações
 
 - `GET /api/medications`
 - `POST /api/medications`
@@ -301,7 +301,7 @@ Tabelas principais:
 - `PUT /api/staff/:id`
 - `DELETE /api/staff/:id`
 
-### 8.7 Ocorrencias
+### 8.7 Ocorrências
 
 - `GET /api/occurrences`
 - `POST /api/occurrences`
@@ -329,7 +329,7 @@ Tabelas principais:
 - `PUT /api/monthly-fees/:id`
 - `DELETE /api/monthly-fees/:id`
 
-### 8.10 Configuracoes e Stats
+### 8.10 Configurações e Stats
 
 - `GET /api/environment-settings`
 - `PUT /api/environment-settings`
@@ -347,26 +347,26 @@ Tabelas principais:
 - `/occurrences`
 - `/financeiro`
 - `/environment`
-- `/admin` (somente super admin)
+- `/admin` (somente superadmin)
 - `/portal`
 - `/portal/home`
 
-## 10. Configuracao de Ambiente e Variaveis
+## 10. Configuração de Ambiente e Variáveis
 
 Arquivo `.env`:
 
-- `DATABASE_URL` (obrigatorio)
-- `SESSION_SECRET` (obrigatorio, forte em producao)
-- `PORT` (opcional, default 5000)
+- `DATABASE_URL` (obrigatório)
+- `SESSION_SECRET` (obrigatório, forte em produção)
+- `PORT` (opcional, padrão 5000)
 
-## 11. Execucao Local
+## 11. Execução Local
 
 ```bash
 npm ci
 npm run dev
 ```
 
-## 12. Build e Producao
+## 12. Build e Produção
 
 ```bash
 npm ci
@@ -375,46 +375,46 @@ npm run build
 npm run start
 ```
 
-## 13. Operacao de Banco em Producao
+## 13. Operação de Banco em Produção
 
-### 13.1 Compatibilidade automatica no boot
+### 13.1 Compatibilidade automática no boot
 
-Ao iniciar o servidor, `ensureDatabaseCompatibility()` aplica `ALTER TABLE IF NOT EXISTS` para colunas criticas, evitando quebra por schema antigo.
+Ao iniciar o servidor, `ensureDatabaseCompatibility()` aplica `ALTER TABLE IF NOT EXISTS` para colunas críticas, evitando quebra por schema antigo.
 
 ### 13.2 Cuidado com `db:push`
 
 `npm run db:push` pode sugerir remover `user_sessions`.
-Nao confirmar essa remocao em producao sem planejamento.
+Não confirme essa remoção em produção sem planejamento.
 
-## 14. Troubleshooting Rapido
+## 14. Troubleshooting Rápido
 
 ### 14.1 Erro "column ... does not exist"
 
-Significa que o banco de producao esta atras do schema.
+Significa que o banco de produção está atrás do schema.
 
-Acoes:
+Ações:
 - fazer backup
 - aplicar SQL de compatibilidade
-- rebuild/restart da aplicacao
+- rebuild/restart da aplicação
 
-### 14.2 Erro de permissao (403)
+### 14.2 Erro de permissão (403)
 
 Verificar:
-- papel do usuario
-- `roleRoutes` para visualizacao
-- `roleEditRoutes` para edicao
-- status da organizacao (`active/inactive/restricted`)
+- papel do usuário
+- `roleRoutes` para visualização
+- `roleEditRoutes` para edição
+- status da organização (`active/inactive/restricted`)
 
-## 15. Arquivos-Chave para Manutencao
+## 15. Arquivos-chave para Manutenção
 
 - `shared/schema.ts`: modelo de dados e tipos
-- `shared/environment.ts`: papeis, permissoes e perfis de jornada
-- `server/routes.ts`: regras de negocio e API
+- `shared/environment.ts`: papéis, permissões e perfis de jornada
+- `server/routes.ts`: regras de negócio e API
 - `server/storage.ts`: acesso ao banco
 - `server/db.ts`: compatibilidade de schema no startup
-- `client/src/pages/*`: interfaces dos modulos
+- `client/src/pages/*`: interfaces dos módulos
 - `client/src/lib/permissions.ts`: regras de acesso no frontend
 
 ---
 
-Documento gerado para servir como referencia funcional e tecnica do estado atual do sistema.
+Documento gerado para servir como referência funcional e técnica do estado atual do sistema.

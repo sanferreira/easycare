@@ -264,6 +264,27 @@ export const accountsPayable = pgTable("accounts_payable", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// ===== CRM OPPORTUNITIES (KANBAN) =====
+export const crmOpportunities = pgTable("crm_opportunities", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull(),
+  title: text("title").notNull(),
+  contactName: text("contact_name"),
+  contactPhone: text("contact_phone"),
+  contactEmail: text("contact_email"),
+  source: text("source"),
+  stage: text("stage").notNull().default("lead"), // lead | qualified | proposal | negotiation | won | no_interest
+  amount: real("amount").default(0),
+  expectedCloseDate: date("expected_close_date"),
+  ownerId: integer("owner_id"),
+  notes: text("notes"),
+  followUpTasks: text("follow_up_tasks").default("[]"),
+  lostReason: text("lost_reason"),
+  position: integer("position").default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 // ===== RELATIONS =====
 export const organizationsRelations = relations(organizations, ({ many }) => ({
   users: many(users),
@@ -271,10 +292,12 @@ export const organizationsRelations = relations(organizations, ({ many }) => ({
   staff: many(staff),
   contracts: many(contracts),
   accountsPayable: many(accountsPayable),
+  crmOpportunities: many(crmOpportunities),
 }));
 
-export const usersRelations = relations(users, ({ one }) => ({
+export const usersRelations = relations(users, ({ one, many }) => ({
   organization: one(organizations, { fields: [users.organizationId], references: [organizations.id] }),
+  crmOwnedOpportunities: many(crmOpportunities),
 }));
 
 export const residentsRelations = relations(residents, ({ one, many }) => ({
@@ -340,6 +363,11 @@ export const accountsPayableRelations = relations(accountsPayable, ({ one }) => 
   staff: one(staff, { fields: [accountsPayable.staffId], references: [staff.id] }),
 }));
 
+export const crmOpportunitiesRelations = relations(crmOpportunities, ({ one }) => ({
+  organization: one(organizations, { fields: [crmOpportunities.organizationId], references: [organizations.id] }),
+  owner: one(users, { fields: [crmOpportunities.ownerId], references: [users.id] }),
+}));
+
 // ===== INSERT SCHEMAS (server use) =====
 export const insertOrganizationSchema = createInsertSchema(organizations).omit({ id: true, createdAt: true });
 export const insertUserSchema = createInsertSchema(users).omit({ id: true });
@@ -355,6 +383,7 @@ export const insertContractSchema = createInsertSchema(contracts).omit({ id: tru
 export const insertMonthlyFeeSchema = createInsertSchema(monthlyFees).omit({ id: true, createdAt: true });
 export const insertAccountPayableSchema = createInsertSchema(accountsPayable).omit({ id: true, createdAt: true });
 export const insertMedicationAdministrationSchema = createInsertSchema(medicationAdministrations).omit({ id: true });
+export const insertCrmOpportunitySchema = createInsertSchema(crmOpportunities).omit({ id: true, createdAt: true, updatedAt: true });
 
 // ===== FORM SCHEMAS (frontend — organizationId added by backend) =====
 export const residentFormSchema = createInsertSchema(residents).omit({ id: true, organizationId: true });
@@ -372,6 +401,7 @@ export const contractFormSchema = createInsertSchema(contracts).omit({ id: true,
 export const monthlyFeeFormSchema = createInsertSchema(monthlyFees).omit({ id: true, organizationId: true, createdAt: true });
 export const accountPayableFormSchema = createInsertSchema(accountsPayable).omit({ id: true, organizationId: true, createdAt: true });
 export const medicationAdministrationFormSchema = createInsertSchema(medicationAdministrations).omit({ id: true, organizationId: true, administeredAt: true });
+export const crmOpportunityFormSchema = createInsertSchema(crmOpportunities).omit({ id: true, organizationId: true, createdAt: true, updatedAt: true });
 
 // ===== TYPES =====
 export type Organization = typeof organizations.$inferSelect;
@@ -388,6 +418,7 @@ export type Contract = typeof contracts.$inferSelect;
 export type MonthlyFee = typeof monthlyFees.$inferSelect;
 export type AccountPayable = typeof accountsPayable.$inferSelect;
 export type MedicationAdministration = typeof medicationAdministrations.$inferSelect;
+export type CrmOpportunity = typeof crmOpportunities.$inferSelect;
 
 export type InsertOrganization = z.infer<typeof insertOrganizationSchema>;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -403,11 +434,13 @@ export type InsertContract = z.infer<typeof insertContractSchema>;
 export type InsertMonthlyFee = z.infer<typeof insertMonthlyFeeSchema>;
 export type InsertAccountPayable = z.infer<typeof insertAccountPayableSchema>;
 export type InsertMedicationAdministration = z.infer<typeof insertMedicationAdministrationSchema>;
+export type InsertCrmOpportunity = z.infer<typeof insertCrmOpportunitySchema>;
 
 export type ResidentFormInput = z.infer<typeof residentFormSchema>;
 export type MedicationFormInput = z.infer<typeof medicationFormSchema>;
 export type StaffFormInput = z.infer<typeof staffFormSchema>;
 export type OccurrenceFormInput = z.infer<typeof occurrenceFormSchema>;
+export type CrmOpportunityFormInput = z.infer<typeof crmOpportunityFormSchema>;
 
 export type UpdateResidentRequest = Partial<InsertResident>;
 export type UpdateMedicationRequest = Partial<InsertMedication>;
@@ -417,6 +450,7 @@ export type UpdateOccurrenceRequest = Partial<InsertOccurrence>;
 export type UpdateContractRequest = Partial<InsertContract>;
 export type UpdateMonthlyFeeRequest = Partial<InsertMonthlyFee>;
 export type UpdateAccountPayableRequest = Partial<InsertAccountPayable>;
+export type UpdateCrmOpportunityRequest = Partial<InsertCrmOpportunity>;
 
 export type DashboardStats = {
   totalResidents: number;

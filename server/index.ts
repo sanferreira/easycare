@@ -61,6 +61,11 @@ app.use((req, res, next) => {
   await ensureDatabaseCompatibility();
   await registerRoutes(httpServer, app);
 
+  // Keep API failures in JSON (avoid Vite HTML fallback on unknown API routes in development).
+  app.use("/api/*", (req, res) => {
+    res.status(404).json({ message: `Rota API nao encontrada: ${req.method} ${req.path}` });
+  });
+
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";

@@ -7,6 +7,7 @@ import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { canAccessRoute } from "@/lib/permissions";
 import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
 import { Input } from "@/components/ui/input";
 import AdmissaoWizard from "@/components/AdmissaoWizard";
 import {
@@ -43,7 +44,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { Plus, Search, Trash2, Phone, Bed, Pencil, Eye, EyeOff, Globe, Sun, Moon, Timer, ClipboardList } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Plus, Search, Trash2, Phone, Bed, Pencil, Eye, EyeOff, Globe, Sun, Moon, Timer, ClipboardList, Calendar as CalendarIcon } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -224,6 +226,7 @@ const MEDICATION_FREQUENCY_OPTIONS = [
   { value: "semanal", label: "Semanal" },
   { value: "sob demanda", label: "Sob demanda (se necessario)" },
 ] as const;
+const ALL_MEDICATIONS_FILTER = "__all_medications__";
 
 function getMedicationFrequencyLabel(value?: string | null): string {
   if (!value) return "-";
@@ -277,6 +280,28 @@ function frequencyNeedsBaseTime(value?: string | null): boolean {
   const timesPerDayMatch = normalized.match(/(\d{1,2})\s*x\s*ao\s*dia/);
   if (timesPerDayMatch) return true;
   return false;
+}
+
+function parseDateOnly(value?: string | null): Date | null {
+  const raw = (value ?? "").trim();
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(year, month - 1, day);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function formatDateOnly(date: Date): string {
+  return format(date, "yyyy-MM-dd");
+}
+
+function formatDateLabel(value?: string | null): string {
+  const parsed = parseDateOnly(value);
+  if (!parsed) return "Selecionar data";
+  return format(parsed, "dd/MM/yyyy");
 }
 
 const medicationAdministrationStatusLabel: Record<
@@ -718,8 +743,43 @@ function ResidentDetailsDialog({
       to: format(addDays(baseDate, 6), "yyyy-MM-dd"),
     };
   });
+  const [isFromMedicationCalendarOpen, setIsFromMedicationCalendarOpen] = useState(false);
+  const [isToMedicationCalendarOpen, setIsToMedicationCalendarOpen] = useState(false);
   const [isDoseActionDialogOpen, setIsDoseActionDialogOpen] = useState(false);
   const [selectedDoseItem, setSelectedDoseItem] = useState<MedicationDoseScheduleItem | null>(null);
+  const [showRegisteredMedicationDoses, setShowRegisteredMedicationDoses] = useState(false);
+  const [selectedMedicationDoseFilter, setSelectedMedicationDoseFilter] = useState(ALL_MEDICATIONS_FILTER);
+
+  const applyMedicationRangeToday = () => {
+    const today = formatDateOnly(new Date());
+    setMedicationScheduleRange({ from: today, to: today });
+  };
+
+  const handleMedicationFromDateSelect = (selected?: Date) => {
+    if (!selected) return;
+    const selectedValue = formatDateOnly(selected);
+    setMedicationScheduleRange((prev) => {
+      const currentTo = parseDateOnly(prev.to);
+      if (currentTo && selected > currentTo) {
+        return { from: selectedValue, to: selectedValue };
+      }
+      return { ...prev, from: selectedValue };
+    });
+    setIsFromMedicationCalendarOpen(false);
+  };
+
+  const handleMedicationToDateSelect = (selected?: Date) => {
+    if (!selected) return;
+    const selectedValue = formatDateOnly(selected);
+    setMedicationScheduleRange((prev) => {
+      const currentFrom = parseDateOnly(prev.from);
+      if (currentFrom && selected < currentFrom) {
+        return { from: selectedValue, to: selectedValue };
+      }
+      return { ...prev, to: selectedValue };
+    });
+    setIsToMedicationCalendarOpen(false);
+  };
 
   const medicationDoseScheduleQuery = useQuery<MedicationDoseScheduleResponse>({
     queryKey: [
@@ -736,6 +796,27 @@ function ResidentDetailsDialog({
         "Erro ao carregar agenda de doses.",
       ),
   });
+  const visibleMedicationScheduleDoses = useMemo(() => {
+    const doses = medicationDoseScheduleQuery.data?.doses ?? [];
+    if (showRegisteredMedicationDoses) return doses;
+    return doses.filter((dose) => dose.status === "pending");
+  }, [medicationDoseScheduleQuery.data?.doses, showRegisteredMedicationDoses]);
+  const medicationDoseFilterOptions = useMemo(() => {
+    const names = Array.from(
+      new Set(
+        (medicationDoseScheduleQuery.data?.doses ?? [])
+          .map((dose) => (dose.medicationName ?? "").trim())
+          .filter((name) => name.length > 0),
+      ),
+    );
+    return names.sort((a, b) => a.localeCompare(b, "pt-BR"));
+  }, [medicationDoseScheduleQuery.data?.doses]);
+  const filteredVisibleMedicationScheduleDoses = useMemo(() => {
+    if (selectedMedicationDoseFilter === ALL_MEDICATIONS_FILTER) {
+      return visibleMedicationScheduleDoses;
+    }
+    return visibleMedicationScheduleDoses.filter((dose) => dose.medicationName === selectedMedicationDoseFilter);
+  }, [selectedMedicationDoseFilter, visibleMedicationScheduleDoses]);
 
   const medicationAdministrationHistoryQuery = useQuery<MedicationAdministrationWithDetails[]>({
     queryKey: ["/api/medication-administrations", "resident-details", residentId],
@@ -1835,35 +1916,83 @@ function ResidentDetailsDialog({
                   <TabsContent value="agenda" className="mt-0">
                     <div className="rounded-xl border border-border bg-card shadow-sm p-4 space-y-4">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                        <div>
+                        <div className="space-y-2">
                           <h4 className="text-sm font-semibold text-foreground">Agenda de doses</h4>
                           <p className="text-xs text-muted-foreground">
                             Doses geradas por residente com base nos horarios e periodo das prescricoes.
                           </p>
+                          <div className="flex items-center gap-2">
+                            <Switch
+                              id={`show-registered-doses-resident-${residentId}`}
+                              checked={showRegisteredMedicationDoses}
+                              onCheckedChange={setShowRegisteredMedicationDoses}
+                            />
+                            <Label
+                              htmlFor={`show-registered-doses-resident-${residentId}`}
+                              className="cursor-pointer text-xs text-muted-foreground"
+                            >
+                              Mostrar registradas
+                            </Label>
+                          </div>
                         </div>
                         <div className="flex flex-wrap items-end gap-2">
                           <div className="space-y-1">
                             <Label className="text-xs text-muted-foreground">De</Label>
-                            <Input
-                              type="date"
-                              value={medicationScheduleRange.from}
-                              onChange={(event) =>
-                                setMedicationScheduleRange((prev) => ({ ...prev, from: event.target.value }))
-                              }
-                              className="h-8 w-full sm:w-[148px]"
-                            />
+                            <Popover
+                              open={isFromMedicationCalendarOpen}
+                              onOpenChange={setIsFromMedicationCalendarOpen}
+                            >
+                              <PopoverTrigger asChild>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-8 w-full min-w-[148px] justify-between px-2 font-normal"
+                                >
+                                  <span>{formatDateLabel(medicationScheduleRange.from)}</span>
+                                  <CalendarIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                                </Button>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-auto p-0" align="end">
+                                <Calendar
+                                  mode="single"
+                                  selected={parseDateOnly(medicationScheduleRange.from) ?? undefined}
+                                  onSelect={handleMedicationFromDateSelect}
+                                  initialFocus
+                                />
+                              </PopoverContent>
+                            </Popover>
                           </div>
                           <div className="space-y-1">
                             <Label className="text-xs text-muted-foreground">Ate</Label>
-                            <Input
-                              type="date"
-                              value={medicationScheduleRange.to}
-                              onChange={(event) =>
-                                setMedicationScheduleRange((prev) => ({ ...prev, to: event.target.value }))
-                              }
-                              className="h-8 w-full sm:w-[148px]"
-                            />
+                            <Popover
+                              open={isToMedicationCalendarOpen}
+                              onOpenChange={setIsToMedicationCalendarOpen}
+                            >
+                              <PopoverTrigger asChild>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-8 w-full min-w-[148px] justify-between px-2 font-normal"
+                                >
+                                  <span>{formatDateLabel(medicationScheduleRange.to)}</span>
+                                  <CalendarIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                                </Button>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-auto p-0" align="end">
+                                <Calendar
+                                  mode="single"
+                                  selected={parseDateOnly(medicationScheduleRange.to) ?? undefined}
+                                  onSelect={handleMedicationToDateSelect}
+                                  initialFocus
+                                />
+                              </PopoverContent>
+                            </Popover>
                           </div>
+                          <Button type="button" size="sm" variant="secondary" onClick={applyMedicationRangeToday}>
+                            Hoje
+                          </Button>
                           <Button
                             type="button"
                             size="sm"
@@ -1882,6 +2011,22 @@ function ResidentDetailsDialog({
                           >
                             Atualizar agenda
                           </Button>
+                          <div className="space-y-1">
+                            <Label className="text-xs text-muted-foreground">Medicamento</Label>
+                            <Select value={selectedMedicationDoseFilter} onValueChange={setSelectedMedicationDoseFilter}>
+                              <SelectTrigger className="h-8 min-w-[210px]">
+                                <SelectValue placeholder="Todos os medicamentos" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value={ALL_MEDICATIONS_FILTER}>Todos os medicamentos</SelectItem>
+                                {medicationDoseFilterOptions.map((name) => (
+                                  <SelectItem key={name} value={name}>
+                                    {name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
                         </div>
                       </div>
 
@@ -1899,6 +2044,14 @@ function ResidentDetailsDialog({
                         <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
                           Nenhuma dose gerada no periodo selecionado.
                         </div>
+                      ) : visibleMedicationScheduleDoses.length === 0 ? (
+                        <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                          Todas as doses deste periodo ja foram registradas. Ative "Mostrar registradas" para visualizar.
+                        </div>
+                      ) : filteredVisibleMedicationScheduleDoses.length === 0 ? (
+                        <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                          Nenhuma dose encontrada para o medicamento selecionado.
+                        </div>
                       ) : (
                         <div className="rounded-xl border border-border overflow-hidden">
                           <Table>
@@ -1913,7 +2066,7 @@ function ResidentDetailsDialog({
                               </TableRow>
                             </TableHeader>
                             <TableBody>
-                              {medicationDoseScheduleQuery.data?.doses.map((dose) => (
+                              {filteredVisibleMedicationScheduleDoses.map((dose) => (
                                 <TableRow key={dose.key}>
                                   <TableCell className="font-medium">
                                     <div className="flex flex-col">

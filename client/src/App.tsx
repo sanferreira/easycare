@@ -17,6 +17,7 @@ import Escalas from "@/pages/Escalas";
 import Admin from "@/pages/Admin";
 import Prontuario from "@/pages/Prontuario";
 import Financeiro from "@/pages/Financeiro";
+import Crm from "@/pages/Crm";
 import EnvironmentSettings from "@/pages/EnvironmentSettings";
 import FamilyPortalLogin from "@/pages/FamilyPortalLogin";
 import FamilyPortalHome from "@/pages/FamilyPortalHome";
@@ -41,10 +42,11 @@ function AccessDenied() {
 interface PrivateRouteProps {
   component: React.ComponentType;
   superAdminOnly?: boolean;
+  allowSuperAdmin?: boolean;
   route?: string;
 }
 
-function PrivateRoute({ component: Component, superAdminOnly = false, route }: PrivateRouteProps) {
+function PrivateRoute({ component: Component, superAdminOnly = false, allowSuperAdmin = false, route }: PrivateRouteProps) {
   const { user, isLoading } = useAuth();
   const { data: environmentSettings, isLoading: isEnvironmentSettingsLoading } = useEnvironmentSettings({
     enabled: !!user && !user?.isSuperAdmin,
@@ -62,12 +64,12 @@ function PrivateRoute({ component: Component, superAdminOnly = false, route }: P
     </div>
   );
 
-  // Super admin só acessa a área admin
-  if (user.isSuperAdmin && !superAdminOnly) return <Redirect to="/admin" />;
+  // Super admin só acessa a área admin, exceto módulos explicitamente permitidos
+  if (user.isSuperAdmin && !superAdminOnly && !allowSuperAdmin) return <Redirect to="/admin" />;
   if (superAdminOnly && !user.isSuperAdmin) return <Redirect to="/" />;
 
   // Verificação de permissão por papel
-  if (!superAdminOnly && route && !canAccessRoute(user.role, route, environmentSettings?.roleRoutes)) {
+  if (!user.isSuperAdmin && !superAdminOnly && route && !canAccessRoute(user.role, route, environmentSettings?.roleRoutes)) {
     return (
       <div className="min-h-screen bg-background flex">
         <Sidebar />
@@ -120,6 +122,9 @@ function Router() {
       </Route>
       <Route path="/financeiro">
         <PrivateRoute component={Financeiro} route="/financeiro" />
+      </Route>
+      <Route path="/crm">
+        <PrivateRoute component={Crm} route="/crm" allowSuperAdmin />
       </Route>
       <Route path="/environment">
         <PrivateRoute component={EnvironmentSettings} route="/environment" />

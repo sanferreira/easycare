@@ -1,79 +1,79 @@
-# Guia do Cliente - O que e Possivel no EasyCare
+﻿# Guia do Cliente - O que é Possível no EasyCare
 
-## 1. Visao Geral
+## 1. Visão Geral
 
-O EasyCare e um sistema completo para gestao de ILPI, casa de repouso e operacoes de cuidado.
+O EasyCare é um sistema completo para gestão de ILPI, casa de repouso e operações de cuidado.
 
-Ele centraliza em um unico lugar:
+Ele centraliza em um único lugar:
 - residentes
 - equipe
-- medicacoes
+- medicações
 - escalas
-- ocorrencias
-- prontuario
+- ocorrências
+- prontuário
 - contratos e mensalidades
 - acesso de familiares
 
-Em resumo: voce organiza a operacao inteira, com rastreabilidade e controle por permissao.
+Em resumo: você organiza a operação inteira, com rastreabilidade e controle por permissão.
 
 ## 2. Para Quem o Sistema Foi Feito
 
 O EasyCare atende:
-- direcao e administracao da instituicao
-- coordenacao de enfermagem
-- equipe assistencial (cuidadores, tecnicos, enfermeiros e outros)
+- direção e administração da instituição
+- coordenação de enfermagem
+- equipe assistencial (cuidadores, técnicos, enfermeiros e outros)
 - setor financeiro
-- recepcao/atendimento
+- recepção/atendimento
 - familiares (via portal)
 
 ## 3. O que o Cliente Consegue Fazer no Sistema
 
-## 3.1 Dashboard de Gestao
+## 3.1 Dashboard de Gestão
 
 Visualiza rapidamente:
 - total de residentes
-- capacidade e ocupacao
-- medicacoes ativas
-- ocorrencias pendentes
+- capacidade e ocupação
+- medicações ativas
+- ocorrências pendentes
 - indicadores financeiros
 
-Isso facilita tomada de decisao diaria e acompanhamento da operacao.
+Isso facilita a tomada de decisão diária e o acompanhamento da operação.
 
-## 3.2 Cadastro e Gestao de Residentes
+## 3.2 Cadastro e Gestão de Residentes
 
 Permite:
 - cadastrar dados completos do residente
 - anexar foto
-- registrar status (ativo, inativo, etc.)
+- registrar status (ativo, inativo etc.)
 - abrir detalhes por residente
 
-Dentro do detalhe do residente, e possivel trabalhar os itens do cuidado sem sair da tela principal.
+Dentro do detalhe do residente, é possível trabalhar os itens do cuidado sem sair da tela principal.
 
-## 3.3 Prontuario Completo
-
-Permite:
-- lancar evolucao de prontuario
-- registrar comorbidades/diagnosticos
-- cadastrar familiares/responsaveis
-- separar conteudo interno e compartilhavel
-
-Resultado: historico clinico centralizado e mais organizado.
-
-## 3.4 Medicacoes com Rastreabilidade
+## 3.3 Prontuário Completo
 
 Permite:
-- cadastrar medicacoes por residente
-- registrar administracao (com horario e observacao)
+- lançar evolução de prontuário
+- registrar comorbidades/diagnósticos
+- cadastrar familiares/responsáveis
+- separar conteúdo interno e compartilhável
+
+Resultado: histórico clínico centralizado e mais organizado.
+
+## 3.4 Medicações com Rastreabilidade
+
+Permite:
+- cadastrar medicações por residente
+- registrar administração (com horário e observação)
 - identificar quem administrou
-- acompanhar historico de administracoes
+- acompanhar histórico de administrações
 
-Resultado: mais seguranca e controle da rotina medicamentosa.
+Resultado: mais segurança e controle da rotina medicamentosa.
 
 ## 3.5 Equipe com Cadastro Robusto
 
 Permite cadastrar colaborador com:
 - nome e contato
-- endereco e CEP
+- endereço e CEP
 - regime (CLT/PJ)
 - CPF/CNPJ
 - foto do profissional
@@ -81,27 +81,27 @@ Permite cadastrar colaborador com:
 - perfil de jornada
 - agenda recorrente de trabalho
 
-Tambem permite definir se o colaborador tera ou nao acesso ao portal/sistema.
+Também permite definir se o colaborador terá ou não acesso ao portal/sistema.
 
 ## 3.6 Escalas Inteligentes
 
 Permite:
-- criar plantoes manuais
-- gerar agenda do mes automaticamente
+- criar plantões manuais
+- gerar agenda do mês automaticamente
 - trabalhar com 12h dia, 12h noite, 24h e avulso
 - usar regras de jornada (ex.: 12x36)
-- configurar dias pares/impares e horarios
-- dispensar um dia especifico sem quebrar o restante da agenda
+- configurar dias pares/ímpares e horários
+- dispensar um dia específico sem quebrar o restante da agenda
 
-Resultado: menos retrabalho, menos conflito de horario e mais previsibilidade.
+Resultado: menos retrabalho, menos conflito de horário e mais previsibilidade.
 
-## 3.7 Ocorrencias Operacionais
+## 3.7 Ocorrências Operacionais
 
 Permite:
-- registrar ocorrencias por residente
+- registrar ocorrências por residente
 - classificar gravidade
 - acompanhar status (aberta, em andamento, resolvida)
-- manter historico para auditoria interna
+- manter histórico para auditoria interna
 
 ## 3.8 Financeiro
 
@@ -109,108 +109,108 @@ Permite:
 - cadastrar contrato por residente
 - controlar mensalidades
 - acompanhar status de pagamento
-- visualizar pendencias e valores em aberto
+- visualizar pendências e valores em aberto
 
-## 3.9 Portal da Familia
+## 3.9 Portal da Família
 
 Permite ao familiar:
-- acessar informacoes autorizadas do residente
+- acessar informações autorizadas do residente
 - visualizar registros compartilhados
-- acompanhar medicacoes e ocorrencias (conforme politica da instituicao)
+- acompanhar medicações e ocorrências (conforme política da instituição)
 
-Resultado: comunicacao mais transparente com a familia.
+Resultado: comunicação mais transparente com a família.
 
-## 4. Permissoes por Perfil (Seguranca)
+## 4. Permissões por Perfil (Segurança)
 
-O sistema trabalha com permissao por modulo e por tipo de acao:
+O sistema trabalha com permissão por módulo e por tipo de ação:
 - ver
 - editar
 
 Ponto importante:
-- quem tem permissao somente de visualizacao nao consegue salvar/editar.
+- quem tem permissão somente de visualização não consegue salvar/editar.
 
 Isso reduz risco operacional e garante controle real de acesso.
 
-## 5. Configuracao por Ambiente (Cada Cliente com sua Regra)
+## 5. Configuração por Ambiente (Cada Cliente com sua Regra)
 
-Cada instituicao pode configurar:
-- quais cargos/papeis existem
-- quais modulos cada papel pode acessar
+Cada instituição pode configurar:
+- quais cargos/papéis existem
+- quais módulos cada papel pode acessar
 - quem pode apenas ver e quem pode editar
-- quais perfis de jornada estao disponiveis
-- regras da jornada (horas, descanso minimo, tipos de plantao)
+- quais perfis de jornada estão disponíveis
+- regras da jornada (horas, descanso mínimo, tipos de plantão)
 
 Ou seja: o sistema se adapta ao modelo de trabalho do cliente.
 
-## 6. Beneficios Praticos para a Operacao
+## 6. Benefícios Práticos para a Operação
 
-- centralizacao das informacoes
-- reducao de planilhas paralelas
+- centralização das informações
+- redução de planilhas paralelas
 - aumento da rastreabilidade (quem fez, quando fez)
-- melhor organizacao de equipe e escala
-- mais controle de medicacao e ocorrencias
-- transparencia para lideranca e familiares
-- seguranca por permissao de acesso
+- melhor organização de equipe e escala
+- mais controle de medicação e ocorrências
+- transparência para liderança e familiares
+- segurança por permissão de acesso
 
-## 7. Fluxo Recomendado de Implantacao
+## 7. Fluxo Recomendado de Implantação
 
-## Etapa 1 - Base da operacao
+## Etapa 1 - Base da operação
 
-- cadastrar organizacao
-- configurar papeis/permissoes
+- cadastrar organização
+- configurar papéis/permissões
 - cadastrar equipe e jornadas
 
 ## Etapa 2 - Cadastro assistencial
 
 - cadastrar residentes
 - cadastrar familiares
-- organizar prontuario inicial
+- organizar prontuário inicial
 
-## Etapa 3 - Rotina diaria
+## Etapa 3 - Rotina diária
 
 - iniciar escalas
-- registrar medicacoes e ocorrencias
+- registrar medicações e ocorrências
 - acompanhar indicadores
 
-## Etapa 4 - Financeiro e governanca
+## Etapa 4 - Financeiro e governança
 
 - ativar contratos e mensalidades
-- acompanhar inadimplencia e pendencias
+- acompanhar inadimplência e pendências
 
 ## 8. Casos de Uso Comuns
 
-### Caso 1 - Coordenacao de equipe
+### Caso 1 - Coordenação de equipe
 
-Gerar escala mensal e ajustar apenas excecoes pontuais (faltas, trocas, dispensas).
+Gerar escala mensal e ajustar apenas exceções pontuais (faltas, trocas, dispensas).
 
-### Caso 2 - Auditoria de medicacao
+### Caso 2 - Auditoria de medicação
 
-Consultar historico e verificar exatamente quem administrou cada dose.
+Consultar histórico e verificar exatamente quem administrou cada dose.
 
 ### Caso 3 - Controle administrativo
 
-Direcao acompanha indicadores da operacao e do financeiro em uma unica plataforma.
+Direção acompanha indicadores da operação e do financeiro em uma única plataforma.
 
-### Caso 4 - Relacao com familiares
+### Caso 4 - Relação com familiares
 
-Familia acompanha o essencial do residente via portal, com transparencia controlada.
+Família acompanha o essencial do residente via portal, com transparência controlada.
 
 ## 9. O que o Cliente Precisa para Operar
 
 - internet
 - navegador atualizado
-- usuarios com papeis definidos
-- processo interno minimo para cadastro e rotina
+- usuários com papéis definidos
+- processo interno mínimo para cadastro e rotina
 
 ## 10. Resultado Esperado com o EasyCare
 
 Ao usar o sistema de forma completa, o cliente ganha:
-- operacao mais organizada
+- operação mais organizada
 - equipe mais alinhada
-- informacao confiavel
+- informação confiável
 - menos risco de erro por falta de controle
-- base de dados para crescimento da instituicao
+- base de dados para crescimento da instituição
 
 ---
 
-Documento focado no cliente final, com linguagem de negocio e visao pratica do que o EasyCare entrega.
+Documento focado no cliente final, com linguagem de negócio e visão prática do que o EasyCare entrega.

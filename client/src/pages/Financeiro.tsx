@@ -1,4 +1,4 @@
-﻿import { useState } from "react";
+﻿import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -12,14 +12,25 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useResidents } from "@/hooks/use-residents";
 import { useStaff } from "@/hooks/use-staff";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import {
+  LineChart as RechartsLineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip as RechartsTooltip,
+  Legend as RechartsLegend,
+} from "recharts";
+import {
   DollarSign, FileText, Plus, TrendingUp, AlertCircle, CheckCircle2,
-  Clock, User, Trash2, Pencil, Wallet
+  Clock, User, Trash2, Pencil, Wallet, Download
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { AccountPayable, Contract, MonthlyFee } from "@shared/schema";
@@ -56,6 +67,16 @@ type AccountPayableDetail = {
   }>;
 };
 
+type GenerateMonthlyFeesResult = {
+  month: string;
+  totalContracts: number;
+  activeContracts: number;
+  created: number;
+  skippedExisting: number;
+  skippedInvalidValue: number;
+  skippedInvalidDueDate: number;
+};
+
 const PLAN_LABELS: Record<string, string> = {
   standard: "Standard",
   premium: "Premium",
@@ -90,10 +111,10 @@ const STATUS_PAYABLE: Record<string, { label: string; color: string; bg: string 
 };
 
 const contractSchema = z.object({
-  residentId: z.coerce.number().min(1, "Residente obrigatÃ³rio"),
+  residentId: z.coerce.number().min(1, "Residente obrigatório"),
   plan: z.enum(["standard", "premium", "vip"]),
-  monthlyValue: z.coerce.number().min(1, "Valor obrigatÃ³rio"),
-  startDate: z.string().min(1, "Data obrigatÃ³ria"),
+  monthlyValue: z.coerce.number().min(1, "Valor obrigatório"),
+  startDate: z.string().min(1, "Data obrigatória"),
   endDate: z.string().optional(),
   paymentDay: z.coerce.number().min(1).max(31).default(5),
   paymentMethod: z.string().optional(),
@@ -101,11 +122,11 @@ const contractSchema = z.object({
 });
 
 const feeSchema = z.object({
-  contractId: z.coerce.number().min(1, "Contrato obrigatÃ³rio"),
+  contractId: z.coerce.number().min(1, "Contrato obrigatório"),
   residentId: z.coerce.number().min(1),
-  referenceMonth: z.string().min(1, "MÃªs obrigatÃ³rio"),
-  dueDate: z.string().min(1, "Vencimento obrigatÃ³rio"),
-  amount: z.coerce.number().min(1, "Valor obrigatÃ³rio"),
+  referenceMonth: z.string().min(1, "Mês obrigatório"),
+  dueDate: z.string().min(1, "Vencimento obrigatório"),
+  amount: z.coerce.number().min(1, "Valor obrigatório"),
   discount: z.coerce.number().default(0),
   fine: z.coerce.number().default(0),
   status: z.enum(["pending", "paid", "overdue", "cancelled"]).default("pending"),
@@ -147,6 +168,25 @@ function parseDateTime(value: string | Date | null | undefined): Date | null {
   return parsed;
 }
 
+function monthKeyFromDate(value: string | Date | null | undefined): string | null {
+  const date = parseDateOnly(value);
+  if (!date) return null;
+  return format(date, "yyyy-MM");
+}
+
+function parseNumberInput(value: string): number {
+  const normalized = value.replace(",", ".").trim();
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, parsed);
+}
+
+function toCurrencyNumber(value: unknown): number {
+  const parsed = Number(value ?? 0);
+  if (!Number.isFinite(parsed)) return 0;
+  return parsed;
+}
+
 async function parseApiJson<T>(res: Response, fallbackMessage: string): Promise<T> {
   const contentType = (res.headers.get("content-type") || "").toLowerCase();
   const raw = await res.text();
@@ -168,7 +208,7 @@ async function parseApiJson<T>(res: Response, fallbackMessage: string): Promise<
     try {
       data = JSON.parse(trimmed);
     } catch {
-      throw new Error("Resposta JSON invÃ¡lida da API.");
+      throw new Error("Resposta JSON inválida da API.");
     }
   }
 
@@ -199,11 +239,17 @@ function KpiCard({ title, value, sub, icon: Icon, color }: any) {
 }
 
 export default function Financeiro() {
+  const defaultReturnMonth = new Date().toISOString().slice(0, 7);
   const [contractOpen, setContractOpen] = useState(false);
   const [feeOpen, setFeeOpen] = useState(false);
   const [payableOpen, setPayableOpen] = useState(false);
   const [selectedPayableId, setSelectedPayableId] = useState<number | null>(null);
   const [editingContract, setEditingContract] = useState<(Contract & { residentName?: string }) | null>(null);
+  const [returnMonth, setReturnMonth] = useState(defaultReturnMonth);
+  const [extraServicesRevenueInput, setExtraServicesRevenueInput] = useState("0");
+  const [extraOperationalExpenseInput, setExtraOperationalExpenseInput] = useState("0");
+  const [expectedDelinquencyInput, setExpectedDelinquencyInput] = useState("0");
+  const [taxRateInput, setTaxRateInput] = useState("0");
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { confirm, confirmDialog } = useConfirmDialog();
@@ -278,6 +324,334 @@ export default function Financeiro() {
     .filter((item) => effectivePayableStatus(item) === "overdue")
     .reduce((acc, item) => acc + (item.amount ?? 0) + (item.extra ?? 0) - (item.discount ?? 0), 0);
 
+  const extraServicesRevenue = parseNumberInput(extraServicesRevenueInput);
+  const extraOperationalExpense = parseNumberInput(extraOperationalExpenseInput);
+  const expectedDelinquency = parseNumberInput(expectedDelinquencyInput);
+  const taxRatePercent = parseNumberInput(taxRateInput);
+  const taxFactor = taxRatePercent / 100;
+
+  const feesForReturnMonth = useMemo(
+    () =>
+      fees.filter((fee) => {
+        if (fee.referenceMonth) return fee.referenceMonth === returnMonth;
+        return monthKeyFromDate(fee.dueDate) === returnMonth;
+      }),
+    [fees, returnMonth],
+  );
+
+  const payablesForReturnMonth = useMemo(
+    () =>
+      accountsPayable.filter((payable) => {
+        if (payable.referenceMonth) return payable.referenceMonth === returnMonth;
+        return monthKeyFromDate(payable.dueDate) === returnMonth;
+      }),
+    [accountsPayable, returnMonth],
+  );
+
+  const contractsForReturnMonth = useMemo(() => {
+    const monthStart = parseDateOnly(`${returnMonth}-01`);
+    if (!monthStart) return [] as (Contract & { residentName?: string })[];
+    const monthEnd = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0, 23, 59, 59, 999);
+    return contracts.filter((contract) => {
+      if (contract.status !== "active") return false;
+      const startDate = parseDateOnly(contract.startDate);
+      const endDate = parseDateOnly(contract.endDate);
+      if (!startDate) return false;
+      const startsBeforeMonthEnd = startDate.getTime() <= monthEnd.getTime();
+      const endsAfterMonthStart = !endDate || endDate.getTime() >= monthStart.getTime();
+      return startsBeforeMonthEnd && endsAfterMonthStart;
+    });
+  }, [contracts, returnMonth]);
+
+  const contractualRevenueExpected = feesForReturnMonth
+    .filter((fee) => fee.status !== "cancelled")
+    .reduce((acc, fee) => acc + toCurrencyNumber(fee.amount) + toCurrencyNumber(fee.fine) - toCurrencyNumber(fee.discount), 0);
+  const contractualRevenueRealized = feesForReturnMonth
+    .filter((fee) => fee.status === "paid")
+    .reduce((acc, fee) => acc + toCurrencyNumber(fee.amount) + toCurrencyNumber(fee.fine) - toCurrencyNumber(fee.discount), 0);
+
+  const payableExpected = payablesForReturnMonth
+    .filter((payable) => payable.status !== "cancelled")
+    .reduce((acc, payable) => acc + toCurrencyNumber(payable.amount) + toCurrencyNumber(payable.extra) - toCurrencyNumber(payable.discount), 0);
+  const payableRealized = payablesForReturnMonth
+    .filter((payable) => payable.status === "paid")
+    .reduce((acc, payable) => acc + toCurrencyNumber(payable.amount) + toCurrencyNumber(payable.extra) - toCurrencyNumber(payable.discount), 0);
+
+  const staffCostExpected = payablesForReturnMonth
+    .filter((payable) => payable.status !== "cancelled" && payable.category === "staff")
+    .reduce((acc, payable) => acc + toCurrencyNumber(payable.amount) + toCurrencyNumber(payable.extra) - toCurrencyNumber(payable.discount), 0);
+  const otherOperationalCostExpected = Math.max(0, payableExpected - staffCostExpected);
+
+  const grossRevenueExpected = contractualRevenueExpected + extraServicesRevenue;
+  const taxesExpected = grossRevenueExpected * taxFactor;
+  const netRevenueExpected = Math.max(0, grossRevenueExpected - expectedDelinquency - taxesExpected);
+  const totalExpensesExpected = payableExpected + extraOperationalExpense;
+  const expectedProfit = netRevenueExpected - totalExpensesExpected;
+  const expectedMargin = grossRevenueExpected > 0 ? (expectedProfit / grossRevenueExpected) * 100 : 0;
+
+  const grossRevenueRealized = contractualRevenueRealized;
+  const taxesRealized = grossRevenueRealized * taxFactor;
+  const netRevenueRealized = Math.max(0, grossRevenueRealized - taxesRealized);
+  const realizedProfit = netRevenueRealized - payableRealized;
+  const realizedMargin = grossRevenueRealized > 0 ? (realizedProfit / grossRevenueRealized) * 100 : 0;
+  const profitabilityDelta = expectedProfit - realizedProfit;
+  const totalProjectedContracts = contractsForReturnMonth.reduce(
+    (acc, contract) => acc + toCurrencyNumber(contract.monthlyValue),
+    0,
+  );
+
+  const selectedMonthLabel = useMemo(() => {
+    const baseDate = parseDateOnly(`${returnMonth}-01`);
+    if (!baseDate) return returnMonth;
+    return format(baseDate, "MMMM 'de' yyyy", { locale: ptBR });
+  }, [returnMonth]);
+
+  const monthlyHistoryFullRows = useMemo(() => {
+    const validMonthRegex = /^\d{4}-(0[1-9]|1[0-2])$/;
+    const monthSet = new Set<string>();
+
+    fees.forEach((fee) => {
+      const key = (fee.referenceMonth && validMonthRegex.test(fee.referenceMonth))
+        ? fee.referenceMonth
+        : monthKeyFromDate(fee.dueDate);
+      if (key && validMonthRegex.test(key)) monthSet.add(key);
+    });
+
+    accountsPayable.forEach((payable) => {
+      const key = (payable.referenceMonth && validMonthRegex.test(payable.referenceMonth))
+        ? payable.referenceMonth
+        : monthKeyFromDate(payable.dueDate);
+      if (key && validMonthRegex.test(key)) monthSet.add(key);
+    });
+
+    if (monthSet.size === 0 && validMonthRegex.test(returnMonth)) {
+      monthSet.add(returnMonth);
+    }
+
+    return Array.from(monthSet)
+      .sort((left, right) => right.localeCompare(left))
+      .map((monthKey) => {
+        const feesInMonth = fees.filter((fee) => {
+          if (fee.referenceMonth) return fee.referenceMonth === monthKey;
+          return monthKeyFromDate(fee.dueDate) === monthKey;
+        });
+        const payablesInMonth = accountsPayable.filter((payable) => {
+          if (payable.referenceMonth) return payable.referenceMonth === monthKey;
+          return monthKeyFromDate(payable.dueDate) === monthKey;
+        });
+
+        const revenueExpected = feesInMonth
+          .filter((fee) => fee.status !== "cancelled")
+          .reduce((acc, fee) => acc + toCurrencyNumber(fee.amount) + toCurrencyNumber(fee.fine) - toCurrencyNumber(fee.discount), 0);
+        const revenueRealized = feesInMonth
+          .filter((fee) => fee.status === "paid")
+          .reduce((acc, fee) => acc + toCurrencyNumber(fee.amount) + toCurrencyNumber(fee.fine) - toCurrencyNumber(fee.discount), 0);
+
+        const expenseExpected = payablesInMonth
+          .filter((payable) => payable.status !== "cancelled")
+          .reduce((acc, payable) => acc + toCurrencyNumber(payable.amount) + toCurrencyNumber(payable.extra) - toCurrencyNumber(payable.discount), 0);
+        const expenseRealized = payablesInMonth
+          .filter((payable) => payable.status === "paid")
+          .reduce((acc, payable) => acc + toCurrencyNumber(payable.amount) + toCurrencyNumber(payable.extra) - toCurrencyNumber(payable.discount), 0);
+
+        const profitExpectedMonth = revenueExpected - expenseExpected;
+        const profitRealizedMonth = revenueRealized - expenseRealized;
+        const marginExpectedMonth = revenueExpected > 0 ? (profitExpectedMonth / revenueExpected) * 100 : 0;
+        const marginRealizedMonth = revenueRealized > 0 ? (profitRealizedMonth / revenueRealized) * 100 : 0;
+        const monthBase = parseDateOnly(`${monthKey}-01`);
+        const label = monthBase ? format(monthBase, "MMM/yyyy", { locale: ptBR }) : monthKey;
+
+        return {
+          monthKey,
+          monthLabel: label,
+          revenueExpected,
+          revenueRealized,
+          expenseExpected,
+          expenseRealized,
+          profitExpected: profitExpectedMonth,
+          profitRealized: profitRealizedMonth,
+          marginExpected: marginExpectedMonth,
+          marginRealized: marginRealizedMonth,
+        };
+      });
+  }, [accountsPayable, fees, returnMonth]);
+
+  const monthlyHistoryRows = useMemo(
+    () => monthlyHistoryFullRows.slice(0, 12),
+    [monthlyHistoryFullRows],
+  );
+
+  const monthlyHistoryChartData = useMemo(
+    () =>
+      monthlyHistoryRows
+        .slice()
+        .reverse()
+        .map((row) => ({
+          monthLabel: row.monthLabel,
+          lucroPrevisto: Number(row.profitExpected.toFixed(2)),
+          lucroRealizado: Number(row.profitRealized.toFixed(2)),
+        })),
+    [monthlyHistoryRows],
+  );
+
+  const downloadCsvFile = (rows: string[][], filename: string) => {
+    const csvText = rows
+      .map((row) => row.map((cell) => `"${String(cell ?? "").replace(/"/g, "\"\"")}"`).join(";"))
+      .join("\n");
+    const blob = new Blob([`\uFEFF${csvText}`], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadDreCsv = () => {
+    const rows: string[][] = [
+      ["DRE - EasyCare", selectedMonthLabel],
+      ["Mes", returnMonth],
+      [],
+      ["Item", "Previsto (R$)", "Realizado (R$)"],
+      ["Receita contratos", contractualRevenueExpected.toFixed(2), contractualRevenueRealized.toFixed(2)],
+      ["Receita extra (outros servicos)", extraServicesRevenue.toFixed(2), "0.00"],
+      ["Receita bruta", grossRevenueExpected.toFixed(2), grossRevenueRealized.toFixed(2)],
+      ["(-) Inadimplencia estimada", expectedDelinquency.toFixed(2), "0.00"],
+      ["(-) Impostos e taxas", taxesExpected.toFixed(2), taxesRealized.toFixed(2)],
+      ["Receita liquida", netRevenueExpected.toFixed(2), netRevenueRealized.toFixed(2)],
+      ["(-) Custos equipe", staffCostExpected.toFixed(2), "0.00"],
+      ["(-) Outras despesas operacionais", otherOperationalCostExpected.toFixed(2), "0.00"],
+      ["(-) Despesas extras manuais", extraOperationalExpense.toFixed(2), "0.00"],
+      ["(-) Total despesas", totalExpensesExpected.toFixed(2), payableRealized.toFixed(2)],
+      ["Resultado liquido", expectedProfit.toFixed(2), realizedProfit.toFixed(2)],
+      ["Margem (%)", expectedMargin.toFixed(2), realizedMargin.toFixed(2)],
+      [],
+      ["Observacao", "Realizado considera somente lancamentos pagos no periodo.", ""],
+    ];
+    downloadCsvFile(rows, `dre-${returnMonth}.csv`);
+  };
+
+  const downloadHistoryCsv = () => {
+    if (monthlyHistoryFullRows.length === 0) {
+      toast({ title: "Sem histórico", description: "Não há dados mensais para exportar.", variant: "destructive" });
+      return;
+    }
+    const rows: string[][] = [
+      ["Historico Mensal - EasyCare"],
+      ["Gerado em", format(new Date(), "dd/MM/yyyy HH:mm")],
+      [],
+      [
+        "Mes",
+        "Receita Prevista",
+        "Despesa Prevista",
+        "Lucro Previsto",
+        "Margem Prevista (%)",
+        "Receita Realizada",
+        "Despesa Realizada",
+        "Lucro Realizado",
+        "Margem Realizada (%)",
+      ],
+      ...monthlyHistoryFullRows.map((row) => [
+        row.monthKey,
+        row.revenueExpected.toFixed(2),
+        row.expenseExpected.toFixed(2),
+        row.profitExpected.toFixed(2),
+        row.marginExpected.toFixed(2),
+        row.revenueRealized.toFixed(2),
+        row.expenseRealized.toFixed(2),
+        row.profitRealized.toFixed(2),
+        row.marginRealized.toFixed(2),
+      ]),
+    ];
+    downloadCsvFile(rows, `historico-mensal-${returnMonth}.csv`);
+  };
+
+  const downloadHistoryPdf = () => {
+    if (monthlyHistoryFullRows.length === 0) {
+      toast({ title: "Sem histórico", description: "Não há dados mensais para exportar.", variant: "destructive" });
+      return;
+    }
+
+    const escapeHtml = (value: string) =>
+      value
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;");
+
+    const rowsHtml = monthlyHistoryFullRows
+      .map((row) => `
+        <tr>
+          <td>${escapeHtml(row.monthKey)}</td>
+          <td class="num">${escapeHtml(formatCurrency(row.revenueExpected))}</td>
+          <td class="num">${escapeHtml(formatCurrency(row.expenseExpected))}</td>
+          <td class="num">${escapeHtml(formatCurrency(row.profitExpected))}</td>
+          <td class="num">${escapeHtml(`${row.marginExpected.toFixed(1)}%`)}</td>
+          <td class="num">${escapeHtml(formatCurrency(row.revenueRealized))}</td>
+          <td class="num">${escapeHtml(formatCurrency(row.expenseRealized))}</td>
+          <td class="num">${escapeHtml(formatCurrency(row.profitRealized))}</td>
+          <td class="num">${escapeHtml(`${row.marginRealized.toFixed(1)}%`)}</td>
+        </tr>
+      `)
+      .join("");
+
+    const printWindow = window.open("", "_blank", "noopener,noreferrer,width=1200,height=900");
+    if (!printWindow) {
+      toast({ title: "Bloqueado pelo navegador", description: "Permita pop-ups para gerar o PDF.", variant: "destructive" });
+      return;
+    }
+
+    const generatedAt = format(new Date(), "dd/MM/yyyy HH:mm");
+    printWindow.document.write(`
+      <!doctype html>
+      <html lang="pt-BR">
+        <head>
+          <meta charset="utf-8" />
+          <title>Histórico Mensal - EasyCare</title>
+          <style>
+            body { font-family: Arial, sans-serif; color: #111827; margin: 24px; }
+            h1 { margin: 0 0 6px; font-size: 20px; }
+            p { margin: 0 0 16px; color: #4b5563; font-size: 12px; }
+            table { width: 100%; border-collapse: collapse; font-size: 12px; }
+            th, td { border: 1px solid #d1d5db; padding: 8px; }
+            th { background: #f3f4f6; text-align: left; }
+            td.num { text-align: right; white-space: nowrap; }
+            .footer { margin-top: 12px; color: #6b7280; font-size: 11px; }
+          </style>
+        </head>
+        <body>
+          <h1>Histórico Mensal - EasyCare</h1>
+          <p>Gerado em ${escapeHtml(generatedAt)}</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Mês</th>
+                <th>Receita Prevista</th>
+                <th>Despesa Prevista</th>
+                <th>Lucro Previsto</th>
+                <th>Margem Prevista</th>
+                <th>Receita Realizada</th>
+                <th>Despesa Realizada</th>
+                <th>Lucro Realizado</th>
+                <th>Margem Realizada</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+          </table>
+          <p class="footer">Dica: na impressão, selecione "Salvar como PDF".</p>
+          <script>
+            window.onload = function () { setTimeout(function () { window.print(); }, 250); };
+          </script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  };
+
   // Delete contract
   const deleteContract = useMutation({
     mutationFn: async (id: number) => {
@@ -286,7 +660,7 @@ export default function Financeiro() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/contracts"] });
-      toast({ title: "Contrato excluÃ­do" });
+      toast({ title: "Contrato excluído" });
     },
     onError: () => toast({ variant: "destructive", title: "Erro ao excluir contrato" }),
   });
@@ -314,14 +688,14 @@ export default function Financeiro() {
   const deleteMonthlyFee = useMutation({
     mutationFn: async (id: number) => {
       const res = await fetch(`/api/monthly-fees/${id}`, { method: "DELETE", credentials: "include" });
-      if (!res.ok) throw new Error("Erro ao excluir cobranÃ§a");
+      if (!res.ok) throw new Error("Erro ao excluir cobrança");
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/monthly-fees"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
-      toast({ title: "CobranÃ§a excluÃ­da" });
+      toast({ title: "Cobrança excluída" });
     },
-    onError: () => toast({ variant: "destructive", title: "Erro ao excluir cobranÃ§a" }),
+    onError: () => toast({ variant: "destructive", title: "Erro ao excluir cobrança" }),
   });
 
   // Mark as paid
@@ -400,7 +774,13 @@ export default function Financeiro() {
   // Fee form
   const feeForm = useForm<z.infer<typeof feeSchema>>({
     resolver: zodResolver(feeSchema),
-    defaultValues: { status: "pending", discount: 0, fine: 0 },
+    defaultValues: {
+      status: "pending",
+      discount: 0,
+      fine: 0,
+      referenceMonth: defaultReturnMonth,
+      dueDate: new Date().toISOString().split("T")[0],
+    },
   });
 
   const createFee = useMutation({
@@ -416,8 +796,38 @@ export default function Financeiro() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/monthly-fees"] });
       setFeeOpen(false);
-      feeForm.reset();
-      toast({ title: "CobranÃ§a criada" });
+      feeForm.reset({
+        status: "pending",
+        discount: 0,
+        fine: 0,
+        referenceMonth: returnMonth,
+        dueDate: new Date().toISOString().split("T")[0],
+      });
+      toast({ title: "Cobrança criada" });
+    },
+  });
+
+  const generateMonthlyFees = useMutation({
+    mutationFn: async (month: string) => {
+      const res = await fetch("/api/monthly-fees/generate-month", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ month }),
+      });
+      return parseApiJson<GenerateMonthlyFeesResult>(res, "Erro ao gerar cobranças do mês.");
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/monthly-fees"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
+      toast({
+        title: `Cobranças geradas (${result.month})`,
+        description: `Criadas: ${result.created} · Já existentes: ${result.skippedExisting} · Sem valor: ${result.skippedInvalidValue}`,
+      });
+    },
+    onError: (error) => {
+      const description = error instanceof Error ? error.message : "Erro ao gerar cobranças.";
+      toast({ variant: "destructive", title: "Erro", description });
     },
   });
 
@@ -427,7 +837,7 @@ export default function Financeiro() {
       title: "",
       category: "staff",
       staffId: undefined,
-      referenceMonth: new Date().toISOString().slice(0, 7),
+      referenceMonth: returnMonth,
       dueDate: new Date().toISOString().split("T")[0],
       amount: 0,
       discount: 0,
@@ -463,7 +873,7 @@ export default function Financeiro() {
         title: "",
         category: "staff",
         staffId: undefined,
-        referenceMonth: new Date().toISOString().slice(0, 7),
+        referenceMonth: returnMonth,
         dueDate: new Date().toISOString().split("T")[0],
         amount: 0,
         discount: 0,
@@ -488,7 +898,35 @@ export default function Financeiro() {
           </h1>
           <p className="text-muted-foreground mt-1">Contratos, mensalidades e contas a pagar da equipe</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-end gap-2">
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">Mês de referência</Label>
+            <Input
+              type="month"
+              value={returnMonth}
+              onChange={(event) => setReturnMonth(event.target.value || defaultReturnMonth)}
+              className="h-9 w-[170px]"
+              data-testid="input-finance-global-month"
+            />
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setReturnMonth(defaultReturnMonth)}
+            data-testid="button-finance-current-month"
+          >
+            Mês atual
+          </Button>
+          <Button
+            size="sm"
+            className="gap-2"
+            onClick={() => generateMonthlyFees.mutate(returnMonth)}
+            disabled={generateMonthlyFees.isPending}
+            data-testid="button-generate-monthly-fees"
+          >
+            <Plus className="h-4 w-4" />
+            {generateMonthlyFees.isPending ? "Gerando..." : "Gerar Cobranças do Mês"}
+          </Button>
           <Dialog open={contractOpen} onOpenChange={setContractOpen}>
             <DialogTrigger asChild>
               <Button variant="outline" size="sm" className="gap-2" data-testid="button-new-contract">
@@ -538,7 +976,7 @@ export default function Financeiro() {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <FormField control={contractForm.control} name="startDate" render={({ field }) => (
                       <FormItem>
-                        <FormLabel>InÃ­cio *</FormLabel>
+                        <FormLabel>Início *</FormLabel>
                         <FormControl><Input type="date" {...field} /></FormControl>
                         <FormMessage />
                       </FormItem>
@@ -558,16 +996,16 @@ export default function Financeiro() {
                         <SelectContent>
                           <SelectItem value="pix">PIX</SelectItem>
                           <SelectItem value="boleto">Boleto</SelectItem>
-                          <SelectItem value="debito_automatico">DÃ©bito AutomÃ¡tico</SelectItem>
+                          <SelectItem value="debito_automatico">Débito Automático</SelectItem>
                           <SelectItem value="dinheiro">Dinheiro</SelectItem>
-                          <SelectItem value="transferencia">TransferÃªncia</SelectItem>
+                          <SelectItem value="transferencia">Transferência</SelectItem>
                         </SelectContent>
                       </Select>
                     </FormItem>
                   )} />
                   <FormField control={contractForm.control} name="notes" render={({ field }) => (
                     <FormItem>
-                      <FormLabel>ObservaÃ§Ãµes</FormLabel>
+                      <FormLabel>Observações</FormLabel>
                       <FormControl><Textarea rows={2} {...field} /></FormControl>
                     </FormItem>
                   )} />
@@ -583,11 +1021,11 @@ export default function Financeiro() {
           <Dialog open={feeOpen} onOpenChange={setFeeOpen}>
             <DialogTrigger asChild>
               <Button size="sm" className="gap-2 btn-glow" data-testid="button-new-fee">
-                <Plus className="h-4 w-4" />Nova CobranÃ§a
+                <Plus className="h-4 w-4" />Nova Cobrança
               </Button>
             </DialogTrigger>
             <DialogContent className="max-w-lg">
-              <DialogHeader><DialogTitle>LanÃ§ar Mensalidade</DialogTitle></DialogHeader>
+              <DialogHeader><DialogTitle>Lançar Mensalidade</DialogTitle></DialogHeader>
               <Form {...feeForm}>
                 <form onSubmit={feeForm.handleSubmit((d) => createFee.mutate(d))} className="space-y-4">
                   <FormField control={feeForm.control} name="contractId" render={({ field }) => (
@@ -605,7 +1043,7 @@ export default function Financeiro() {
                         <SelectContent>
                           {contracts.filter(c => c.status === "active").map((c) => (
                             <SelectItem key={c.id} value={c.id.toString()}>
-                              {c.residentName} â€” {PLAN_LABELS[c.plan ?? "standard"]} ({formatCurrency(c.monthlyValue ?? 0)}/mÃªs)
+                              {c.residentName} - {PLAN_LABELS[c.plan ?? "standard"]} ({formatCurrency(c.monthlyValue ?? 0)}/mês)
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -616,7 +1054,7 @@ export default function Financeiro() {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <FormField control={feeForm.control} name="referenceMonth" render={({ field }) => (
                       <FormItem>
-                        <FormLabel>MÃªs ReferÃªncia *</FormLabel>
+                        <FormLabel>Mês Referência *</FormLabel>
                         <FormControl><Input type="month" {...field} /></FormControl>
                         <FormMessage />
                       </FormItem>
@@ -652,13 +1090,13 @@ export default function Financeiro() {
                   </div>
                   <FormField control={feeForm.control} name="notes" render={({ field }) => (
                     <FormItem>
-                      <FormLabel>ObservaÃ§Ãµes</FormLabel>
+                      <FormLabel>Observações</FormLabel>
                       <FormControl><Textarea rows={2} {...field} /></FormControl>
                     </FormItem>
                   )} />
                   <div className="flex justify-end gap-2">
                     <Button type="button" variant="outline" onClick={() => setFeeOpen(false)}>Cancelar</Button>
-                    <Button type="submit" disabled={createFee.isPending}>LanÃ§ar</Button>
+                    <Button type="submit" disabled={createFee.isPending}>Lançar</Button>
                   </div>
                 </form>
               </Form>
@@ -797,14 +1235,17 @@ export default function Financeiro() {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <KpiCard title="Contratos Ativos" value={activeContracts} sub="residentes com contrato" icon={FileText} color="#1F6FEB" />
         <KpiCard title="A Receber" value={formatCurrency(totalPendingFees)} sub="mensalidades pendentes" icon={Clock} color="#F59E0B" />
-        <KpiCard title="Em Atraso" value={formatCurrency(totalOverdue)} sub="requerem atenÃ§Ã£o" icon={AlertCircle} color="#EF4444" />
-        <KpiCard title="Recebido" value={formatCurrency(totalReceived)} sub="histÃ³rico de pagamentos" icon={TrendingUp} color="#22C55E" />
+        <KpiCard title="Em Atraso" value={formatCurrency(totalOverdue)} sub="requerem atenção" icon={AlertCircle} color="#EF4444" />
+        <KpiCard title="Recebido" value={formatCurrency(totalReceived)} sub="histórico de pagamentos" icon={TrendingUp} color="#22C55E" />
         <KpiCard title="A Pagar" value={formatCurrency(totalPendingPayables)} sub="despesas pendentes" icon={Wallet} color="#F97316" />
         <KpiCard title="Atrasadas (Pagar)" value={formatCurrency(totalOverduePayables)} sub="contas vencidas" icon={AlertCircle} color="#DC2626" />
       </div>
 
-      <Tabs defaultValue="fees">
+      <Tabs defaultValue="return">
         <TabsList>
+          <TabsTrigger value="return" data-testid="tab-return">
+            <TrendingUp className="h-3.5 w-3.5 mr-1.5" />Retorno / DRE
+          </TabsTrigger>
           <TabsTrigger value="fees" data-testid="tab-fees">
             <DollarSign className="h-3.5 w-3.5 mr-1.5" />Mensalidades
           </TabsTrigger>
@@ -816,18 +1257,358 @@ export default function Financeiro() {
           </TabsTrigger>
         </TabsList>
 
+        {/* RETURN / DRE TAB */}
+        <TabsContent value="return" className="mt-4 space-y-4">
+          <Card className="border-border/60">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Calculadora de retorno mensal</CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Base automática em contratos/mensalidades e contas a pagar. Ajuste extras para simular cenário do mês.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                <div className="space-y-1.5">
+                  <Label>Mês de referência</Label>
+                  <Input
+                    type="month"
+                    value={returnMonth}
+                    onChange={(event) => setReturnMonth(event.target.value || defaultReturnMonth)}
+                    data-testid="input-return-month"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Outros serviços (R$)</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={extraServicesRevenueInput}
+                    onChange={(event) => setExtraServicesRevenueInput(event.target.value)}
+                    data-testid="input-extra-services"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Despesas extras (R$)</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={extraOperationalExpenseInput}
+                    onChange={(event) => setExtraOperationalExpenseInput(event.target.value)}
+                    data-testid="input-extra-expenses"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Inadimplência estimada (R$)</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={expectedDelinquencyInput}
+                    onChange={(event) => setExpectedDelinquencyInput(event.target.value)}
+                    data-testid="input-delinquency"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Impostos/taxas (%)</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={taxRateInput}
+                    onChange={(event) => setTaxRateInput(event.target.value)}
+                    data-testid="input-tax-rate"
+                  />
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <KpiCard
+                  title="Receita Bruta Prevista"
+                  value={formatCurrency(grossRevenueExpected)}
+                  sub={`${feesForReturnMonth.length} mensalidade(s) em ${selectedMonthLabel}`}
+                  icon={DollarSign}
+                  color="#1F6FEB"
+                />
+                <KpiCard
+                  title="Despesas Previstas"
+                  value={formatCurrency(totalExpensesExpected)}
+                  sub={`${payablesForReturnMonth.length} conta(s) a pagar no mês`}
+                  icon={Wallet}
+                  color="#F97316"
+                />
+                <KpiCard
+                  title="Lucro Esperado"
+                  value={formatCurrency(expectedProfit)}
+                  sub={`Margem esperada ${expectedMargin.toFixed(1)}%`}
+                  icon={TrendingUp}
+                  color={expectedProfit >= 0 ? "#22C55E" : "#EF4444"}
+                />
+                <KpiCard
+                  title="Lucro Realizado"
+                  value={formatCurrency(realizedProfit)}
+                  sub={`Margem realizada ${realizedMargin.toFixed(1)}%`}
+                  icon={AlertCircle}
+                  color={realizedProfit >= 0 ? "#22C55E" : "#EF4444"}
+                />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-border/60">
+            <CardHeader className="pb-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base">DRE Mensal Simplificada</CardTitle>
+                  <p className="text-sm text-muted-foreground">
+                    Visão de resultado para {selectedMonthLabel}.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="gap-2"
+                  onClick={downloadDreCsv}
+                  data-testid="button-download-dre"
+                >
+                  <Download className="h-4 w-4" />
+                  Download DRE (CSV)
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="rounded-xl border border-border/60 overflow-x-auto">
+                <table className="w-full min-w-[720px] text-sm">
+                  <thead className="bg-muted/40">
+                    <tr>
+                      <th className="px-4 py-2 text-left font-medium text-muted-foreground">Conta</th>
+                      <th className="px-4 py-2 text-right font-medium text-muted-foreground">Previsto</th>
+                      <th className="px-4 py-2 text-right font-medium text-muted-foreground">Realizado</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="border-t border-border/60">
+                      <td className="px-4 py-2">Receita de contratos/mensalidades</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(contractualRevenueExpected)}</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(contractualRevenueRealized)}</td>
+                    </tr>
+                    <tr className="border-t border-border/60">
+                      <td className="px-4 py-2">Outros serviços</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(extraServicesRevenue)}</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(0)}</td>
+                    </tr>
+                    <tr className="border-t border-border/60 font-medium">
+                      <td className="px-4 py-2">Receita bruta</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(grossRevenueExpected)}</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(grossRevenueRealized)}</td>
+                    </tr>
+                    <tr className="border-t border-border/60">
+                      <td className="px-4 py-2">(-) Inadimplência estimada</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(expectedDelinquency)}</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(0)}</td>
+                    </tr>
+                    <tr className="border-t border-border/60">
+                      <td className="px-4 py-2">(-) Impostos e taxas ({taxRatePercent.toFixed(2)}%)</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(taxesExpected)}</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(taxesRealized)}</td>
+                    </tr>
+                    <tr className="border-t border-border/60 font-medium">
+                      <td className="px-4 py-2">Receita líquida</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(netRevenueExpected)}</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(netRevenueRealized)}</td>
+                    </tr>
+                    <tr className="border-t border-border/60">
+                      <td className="px-4 py-2">(-) Custos com equipe</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(staffCostExpected)}</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(0)}</td>
+                    </tr>
+                    <tr className="border-t border-border/60">
+                      <td className="px-4 py-2">(-) Outras despesas operacionais</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(otherOperationalCostExpected)}</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(0)}</td>
+                    </tr>
+                    <tr className="border-t border-border/60">
+                      <td className="px-4 py-2">(-) Despesas extras manuais</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(extraOperationalExpense)}</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(0)}</td>
+                    </tr>
+                    <tr className="border-t border-border/60 font-medium">
+                      <td className="px-4 py-2">Total de despesas</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(totalExpensesExpected)}</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(payableRealized)}</td>
+                    </tr>
+                    <tr className="border-t border-border/60 bg-muted/20 font-semibold">
+                      <td className="px-4 py-2">Resultado líquido</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(expectedProfit)}</td>
+                      <td className="px-4 py-2 text-right">{formatCurrency(realizedProfit)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
+                <div className="rounded-lg border border-border/60 p-3">
+                  <p className="text-xs text-muted-foreground">Contratos ativos no mês</p>
+                  <p className="font-semibold text-foreground">{contractsForReturnMonth.length}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 p-3">
+                  <p className="text-xs text-muted-foreground">Receita contratual projetada</p>
+                  <p className="font-semibold text-foreground">{formatCurrency(totalProjectedContracts)}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 p-3">
+                  <p className="text-xs text-muted-foreground">Variação lucro (Previsto - Realizado)</p>
+                  <p className={`font-semibold ${profitabilityDelta >= 0 ? "text-green-600" : "text-red-600"}`}>
+                    {formatCurrency(profitabilityDelta)}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border/60 p-3">
+                  <p className="text-xs text-muted-foreground">Margem esperada</p>
+                  <p className={`font-semibold ${expectedMargin >= 0 ? "text-green-600" : "text-red-600"}`}>
+                    {expectedMargin.toFixed(1)}%
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-border/60">
+            <CardHeader className="pb-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base">Histórico mensal</CardTitle>
+                  <p className="text-sm text-muted-foreground">
+                    Últimos 12 meses com evolução de receita, despesa, lucro e margem.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="gap-2"
+                    onClick={downloadHistoryCsv}
+                    data-testid="button-download-history-csv"
+                  >
+                    <Download className="h-4 w-4" />
+                    Exportar CSV
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="gap-2"
+                    onClick={downloadHistoryPdf}
+                    data-testid="button-download-history-pdf"
+                  >
+                    <Download className="h-4 w-4" />
+                    Exportar PDF
+                  </Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {monthlyHistoryRows.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-border p-6 text-sm text-muted-foreground">
+                  Ainda não há histórico financeiro suficiente para exibir.
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-border/60 p-3">
+                    <p className="text-xs text-muted-foreground mb-2">Lucro por mês (previsto x realizado)</p>
+                    <div className="h-[260px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <RechartsLineChart data={monthlyHistoryChartData} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                          <XAxis dataKey="monthLabel" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
+                          <YAxis
+                            tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
+                            axisLine={false}
+                            tickLine={false}
+                            tickFormatter={(value) => formatCurrency(Number(value)).replace("R$", "").trim()}
+                          />
+                          <RechartsTooltip
+                            formatter={(value: number, name: string) => [formatCurrency(Number(value)), name === "lucroPrevisto" ? "Lucro previsto" : "Lucro realizado"]}
+                            labelFormatter={(label) => `Mês: ${label}`}
+                          />
+                          <RechartsLegend
+                            formatter={(value) => (value === "lucroPrevisto" ? "Lucro previsto" : "Lucro realizado")}
+                          />
+                          <Line type="monotone" dataKey="lucroPrevisto" stroke="#1F6FEB" strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                          <Line type="monotone" dataKey="lucroRealizado" stroke="#22C55E" strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                        </RechartsLineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-border/60 overflow-x-auto">
+                    <table className="w-full min-w-[920px] text-sm">
+                      <thead className="bg-muted/40">
+                        <tr>
+                          <th className="px-4 py-2 text-left font-medium text-muted-foreground">Mês</th>
+                          <th className="px-4 py-2 text-right font-medium text-muted-foreground">Receita Prevista</th>
+                          <th className="px-4 py-2 text-right font-medium text-muted-foreground">Despesa Prevista</th>
+                          <th className="px-4 py-2 text-right font-medium text-muted-foreground">Lucro Previsto</th>
+                          <th className="px-4 py-2 text-right font-medium text-muted-foreground">Receita Realizada</th>
+                          <th className="px-4 py-2 text-right font-medium text-muted-foreground">Despesa Realizada</th>
+                          <th className="px-4 py-2 text-right font-medium text-muted-foreground">Lucro Realizado</th>
+                          <th className="px-4 py-2 text-right font-medium text-muted-foreground">Margem Realizada</th>
+                          <th className="px-4 py-2 text-right font-medium text-muted-foreground">Ação</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {monthlyHistoryRows.map((row) => (
+                          <tr key={row.monthKey} className="border-t border-border/60">
+                            <td className="px-4 py-2 font-medium text-foreground uppercase">{row.monthLabel}</td>
+                            <td className="px-4 py-2 text-right">{formatCurrency(row.revenueExpected)}</td>
+                            <td className="px-4 py-2 text-right">{formatCurrency(row.expenseExpected)}</td>
+                            <td className={`px-4 py-2 text-right font-medium ${row.profitExpected >= 0 ? "text-green-600" : "text-red-600"}`}>
+                              {formatCurrency(row.profitExpected)}
+                            </td>
+                            <td className="px-4 py-2 text-right">{formatCurrency(row.revenueRealized)}</td>
+                            <td className="px-4 py-2 text-right">{formatCurrency(row.expenseRealized)}</td>
+                            <td className={`px-4 py-2 text-right font-medium ${row.profitRealized >= 0 ? "text-green-600" : "text-red-600"}`}>
+                              {formatCurrency(row.profitRealized)}
+                            </td>
+                            <td className={`px-4 py-2 text-right font-medium ${row.marginRealized >= 0 ? "text-green-600" : "text-red-600"}`}>
+                              {row.marginRealized.toFixed(1)}%
+                            </td>
+                            <td className="px-4 py-2 text-right">
+                              <Button
+                                type="button"
+                                variant={row.monthKey === returnMonth ? "default" : "outline"}
+                                size="sm"
+                                onClick={() => setReturnMonth(row.monthKey)}
+                                data-testid={`button-history-month-${row.monthKey}`}
+                              >
+                                Ver mês
+                              </Button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         {/* FEES TAB */}
         <TabsContent value="fees" className="mt-4">
+          <div className="mb-3">
+            <p className="text-sm font-medium text-foreground">Mensalidades de {selectedMonthLabel}</p>
+            <p className="text-xs text-muted-foreground">Cobranças filtradas pelo mês de referência selecionado no topo.</p>
+          </div>
           {feesLoading ? (
             <div className="space-y-3">{[1,2,3].map(i => <div key={i} className="h-20 bg-muted rounded-2xl animate-pulse" />)}</div>
-          ) : fees.length === 0 ? (
+          ) : feesForReturnMonth.length === 0 ? (
             <div className="text-center py-16 text-muted-foreground">
               <DollarSign className="h-12 w-12 text-muted-foreground/30 mx-auto mb-3" />
-              <p>Nenhuma cobranÃ§a lanÃ§ada.</p>
+              <p>Nenhuma cobrança para {selectedMonthLabel}.</p>
             </div>
           ) : (
             <div className="space-y-3">
-              {fees.map((fee: any) => {
+              {feesForReturnMonth.map((fee: any) => {
                 const eff = effectiveStatus(fee);
                 const s = STATUS_FEE[eff] ?? { label: eff, color: "#888", bg: "#F3F4F6" };
                 const total = (fee.amount ?? 0) + (fee.fine ?? 0) - (fee.discount ?? 0);
@@ -842,12 +1623,12 @@ export default function Financeiro() {
                         </Badge>
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        ReferÃªncia: {fee.referenceMonth} Â· Vencimento: {feeDueDate ? format(feeDueDate, "dd/MM/yyyy", { locale: ptBR }) : "â€”"}
+                        Referência: {fee.referenceMonth} · Vencimento: {feeDueDate ? format(feeDueDate, "dd/MM/yyyy", { locale: ptBR }) : "-"}
                       </p>
                       {fee.paidAt && (
                         <p className="text-xs text-green-600 mt-0.5">
                           Pago em {format(new Date(fee.paidAt), "dd/MM/yyyy", { locale: ptBR })}
-                          {fee.paymentMethod && ` Â· ${fee.paymentMethod}`}
+                          {fee.paymentMethod && ` · ${fee.paymentMethod}`}
                         </p>
                       )}
                     </div>
@@ -872,8 +1653,8 @@ export default function Financeiro() {
                         disabled={deleteMonthlyFee.isPending}
                         onClick={() => {
                           confirm({
-                            title: "Excluir cobranÃ§a",
-                            description: `Excluir esta cobranÃ§a de ${fee.residentName}?`,
+                            title: "Excluir cobrança",
+                            description: `Excluir esta cobrança de ${fee.residentName}?`,
                             confirmText: "Excluir",
                             pendingText: "Excluindo...",
                             variant: "destructive",
@@ -894,16 +1675,20 @@ export default function Financeiro() {
 
         {/* ACCOUNTS PAYABLE TAB */}
         <TabsContent value="accounts-payable" className="mt-4">
+          <div className="mb-3">
+            <p className="text-sm font-medium text-foreground">Contas a pagar de {selectedMonthLabel}</p>
+            <p className="text-xs text-muted-foreground">Lançamentos filtrados pelo mês de referência selecionado no topo.</p>
+          </div>
           {accountsPayableLoading ? (
             <div className="space-y-3">{[1,2,3].map(i => <div key={i} className="h-20 bg-muted rounded-2xl animate-pulse" />)}</div>
-          ) : accountsPayable.length === 0 ? (
+          ) : payablesForReturnMonth.length === 0 ? (
             <div className="text-center py-16 text-muted-foreground">
               <Wallet className="h-12 w-12 text-muted-foreground/30 mx-auto mb-3" />
-              <p>Nenhuma conta a pagar cadastrada.</p>
+              <p>Nenhuma conta a pagar para {selectedMonthLabel}.</p>
             </div>
           ) : (
             <div className="space-y-3">
-              {accountsPayable.map((item: any) => {
+              {payablesForReturnMonth.map((item: any) => {
                 const eff = effectivePayableStatus(item);
                 const s = STATUS_PAYABLE[eff] ?? { label: eff, color: "#888", bg: "#F3F4F6" };
                 const total = (item.amount ?? 0) + (item.extra ?? 0) - (item.discount ?? 0);
@@ -935,12 +1720,12 @@ export default function Financeiro() {
                         {item.staffName && <Badge variant="outline" className="text-xs">{item.staffName}</Badge>}
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        ReferÃªncia: {item.referenceMonth || "â€”"} Â· Vencimento: {dueDate ? format(dueDate, "dd/MM/yyyy", { locale: ptBR }) : "â€”"}
+                        Referência: {item.referenceMonth || "-"} · Vencimento: {dueDate ? format(dueDate, "dd/MM/yyyy", { locale: ptBR }) : "-"}
                       </p>
                       {item.paidAt && (
                         <p className="text-xs text-green-600 mt-0.5">
                           Pago em {format(new Date(item.paidAt), "dd/MM/yyyy", { locale: ptBR })}
-                          {item.paymentMethod && ` Â· ${item.paymentMethod}`}
+                          {item.paymentMethod && ` · ${item.paymentMethod}`}
                         </p>
                       )}
                     </div>
@@ -1007,16 +1792,20 @@ export default function Financeiro() {
 
         {/* CONTRACTS TAB */}
         <TabsContent value="contracts" className="mt-4">
+          <div className="mb-3">
+            <p className="text-sm font-medium text-foreground">Contratos ativos em {selectedMonthLabel}</p>
+            <p className="text-xs text-muted-foreground">Considera início/fim do contrato e status ativo.</p>
+          </div>
           {contractsLoading ? (
             <div className="space-y-3">{[1,2,3].map(i => <div key={i} className="h-20 bg-muted rounded-2xl animate-pulse" />)}</div>
-          ) : contracts.length === 0 ? (
+          ) : contractsForReturnMonth.length === 0 ? (
             <div className="text-center py-16 text-muted-foreground">
               <FileText className="h-12 w-12 text-muted-foreground/30 mx-auto mb-3" />
-              <p>Nenhum contrato cadastrado.</p>
+              <p>Nenhum contrato ativo em {selectedMonthLabel}.</p>
             </div>
           ) : (
             <div className="space-y-3">
-              {contracts.map((c: any) => {
+              {contractsForReturnMonth.map((c: any) => {
                 const s = STATUS_CONTRACT[c.status] ?? { label: c.status, color: "#888" };
                 return (
                   <div key={c.id} className="bg-card border border-border/60 rounded-2xl p-4 shadow-sm flex flex-wrap items-center gap-4" data-testid={`contract-${c.id}`}>
@@ -1032,15 +1821,15 @@ export default function Financeiro() {
                         <Badge variant="secondary" className="text-xs">{PLAN_LABELS[c.plan ?? "standard"]}</Badge>
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        Desde {c.startDate ? format(new Date(c.startDate + "T00:00:00"), "dd/MM/yyyy", { locale: ptBR }) : "â€”"}
-                        {c.paymentDay && ` Â· Vence dia ${c.paymentDay}`}
-                        {c.paymentMethod && ` Â· ${c.paymentMethod}`}
+                        Desde {c.startDate ? format(new Date(c.startDate + "T00:00:00"), "dd/MM/yyyy", { locale: ptBR }) : "-"}
+                        {c.paymentDay && ` · Vence dia ${c.paymentDay}`}
+                        {c.paymentMethod && ` · ${c.paymentMethod}`}
                       </p>
                       {c.notes && <p className="text-xs text-muted-foreground/70 mt-0.5 truncate">{c.notes}</p>}
                     </div>
                     <div className="text-right shrink-0">
                       <p className="text-xl font-bold text-foreground">{formatCurrency(c.monthlyValue ?? 0)}</p>
-                      <p className="text-xs text-muted-foreground">por mÃªs</p>
+                      <p className="text-xs text-muted-foreground">por mês</p>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
                       <Button
@@ -1058,7 +1847,7 @@ export default function Financeiro() {
                         onClick={() => {
                           confirm({
                             title: "Excluir contrato",
-                            description: `Excluir contrato de ${c.residentName}? Esta aÃ§Ã£o nÃ£o pode ser desfeita.`,
+                            description: `Excluir contrato de ${c.residentName}? Esta ação não pode ser desfeita.`,
                             confirmText: "Excluir",
                             pendingText: "Excluindo...",
                             variant: "destructive",
@@ -1118,7 +1907,7 @@ export default function Financeiro() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
                   <div>
                     <p className="text-xs text-muted-foreground">Periodo de referencia</p>
-                    <p className="font-medium">{payableDetails.referenceMonth || "â€”"}</p>
+                    <p className="font-medium">{payableDetails.referenceMonth || "-"}</p>
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Cuidador vinculado</p>
@@ -1145,7 +1934,7 @@ export default function Financeiro() {
                   <div>
                     <p className="text-xs text-muted-foreground">Vencimento</p>
                     <p className="font-medium">
-                      {parseDateOnly(payableDetails.dueDate) ? format(parseDateOnly(payableDetails.dueDate) as Date, "dd/MM/yyyy", { locale: ptBR }) : "â€”"}
+                      {parseDateOnly(payableDetails.dueDate) ? format(parseDateOnly(payableDetails.dueDate) as Date, "dd/MM/yyyy", { locale: ptBR }) : "-"}
                     </p>
                   </div>
                   <div>
@@ -1177,7 +1966,7 @@ export default function Financeiro() {
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <p className="text-sm font-medium">
                               {day ? format(day, "dd/MM/yyyy", { locale: ptBR }) : shift.date}
-                              {" â€” "}
+                              {" - "}
                               {startTime ? format(startTime, "HH:mm") : "--:--"}
                               {" as "}
                               {endTime ? format(endTime, "HH:mm") : "--:--"}
@@ -1216,7 +2005,7 @@ export default function Financeiro() {
           {editingContract && (
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">
-                Contrato de <strong>{editingContract.residentName}</strong> â€” Plano {PLAN_LABELS[editingContract.plan ?? "standard"]}
+                Contrato de <strong>{editingContract.residentName}</strong> - Plano {PLAN_LABELS[editingContract.plan ?? "standard"]}
               </p>
               <div className="space-y-2">
                 {(["active", "suspended", "terminated"] as const).map((s) => (
@@ -1249,5 +2038,6 @@ export default function Financeiro() {
     </div>
   );
 }
+
 
 

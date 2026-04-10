@@ -1,7 +1,7 @@
 import { db } from "./db";
 import {
   users, organizations, residents, medications, staff, occurrences, shiftAssignments,
-  medicalRecords, comorbidities, familyMembers, contracts, monthlyFees, accountsPayable, medicationAdministrations,
+  medicalRecords, comorbidities, familyMembers, contracts, monthlyFees, accountsPayable, medicationAdministrations, crmOpportunities,
   type User, type InsertUser,
   type Organization, type InsertOrganization,
   type Resident, type InsertResident, type UpdateResidentRequest,
@@ -16,9 +16,10 @@ import {
   type MonthlyFee, type InsertMonthlyFee, type UpdateMonthlyFeeRequest,
   type AccountPayable, type InsertAccountPayable, type UpdateAccountPayableRequest,
   type MedicationAdministration, type InsertMedicationAdministration,
+  type CrmOpportunity, type InsertCrmOpportunity, type UpdateCrmOpportunityRequest,
   type DashboardStats,
 } from "@shared/schema";
-import { eq, like, desc, sql, and, gte, lte, ilike } from "drizzle-orm";
+import { eq, like, desc, sql, and, gte, lte, ilike, asc, inArray } from "drizzle-orm";
 import { hashPassword, isPasswordHash } from "./security";
 
 const normalizePortalUsername = (username: string) => username.trim().toLowerCase();
@@ -123,7 +124,10 @@ export interface IStorage {
   deleteContract(orgId: number, id: number): Promise<void>;
 
   // Monthly Fees
-  getMonthlyFees(orgId: number, query?: { contractId?: number; residentId?: number; status?: string }): Promise<(MonthlyFee & { residentName?: string })[]>;
+  getMonthlyFees(
+    orgId: number,
+    query?: { contractId?: number; residentId?: number; status?: string; referenceMonth?: string },
+  ): Promise<(MonthlyFee & { residentName?: string })[]>;
   createMonthlyFee(fee: InsertMonthlyFee): Promise<MonthlyFee>;
   updateMonthlyFee(orgId: number, id: number, updates: UpdateMonthlyFeeRequest): Promise<MonthlyFee>;
   deleteMonthlyFee(orgId: number, id: number): Promise<void>;
@@ -137,6 +141,17 @@ export interface IStorage {
   createAccountPayable(item: InsertAccountPayable): Promise<AccountPayable>;
   updateAccountPayable(orgId: number, id: number, updates: UpdateAccountPayableRequest): Promise<AccountPayable>;
   deleteAccountPayable(orgId: number, id: number): Promise<void>;
+
+  // CRM Opportunities
+  getCrmOpportunities(
+    orgId: number,
+    query?: { stage?: string; search?: string; ownerId?: number },
+  ): Promise<(CrmOpportunity & { ownerName?: string | null })[]>;
+  getCrmOpportunity(orgId: number, id: number): Promise<(CrmOpportunity & { ownerName?: string | null }) | undefined>;
+  createCrmOpportunity(item: InsertCrmOpportunity): Promise<CrmOpportunity>;
+  updateCrmOpportunity(orgId: number, id: number, updates: UpdateCrmOpportunityRequest): Promise<CrmOpportunity>;
+  deleteCrmOpportunity(orgId: number, id: number): Promise<void>;
+  reassignCrmOpportunityStages(orgId: number, fromStages: string[], toStage: string): Promise<number>;
 
   // Stats
   getDashboardStats(orgId: number): Promise<DashboardStats>;
@@ -608,11 +623,15 @@ export class DatabaseStorage implements IStorage {
   }
 
   // --- Monthly Fees ---
-  async getMonthlyFees(orgId: number, query?: { contractId?: number; residentId?: number; status?: string }): Promise<(MonthlyFee & { residentName?: string })[]> {
+  async getMonthlyFees(
+    orgId: number,
+    query?: { contractId?: number; residentId?: number; status?: string; referenceMonth?: string },
+  ): Promise<(MonthlyFee & { residentName?: string })[]> {
     const filters: any[] = [eq(monthlyFees.organizationId, orgId)];
     if (query?.contractId) filters.push(eq(monthlyFees.contractId, query.contractId));
     if (query?.residentId) filters.push(eq(monthlyFees.residentId, query.residentId));
     if (query?.status) filters.push(eq(monthlyFees.status, query.status));
+    if (query?.referenceMonth) filters.push(eq(monthlyFees.referenceMonth, query.referenceMonth));
     return await db.select({
       id: monthlyFees.id,
       organizationId: monthlyFees.organizationId,
@@ -720,6 +739,119 @@ export class DatabaseStorage implements IStorage {
   }
   async deleteAccountPayable(orgId: number, id: number): Promise<void> {
     await db.delete(accountsPayable).where(and(eq(accountsPayable.id, id), eq(accountsPayable.organizationId, orgId)));
+  }
+
+  // --- CRM Opportunities ---
+  async getCrmOpportunities(
+    orgId: number,
+    query?: { stage?: string; search?: string; ownerId?: number },
+  ): Promise<(CrmOpportunity & { ownerName?: string | null })[]> {
+    const filters: any[] = [eq(crmOpportunities.organizationId, orgId)];
+    if (query?.stage) filters.push(eq(crmOpportunities.stage, query.stage));
+    if (query?.ownerId) filters.push(eq(crmOpportunities.ownerId, query.ownerId));
+    if (query?.search) {
+      const term = `%${query.search}%`;
+      filters.push(sql`(
+        ${crmOpportunities.title} ILIKE ${term}
+        OR coalesce(${crmOpportunities.contactName}, '') ILIKE ${term}
+        OR coalesce(${crmOpportunities.source}, '') ILIKE ${term}
+      )`);
+    }
+
+    return await db.select({
+      id: crmOpportunities.id,
+      organizationId: crmOpportunities.organizationId,
+      title: crmOpportunities.title,
+      contactName: crmOpportunities.contactName,
+      contactPhone: crmOpportunities.contactPhone,
+      contactEmail: crmOpportunities.contactEmail,
+      source: crmOpportunities.source,
+      stage: crmOpportunities.stage,
+      amount: crmOpportunities.amount,
+      expectedCloseDate: crmOpportunities.expectedCloseDate,
+      ownerId: crmOpportunities.ownerId,
+      notes: crmOpportunities.notes,
+      followUpTasks: crmOpportunities.followUpTasks,
+      lostReason: crmOpportunities.lostReason,
+      position: crmOpportunities.position,
+      createdAt: crmOpportunities.createdAt,
+      updatedAt: crmOpportunities.updatedAt,
+      ownerName: users.name,
+    }).from(crmOpportunities)
+      .leftJoin(users, eq(crmOpportunities.ownerId, users.id))
+      .where(and(...filters))
+      .orderBy(asc(crmOpportunities.position), desc(crmOpportunities.createdAt)) as any;
+  }
+  async getCrmOpportunity(
+    orgId: number,
+    id: number,
+  ): Promise<(CrmOpportunity & { ownerName?: string | null }) | undefined> {
+    const [opportunity] = await db.select({
+      id: crmOpportunities.id,
+      organizationId: crmOpportunities.organizationId,
+      title: crmOpportunities.title,
+      contactName: crmOpportunities.contactName,
+      contactPhone: crmOpportunities.contactPhone,
+      contactEmail: crmOpportunities.contactEmail,
+      source: crmOpportunities.source,
+      stage: crmOpportunities.stage,
+      amount: crmOpportunities.amount,
+      expectedCloseDate: crmOpportunities.expectedCloseDate,
+      ownerId: crmOpportunities.ownerId,
+      notes: crmOpportunities.notes,
+      followUpTasks: crmOpportunities.followUpTasks,
+      lostReason: crmOpportunities.lostReason,
+      position: crmOpportunities.position,
+      createdAt: crmOpportunities.createdAt,
+      updatedAt: crmOpportunities.updatedAt,
+      ownerName: users.name,
+    }).from(crmOpportunities)
+      .leftJoin(users, eq(crmOpportunities.ownerId, users.id))
+      .where(and(eq(crmOpportunities.organizationId, orgId), eq(crmOpportunities.id, id))) as any;
+    return opportunity;
+  }
+  async createCrmOpportunity(item: InsertCrmOpportunity): Promise<CrmOpportunity> {
+    const [created] = await db.insert(crmOpportunities).values({
+      ...item,
+      updatedAt: new Date(),
+    }).returning();
+    return created;
+  }
+  async updateCrmOpportunity(
+    orgId: number,
+    id: number,
+    updates: UpdateCrmOpportunityRequest,
+  ): Promise<CrmOpportunity> {
+    const [updated] = await db
+      .update(crmOpportunities)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(and(eq(crmOpportunities.id, id), eq(crmOpportunities.organizationId, orgId)))
+      .returning();
+    return updated;
+  }
+  async deleteCrmOpportunity(orgId: number, id: number): Promise<void> {
+    await db.delete(crmOpportunities).where(and(eq(crmOpportunities.id, id), eq(crmOpportunities.organizationId, orgId)));
+  }
+  async reassignCrmOpportunityStages(orgId: number, fromStages: string[], toStage: string): Promise<number> {
+    const sanitizedFromStages = fromStages
+      .map((stage) => stage.trim().toLowerCase())
+      .filter((stage) => stage.length > 0)
+      .filter((stage, index, source) => source.indexOf(stage) === index);
+
+    if (sanitizedFromStages.length === 0) return 0;
+
+    const moved = await db.update(crmOpportunities)
+      .set({
+        stage: toStage,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(crmOpportunities.organizationId, orgId),
+        inArray(crmOpportunities.stage, sanitizedFromStages),
+      ))
+      .returning({ id: crmOpportunities.id });
+
+    return moved.length;
   }
 
   // --- Dashboard Stats ---

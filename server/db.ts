@@ -176,4 +176,58 @@ export async function ensureDatabaseCompatibility() {
       ADD COLUMN IF NOT EXISTS notes text,
       ADD COLUMN IF NOT EXISTS created_at timestamp DEFAULT now();
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS crm_opportunities (
+      id serial PRIMARY KEY,
+      organization_id integer NOT NULL,
+      title text NOT NULL,
+      contact_name text,
+      contact_phone text,
+      contact_email text,
+      source text,
+      stage text NOT NULL DEFAULT 'lead',
+      amount real DEFAULT 0,
+      expected_close_date date,
+      owner_id integer,
+      notes text,
+      follow_up_tasks text DEFAULT '[]',
+      lost_reason text,
+      position integer DEFAULT 0,
+      created_at timestamp DEFAULT now(),
+      updated_at timestamp DEFAULT now()
+    );
+  `);
+
+  await pool.query(`
+    ALTER TABLE IF EXISTS crm_opportunities
+      ADD COLUMN IF NOT EXISTS organization_id integer,
+      ADD COLUMN IF NOT EXISTS title text,
+      ADD COLUMN IF NOT EXISTS contact_name text,
+      ADD COLUMN IF NOT EXISTS contact_phone text,
+      ADD COLUMN IF NOT EXISTS contact_email text,
+      ADD COLUMN IF NOT EXISTS source text,
+      ADD COLUMN IF NOT EXISTS stage text DEFAULT 'lead',
+      ADD COLUMN IF NOT EXISTS amount real DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS expected_close_date date,
+      ADD COLUMN IF NOT EXISTS owner_id integer,
+      ADD COLUMN IF NOT EXISTS notes text,
+      ADD COLUMN IF NOT EXISTS follow_up_tasks text DEFAULT '[]',
+      ADD COLUMN IF NOT EXISTS lost_reason text,
+      ADD COLUMN IF NOT EXISTS position integer DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS created_at timestamp DEFAULT now(),
+      ADD COLUMN IF NOT EXISTS updated_at timestamp DEFAULT now();
+  `);
+
+  await pool.query(`
+    UPDATE crm_opportunities
+    SET follow_up_tasks = '[]'
+    WHERE follow_up_tasks IS NULL OR btrim(follow_up_tasks) = '';
+  `);
+
+  await pool.query(`
+    UPDATE crm_opportunities
+    SET stage = 'no_interest'
+    WHERE stage = 'lost';
+  `);
 }
