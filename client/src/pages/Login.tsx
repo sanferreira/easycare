@@ -91,7 +91,8 @@ export default function Login() {
               className="text-4xl font-bold text-white leading-tight"
               style={{ fontFamily: "var(--font-display)" }}
             >
-              Controle total da sua <span style={{ color: "#22D3EE" }}>ILPI</span>,
+              Controle total da sua{" "}
+              <span style={{ color: "#22D3EE" }}>ILPI, Home Care e Agência de Cuidadores</span>,
               <br />
               com mais segurança, organização e cuidado
             </h2>
