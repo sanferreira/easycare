@@ -87,7 +87,7 @@ export function useBrowserNotifications() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ subscription: subscription.toJSON() }),
       }),
-      "Erro ao salvar inscricao Web Push.",
+      "Erro ao salvar inscrição Web Push.",
     );
   }, []);
 
@@ -113,7 +113,7 @@ export function useBrowserNotifications() {
       setPermission(nextPermission);
       setPushError(nextPermission === "insecure"
         ? "Notificacoes push exigem HTTPS."
-        : "Este navegador nao suporta Web Push.");
+        : "Este navegador não suporta Web Push.");
       return false;
     }
 
@@ -123,15 +123,15 @@ export function useBrowserNotifications() {
       if (nextPermission !== "granted") {
         setPushEnabled(false);
         setPushError(nextPermission === "denied"
-          ? "Permissao de notificacao bloqueada no navegador."
-          : "Permissao de notificacao nao concedida.");
+          ? "Permissao de notificação bloqueada no navegador."
+          : "Permissao de notificação não concedida.");
         return false;
       }
 
       const publicKey = await loadPublicKey();
       if (!publicKey) {
         setPushEnabled(false);
-        setPushError("Web Push ainda nao foi configurado no servidor.");
+        setPushError("Web Push ainda não foi configurado no servidor.");
         return false;
       }
 

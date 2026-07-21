@@ -18,6 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useResidents } from "@/hooks/use-residents";
 import { useStaff } from "@/hooks/use-staff";
 import { toDateInputValue, toMonthInputValue } from "@/lib/date";
+import { printHtmlDocument } from "@/lib/print";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import {
@@ -44,7 +45,7 @@ type AccountPayableDetail = {
   category: string;
   referenceMonth: string | null;
   dueDate: string | Date | null;
-  paidAt?: string | Date | null;
+  paidAt: string | Date | null;
   paymentMethod?: string | null;
   notes?: string | null;
   amount: number;
@@ -241,7 +242,7 @@ function MonthStepper({
         size="icon"
         className="h-9 w-8 shrink-0"
         onClick={() => onChange(addMonthsToMonthKey(safeValue, 1))}
-        aria-label="Proximo mes"
+        aria-label="Próximo mês"
       >
         <ChevronRight className="h-4 w-4" />
       </Button>
@@ -609,7 +610,7 @@ export default function Financeiro() {
       ["Resultado liquido", expectedProfit.toFixed(2), realizedProfit.toFixed(2)],
       ["Margem (%)", expectedMargin.toFixed(2), realizedMargin.toFixed(2)],
       [],
-      ["Observacao", "Realizado considera somente lancamentos pagos no periodo.", ""],
+      ["Observação", "Realizado considera somente lançamentos pagos no período.", ""],
     ];
     downloadCsvFile(rows, `dre-${returnMonth}.csv`);
   };
@@ -678,14 +679,8 @@ export default function Financeiro() {
       `)
       .join("");
 
-    const printWindow = window.open("", "_blank", "noopener,noreferrer,width=1200,height=900");
-    if (!printWindow) {
-      toast({ title: "Bloqueado pelo navegador", description: "Permita pop-ups para gerar o PDF.", variant: "destructive" });
-      return;
-    }
-
     const generatedAt = format(new Date(), "dd/MM/yyyy HH:mm");
-    printWindow.document.write(`
+    const printed = printHtmlDocument(`
       <!doctype html>
       <html lang="pt-BR">
         <head>
@@ -724,26 +719,19 @@ export default function Financeiro() {
             </tbody>
           </table>
           <p class="footer">Dica: na impressão, selecione "Salvar como PDF".</p>
-          <script>
-            window.onload = function () { setTimeout(function () { window.print(); }, 250); };
-          </script>
         </body>
       </html>
     `);
-    printWindow.document.close();
+    if (!printed) {
+      toast({ title: "Não foi possível gerar", description: "Tente novamente pelo navegador principal.", variant: "destructive" });
+    }
   };
 
   const printContractDocument = (contract: Contract & { residentName?: string }) => {
-    const printWindow = window.open("", "_blank", "noopener,noreferrer,width=1000,height=900");
-    if (!printWindow) {
-      toast({ title: "Bloqueado pelo navegador", description: "Permita pop-ups para gerar o contrato.", variant: "destructive" });
-      return;
-    }
-
     const planLabel = PLAN_LABELS[contract.plan ?? "standard"] ?? contract.plan ?? "-";
     const statusLabel = STATUS_CONTRACT[contract.status ?? "active"]?.label ?? contract.status ?? "-";
     const generatedAt = format(new Date(), "dd/MM/yyyy HH:mm", { locale: ptBR });
-    printWindow.document.write(`
+    const printed = printHtmlDocument(`
       <!doctype html>
       <html lang="pt-BR">
         <head>
@@ -788,26 +776,25 @@ export default function Financeiro() {
             </p>
             <p>
               O contratante declara ciencia das rotinas operacionais, regras de pagamento, responsabilidades
-              de comunicacao de dados clinicos relevantes e demais condicoes acordadas com a instituicao.
+              de comunicação de dados clínicos relevantes e demais condições acordadas com a instituição.
             </p>
             <p>
-              Observacoes: ${escapeHtml(contract.notes || "Sem observacoes adicionais.")}
+              Observações: ${escapeHtml(contract.notes || "Sem observações adicionais.")}
             </p>
           </div>
 
           <h2>Assinaturas</h2>
           <div class="signature">
-            <div class="line">Responsavel financeiro</div>
+            <div class="line">Responsável financeiro</div>
             <div class="line">Representante da instituicao</div>
           </div>
 
-          <script>
-            window.onload = function () { setTimeout(function () { window.print(); }, 250); };
-          </script>
         </body>
       </html>
     `);
-    printWindow.document.close();
+    if (!printed) {
+      toast({ title: "Não foi possível gerar", description: "Tente novamente pelo navegador principal.", variant: "destructive" });
+    }
   };
 
   // Delete contract
@@ -882,7 +869,7 @@ export default function Financeiro() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/accounts-payable"] });
       queryClient.invalidateQueries({ queryKey: ["/api/accounts-payable/details"] });
-      toast({ title: "Conta a pagar excluida" });
+      toast({ title: "Conta a pagar excluída" });
     },
     onError: () => toast({ variant: "destructive", title: "Erro ao excluir conta a pagar" }),
   });
@@ -1281,7 +1268,7 @@ export default function Financeiro() {
                         <div className="space-y-1">
                           <FormLabel className="m-0 cursor-pointer">Criar recorrencia</FormLabel>
                           <p className="text-xs text-muted-foreground">
-                            Gera as proximas mensalidades automaticamente a partir do mes de referencia.
+                            Gera as próximas mensalidades automaticamente a partir do mês de referência.
                           </p>
                         </div>
                       </div>
@@ -1370,7 +1357,7 @@ export default function Financeiro() {
                         >
                           <FormControl><SelectTrigger><SelectValue placeholder="Selecionar colaborador" /></SelectTrigger></FormControl>
                           <SelectContent>
-                            <SelectItem value="none">Nao vincular</SelectItem>
+                            <SelectItem value="none">Não vincular</SelectItem>
                             {staff.filter((member: any) => member.active !== false).map((member: any) => (
                               <SelectItem key={member.id} value={String(member.id)}>{member.name}</SelectItem>
                             ))}
@@ -1434,7 +1421,7 @@ export default function Financeiro() {
                   )} />
                   <FormField control={payableForm.control} name="notes" render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Observacoes</FormLabel>
+                      <FormLabel>Observações</FormLabel>
                       <FormControl><Textarea rows={2} {...field} value={field.value ?? ""} /></FormControl>
                     </FormItem>
                   )} />
@@ -2114,7 +2101,7 @@ export default function Financeiro() {
             <div className="text-sm text-muted-foreground py-6">
               {payableDetailsError instanceof Error
                 ? payableDetailsError.message
-                : "Nao foi possivel carregar a memoria de calculo deste lancamento."}
+                : "Não foi possível carregar a memória de cálculo deste lançamento."}
             </div>
           ) : (
             <div className="space-y-5">
@@ -2143,14 +2130,14 @@ export default function Financeiro() {
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Cuidador vinculado</p>
-                    <p className="font-medium">{payableDetails.staffName || "Nao vinculado"}</p>
+                    <p className="font-medium">{payableDetails.staffName || "Não vinculado"}</p>
                   </div>
                   <div>
-                    <p className="text-xs text-muted-foreground">Quantidade de plantoes</p>
+                    <p className="text-xs text-muted-foreground">Quantidade de plantões</p>
                     <p className="font-medium">{payableDetails.totalShifts}</p>
                   </div>
                   <div>
-                    <p className="text-xs text-muted-foreground">Valor unitario do plantao</p>
+                    <p className="text-xs text-muted-foreground">Valor unitario do plantão</p>
                     <p className="font-medium">{formatCurrency(payableDetails.unitValue || 0)}</p>
                   </div>
                   <div>
@@ -2158,7 +2145,7 @@ export default function Financeiro() {
                     <p className="font-medium">{formatCurrency(payableDetails.calculatedTotal || 0)}</p>
                   </div>
                   <div>
-                    <p className="text-xs text-muted-foreground">Valor do lancamento financeiro</p>
+                    <p className="text-xs text-muted-foreground">Valor do lançamento financeiro</p>
                     <p className="font-medium">
                       {formatCurrency((payableDetails.amount ?? 0) + (payableDetails.extra ?? 0) - (payableDetails.discount ?? 0))}
                     </p>
@@ -2179,10 +2166,10 @@ export default function Financeiro() {
               </div>
 
               <div className="space-y-3">
-                <p className="text-sm font-semibold text-foreground">Plantoes considerados no calculo</p>
+                <p className="text-sm font-semibold text-foreground">Plantões considerados no cálculo</p>
                 {payableDetails.shifts.length === 0 ? (
                   <div className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">
-                    Nao ha plantoes vinculados para este lancamento.
+                    Não há plantões vinculados para este lançamento.
                   </div>
                 ) : (
                   <div className="space-y-2">
@@ -2219,7 +2206,7 @@ export default function Financeiro() {
 
               {payableDetails.notes && (
                 <div className="rounded-xl border border-border/60 p-3">
-                  <p className="text-xs text-muted-foreground mb-1">Observacoes do lancamento</p>
+                  <p className="text-xs text-muted-foreground mb-1">Observações do lançamento</p>
                   <p className="text-sm text-foreground whitespace-pre-wrap break-words">{payableDetails.notes}</p>
                 </div>
               )}

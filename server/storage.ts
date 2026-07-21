@@ -291,7 +291,7 @@ export interface IStorage {
   markNotificationPushSkipped(id: number, reason: string): Promise<void>;
 
   // Residents
-  getResidents(orgId: number, query?: { search?: string; status?: string }): Promise<Resident[]>;
+  getResidents(orgId: number, query?: { search: string; status?: string }): Promise<Resident[]>;
   getResident(orgId: number, id: number): Promise<Resident | undefined>;
   createResident(resident: InsertResident): Promise<Resident>;
   updateResident(orgId: number, id: number, updates: UpdateResidentRequest): Promise<Resident>;
@@ -396,7 +396,7 @@ export interface IStorage {
   // Monthly Fees
   getMonthlyFees(
     orgId: number,
-    query?: { contractId?: number; residentId?: number; status?: string; referenceMonth?: string },
+    query?: { contractId?: number; residentId?: number; status?: string; referenceMonth: string },
   ): Promise<(MonthlyFee & { residentName?: string })[]>;
   createMonthlyFee(fee: InsertMonthlyFee): Promise<MonthlyFee>;
   updateMonthlyFee(orgId: number, id: number, updates: UpdateMonthlyFeeRequest): Promise<MonthlyFee>;
@@ -405,7 +405,7 @@ export interface IStorage {
   // Accounts Payable
   getAccountsPayable(
     orgId: number,
-    query?: { staffId?: number; status?: string; referenceMonth?: string },
+    query?: { staffId?: number; status?: string; referenceMonth: string },
   ): Promise<(AccountPayable & { staffName?: string })[]>;
   getAccountPayable(orgId: number, id: number): Promise<(AccountPayable & { staffName?: string }) | undefined>;
   createAccountPayable(item: InsertAccountPayable): Promise<AccountPayable>;
@@ -824,7 +824,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   // --- Residents ---
-  async getResidents(orgId: number, query?: { search?: string; status?: string }): Promise<Resident[]> {
+  async getResidents(orgId: number, query?: { search: string; status?: string }): Promise<Resident[]> {
     const filters: any[] = [eq(residents.organizationId, orgId)];
     if (query?.search) filters.push(ilike(residents.name, `%${query.search}%`));
     if (query?.status) filters.push(eq(residents.status, query.status));

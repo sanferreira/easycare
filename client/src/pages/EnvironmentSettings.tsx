@@ -21,11 +21,11 @@ import { Switch } from "@/components/ui/switch";
 const MODULE_LABELS: Record<ModuleRoute, string> = {
   "/": "Dashboard",
   "/residents": "Residentes",
-  "/prontuario": "Prontuario",
+  "/prontuario": "Prontuário",
   "/staff": "Equipe",
   "/escalas": "Escalas",
-  "/ponto-eletronico": "Ponto eletronico",
-  "/occurrences": "Ocorrencias (prontuario)",
+  "/ponto-eletronico": "Ponto eletrônico",
+  "/occurrences": "Ocorrências (prontuario)",
   "/financeiro": "Financeiro",
   "/crm": "CRM",
   "/environment": "Configuracao de ambiente",
@@ -403,7 +403,7 @@ export default function EnvironmentSettingsPage() {
   };
 
   if (isLoading) {
-    return <div className="text-muted-foreground">Carregando configuracoes...</div>;
+    return <div className="text-muted-foreground">Carregando configurações...</div>;
   }
 
   return (
@@ -412,7 +412,7 @@ export default function EnvironmentSettingsPage() {
         <div>
           <h1 className="text-3xl font-bold font-display text-foreground">Configuracao de Ambiente</h1>
           <p className="text-muted-foreground mt-1">
-            Defina permissoes por papel, cargos da equipe e perfis de jornada da organizacao.
+            Defina permissoes por papel, cargos da equipe e perfis de jornada da organização.
           </p>
         </div>
         <div className="flex gap-2">
@@ -437,7 +437,7 @@ export default function EnvironmentSettingsPage() {
         <CardHeader>
           <CardTitle>Papeis/Cargos e permissoes por modulo</CardTitle>
           <CardDescription>
-            Cadastre papeis/cargos e separe acesso de visualizacao e edicao por modulo.
+            Cadastre papeis/cargos e separe acesso de visualizacao e edição por modulo.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -577,7 +577,7 @@ export default function EnvironmentSettingsPage() {
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div>
-                      <p className="text-xs text-muted-foreground mb-1">Horas por plantao</p>
+                      <p className="text-xs text-muted-foreground mb-1">Horas por plantão</p>
                       <Input
                         type="number"
                         min="1"
@@ -592,7 +592,7 @@ export default function EnvironmentSettingsPage() {
                       />
                     </div>
                     <div>
-                      <p className="text-xs text-muted-foreground mb-1">Descanso minimo (horas)</p>
+                      <p className="text-xs text-muted-foreground mb-1">Descanso mínimo (horas)</p>
                       <Input
                         type="number"
                         min="1"
@@ -609,7 +609,7 @@ export default function EnvironmentSettingsPage() {
                   </div>
 
                   <div>
-                    <p className="text-xs text-muted-foreground mb-2">Tipos de plantao permitidos</p>
+                    <p className="text-xs text-muted-foreground mb-2">Tipos de plantão permitidos</p>
                     <div className="flex flex-wrap gap-2">
                       {SHIFT_ASSIGNMENT_TYPE_VALUES.map((shiftType) => {
                         const active = rule.allowedShiftTypes.includes(shiftType);
@@ -631,8 +631,8 @@ export default function EnvironmentSettingsPage() {
 
                   <p className="text-xs text-muted-foreground">
                     {hasRule
-                      ? `Regra ativa${rule.exactShiftHours ? `: plantao de ${rule.exactShiftHours}h` : ""}${rule.minRestHours ? ` e descanso minimo de ${rule.minRestHours}h` : ""}.`
-                      : "Sem regra fixa: o perfil aceita qualquer tipo de plantao e descanso, respeitando apenas conflitos de horario."}
+                      ? `Regra ativa${rule.exactShiftHours ? `: plantão de ${rule.exactShiftHours}h` : ""}${rule.minRestHours ? ` e descanso mínimo de ${rule.minRestHours}h` : ""}.`
+                      : "Sem regra fixa: o perfil aceita qualquer tipo de plantão e descanso, respeitando apenas conflitos de horário."}
                   </p>
                 </div>
               </div>

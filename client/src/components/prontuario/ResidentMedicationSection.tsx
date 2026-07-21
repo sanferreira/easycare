@@ -70,7 +70,7 @@ type MedicationAdministrationWithDetails = {
 };
 
 const medicationFormSchema = z.object({
-  name: z.string().min(2, "Medicacao obrigatoria"),
+  name: z.string().min(2, "Medicação obrigatoria"),
   dosage: z.string().min(1, "Dose obrigatoria"),
   frequency: z.string().min(1, "Frequencia obrigatoria"),
   status: z.enum(["active", "suspended"]).default("active"),
@@ -105,12 +105,12 @@ const MED_STATUS: Record<string, string> = { active: "Ativo", suspended: "Suspen
 const DOSE_STATUS: Record<string, string> = {
   pending: "Pendente",
   given: "Administrado",
-  skipped: "Nao administrado",
+  skipped: "Não administrado",
   refused: "Recusado",
   late: "Atrasado",
 };
 const ALL_MEDICATIONS_FILTER = "__all_medications__";
-type MedicationSectionTab = "medicacoes" | "agenda" | "historico";
+type MedicationSectionTab = "medicações" | "agenda" | "historico";
 
 function getFrequencyLabel(value?: string | null): string {
   if (!value) return "-";
@@ -233,7 +233,7 @@ export function ResidentMedicationSection({
   const [isToCalendarOpen, setIsToCalendarOpen] = useState(false);
   const [isMedicationDialogOpen, setIsMedicationDialogOpen] = useState(false);
   const [editingMedication, setEditingMedication] = useState<MedicationWithResident | null>(null);
-  const [activeTab, setActiveTab] = useState<MedicationSectionTab>(initialTab ?? "medicacoes");
+  const [activeTab, setActiveTab] = useState<MedicationSectionTab>(initialTab ?? "medicações");
   const [isDoseDialogOpen, setIsDoseDialogOpen] = useState(false);
   const [selectedDose, setSelectedDose] = useState<MedicationDoseScheduleItem | null>(null);
   const [showRegisteredDoses, setShowRegisteredDoses] = useState(false);
@@ -264,7 +264,7 @@ export function ResidentMedicationSection({
   const medicationsQuery = useQuery<MedicationWithResident[]>({
     queryKey: ["/api/medications", "prontuario", residentId],
     enabled: residentId > 0,
-    queryFn: () => fetchJsonOrThrow(`/api/medications?residentId=${residentId}`, "Erro ao carregar medicacoes."),
+    queryFn: () => fetchJsonOrThrow(`/api/medications?residentId=${residentId}`, "Erro ao carregar medicações."),
   });
 
   const scheduleQuery = useQuery<MedicationDoseScheduleResponse>({
@@ -283,7 +283,7 @@ export function ResidentMedicationSection({
     queryFn: () =>
       fetchJsonOrThrow(
         `/api/medication-administrations?residentId=${residentId}`,
-        "Erro ao carregar historico de medicacoes.",
+        "Erro ao carregar historico de medicações.",
       ),
   });
 
@@ -446,9 +446,9 @@ export function ResidentMedicationSection({
     mutationFn: async (data: z.infer<typeof medicationFormSchema>) => {
       const scheduleTime = normalizeScheduleTimeValue(data.scheduleTime);
       if (frequencyNeedsBaseTime(data.frequency) && !scheduleTime) {
-        throw new Error("Informe o horario base para esta frequencia.");
+        throw new Error("Informe o horário base para esta frequência.");
       }
-      return fetchJsonOrThrow("/api/medications", "Erro ao cadastrar medicacao.", {
+      return fetchJsonOrThrow("/api/medications", "Erro ao cadastrar medicação.", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -471,7 +471,7 @@ export function ResidentMedicationSection({
       setIsMedicationDialogOpen(false);
       setEditingMedication(null);
       medicationForm.reset();
-      toast({ title: "Medicacao cadastrada com sucesso" });
+      toast({ title: "Medicação cadastrada com sucesso" });
     },
     onError: (error: Error) => toast({ variant: "destructive", title: error.message }),
   });
@@ -480,9 +480,9 @@ export function ResidentMedicationSection({
     mutationFn: async ({ id, data }: { id: number; data: z.infer<typeof medicationFormSchema> }) => {
       const scheduleTime = normalizeScheduleTimeValue(data.scheduleTime);
       if (frequencyNeedsBaseTime(data.frequency) && !scheduleTime) {
-        throw new Error("Informe o horario base para esta frequencia.");
+        throw new Error("Informe o horário base para esta frequência.");
       }
-      return fetchJsonOrThrow(`/api/medications/${id}`, "Erro ao atualizar medicacao.", {
+      return fetchJsonOrThrow(`/api/medications/${id}`, "Erro ao atualizar medicação.", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -504,17 +504,17 @@ export function ResidentMedicationSection({
       invalidateMedicationQueries();
       setIsMedicationDialogOpen(false);
       setEditingMedication(null);
-      toast({ title: "Medicacao atualizada com sucesso" });
+      toast({ title: "Medicação atualizada com sucesso" });
     },
     onError: (error: Error) => toast({ variant: "destructive", title: error.message }),
   });
 
   const deleteMedication = useMutation({
     mutationFn: (id: number) =>
-      fetchJsonOrThrow(`/api/medications/${id}`, "Erro ao excluir medicacao.", { method: "DELETE" }),
+      fetchJsonOrThrow(`/api/medications/${id}`, "Erro ao excluir medicação.", { method: "DELETE" }),
     onSuccess: () => {
       invalidateMedicationQueries();
-      toast({ title: "Medicacao removida" });
+      toast({ title: "Medicação removida" });
     },
     onError: (error: Error) => toast({ variant: "destructive", title: error.message }),
   });
@@ -572,8 +572,8 @@ export function ResidentMedicationSection({
     ]);
 
     downloadCsv(
-      `historico-medicacoes-residente-${residentId}.csv`,
-      ["Data/Hora da dose", "Medicacao", "Status", "Administrado por", "Registro em", "Observacoes"],
+      `historico-medicações-residente-${residentId}.csv`,
+      ["Data/Hora da dose", "Medicação", "Status", "Administrado por", "Registro em", "Observações"],
       rows,
     );
   };
@@ -605,34 +605,34 @@ export function ResidentMedicationSection({
 
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as MedicationSectionTab)} className="space-y-4">
         <TabsList className="grid h-auto w-full grid-cols-1 rounded-lg border border-border/70 bg-muted/60 p-1 shadow-sm sm:grid-cols-3">
-          <TabsTrigger value="medicacoes" className="h-10 font-semibold">Medicacoes</TabsTrigger>
+          <TabsTrigger value="medicações" className="h-10 font-semibold">Medicações</TabsTrigger>
           <TabsTrigger value="agenda" className="h-10 font-semibold">Agenda de doses</TabsTrigger>
           <TabsTrigger value="historico" className="h-10 font-semibold">Historico</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="medicacoes" className="space-y-3">
+        <TabsContent value="medicações" className="space-y-3">
           {canEdit ? (
             <div className="flex justify-end">
               <Button size="sm" onClick={openCreateMedication}>
                 <Plus className="h-4 w-4 mr-1" />
-                Nova Medicacao
+                Nova Medicação
               </Button>
             </div>
           ) : null}
 
           {medicationsQuery.isLoading ? (
             <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
-              Carregando medicacoes...
+              Carregando medicações...
             </div>
           ) : medicationsQuery.error ? (
             <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-6 text-sm text-destructive">
               {medicationsQuery.error instanceof Error
                 ? medicationsQuery.error.message
-                : "Erro ao carregar medicacoes."}
+                : "Erro ao carregar medicações."}
             </div>
           ) : (medicationsQuery.data?.length ?? 0) === 0 ? (
             <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
-              Nenhuma medicacao cadastrada para este residente.
+              Nenhuma medicação cadastrada para este residente.
             </div>
           ) : (
             <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
@@ -643,7 +643,7 @@ export function ResidentMedicationSection({
                     <TableHead>Dose</TableHead>
                     <TableHead>Frequencia</TableHead>
                     <TableHead>Status</TableHead>
-                    <TableHead className="text-right">Acoes</TableHead>
+                    <TableHead className="text-right">Ações</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -676,8 +676,8 @@ export function ResidentMedicationSection({
                               className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                               onClick={() => {
                                 confirm({
-                                  title: "Excluir medicacao",
-                                  description: `Excluir a medicacao "${medication.name}"?`,
+                                  title: "Excluir medicação",
+                                  description: `Excluir a medicação "${medication.name}"?`,
                                   confirmText: "Excluir",
                                   pendingText: "Excluindo...",
                                   variant: "destructive",
@@ -706,7 +706,7 @@ export function ResidentMedicationSection({
               <div className="space-y-2">
                 <h4 className="text-sm font-semibold text-foreground">Agenda de doses</h4>
                 <p className="text-xs text-muted-foreground">
-                  Doses previstas para o periodo selecionado.
+                  Doses previstas para o período selecionado.
                 </p>
                 <div className="flex items-center gap-2">
                   <Switch
@@ -816,11 +816,11 @@ export function ResidentMedicationSection({
               </div>
             ) : (scheduleQuery.data?.doses.length ?? 0) === 0 ? (
               <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
-                Nenhuma dose no periodo selecionado.
+                Nenhuma dose no período selecionado.
               </div>
             ) : visibleScheduleDoses.length === 0 ? (
               <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
-                Todas as doses deste periodo ja foram registradas. Ative "Mostrar registradas" para visualizar.
+                Todas as doses deste período já foram registradas. Ative "Mostrar registradas" para visualizar.
               </div>
             ) : filteredVisibleScheduleDoses.length === 0 ? (
               <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
@@ -832,11 +832,11 @@ export function ResidentMedicationSection({
                   <TableHeader className="bg-muted/50">
                     <TableRow>
                       <TableHead>Data/Hora</TableHead>
-                      <TableHead>Medicacao</TableHead>
+                      <TableHead>Medicação</TableHead>
                       <TableHead>Dose</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Administrado por</TableHead>
-                      <TableHead className="text-right">Acoes</TableHead>
+                      <TableHead className="text-right">Ações</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -919,7 +919,7 @@ export function ResidentMedicationSection({
               </div>
             ) : (historyQuery.data?.length ?? 0) === 0 ? (
               <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
-                Nenhuma administracao registrada para este residente.
+                Nenhuma administração registrada para este residente.
               </div>
             ) : (
               <div className="rounded-xl border border-border overflow-hidden">
@@ -927,11 +927,11 @@ export function ResidentMedicationSection({
                   <TableHeader className="bg-muted/50">
                     <TableRow>
                       <TableHead>Data/Hora da dose</TableHead>
-                      <TableHead>Medicacao</TableHead>
+                      <TableHead>Medicação</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Administrado por</TableHead>
                       <TableHead>Registro em</TableHead>
-                      <TableHead>Observacoes</TableHead>
+                      <TableHead>Observações</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -962,7 +962,7 @@ export function ResidentMedicationSection({
       <Dialog open={isMedicationDialogOpen} onOpenChange={setIsMedicationDialogOpen}>
         <DialogContent className="max-w-xl">
           <DialogHeader>
-            <DialogTitle>{editingMedication ? "Editar Medicacao" : "Nova Medicacao"}</DialogTitle>
+            <DialogTitle>{editingMedication ? "Editar Medicação" : "Nova Medicação"}</DialogTitle>
           </DialogHeader>
           <Form {...medicationForm}>
             <form
@@ -974,7 +974,7 @@ export function ResidentMedicationSection({
             >
               <FormField control={medicationForm.control} name="name" render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Medicacao *</FormLabel>
+                  <FormLabel>Medicação *</FormLabel>
                   <FormControl><Input {...field} /></FormControl>
                   <FormMessage />
                 </FormItem>
@@ -1065,7 +1065,7 @@ export function ResidentMedicationSection({
 
               <FormField control={medicationForm.control} name="notes" render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Observacoes</FormLabel>
+                  <FormLabel>Observações</FormLabel>
                   <FormControl><Textarea {...field} value={field.value ?? ""} rows={3} /></FormControl>
                 </FormItem>
               )} />
@@ -1084,7 +1084,7 @@ export function ResidentMedicationSection({
       <Dialog open={isDoseDialogOpen} onOpenChange={setIsDoseDialogOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Registrar administracao da dose</DialogTitle>
+            <DialogTitle>Registrar administração da dose</DialogTitle>
           </DialogHeader>
           {selectedDose ? (
             <Form {...doseActionForm}>
@@ -1105,7 +1105,7 @@ export function ResidentMedicationSection({
                       <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
                       <SelectContent>
                         <SelectItem value="given">Administrado</SelectItem>
-                        <SelectItem value="skipped">Nao administrado</SelectItem>
+                        <SelectItem value="skipped">Não administrado</SelectItem>
                         <SelectItem value="refused">Recusado</SelectItem>
                         <SelectItem value="late">Atrasado</SelectItem>
                       </SelectContent>
@@ -1139,7 +1139,7 @@ export function ResidentMedicationSection({
 
                 <FormField control={doseActionForm.control} name="notes" render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Observacoes</FormLabel>
+                    <FormLabel>Observações</FormLabel>
                     <FormControl><Textarea {...field} value={field.value ?? ""} rows={3} /></FormControl>
                   </FormItem>
                 )} />

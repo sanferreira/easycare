@@ -212,7 +212,7 @@ const DEFAULT_CRM_STAGES: CrmKanbanStage[] = [
   { value: "proposal", label: "Proposta", color: "#F59E0B" },
   { value: "negotiation", label: "Negociacao", color: "#8B5CF6" },
   { value: "won", label: "Ganho", color: "#10B981" },
-  { value: "no_interest", label: "Nao tem interesse", color: "#F97316" },
+  { value: "no_interest", label: "Não tem interesse", color: "#F97316" },
 ];
 export const DEFAULT_TIME_CLOCK_SETTINGS: TimeClockSettings = {
   lateToleranceMinutes: 10,

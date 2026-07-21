@@ -64,6 +64,7 @@ import { addDays, format } from "date-fns";
 import { digitsOnly, maskCep, maskCpf, maskPhoneBR } from "@/lib/masks";
 import { imageFileToDataUrl } from "@/lib/imageUpload";
 import { toDateInputValue } from "@/lib/date";
+import { downloadDataUrlFile, openDataUrlFile } from "@/lib/files";
 import { DEFAULT_ENVIRONMENT_SETTINGS, getShiftProfileRule } from "@shared/environment";
 
 type MedicationWithResident = Medication & { residentName?: string };
@@ -119,11 +120,11 @@ type ViaCepPayload = {
   erro?: boolean;
 };
 
-const MAX_PATIENT_DOCUMENT_BYTES = 8 * 1024 * 1024;
+const MAX_PATIENT_DOCUMENT_BYTES = 15 * 1024 * 1024;
 
 function readDocumentFileAsDataUrl(file: File): Promise<string> {
   if (file.size > MAX_PATIENT_DOCUMENT_BYTES) {
-    throw new Error("Arquivo maior que 8MB.");
+    throw new Error("Arquivo maior que 15MB.");
   }
 
   return new Promise((resolve, reject) => {
@@ -131,12 +132,12 @@ function readDocumentFileAsDataUrl(file: File): Promise<string> {
     reader.onload = () => {
       const result = typeof reader.result === "string" ? reader.result : "";
       if (!result.startsWith("data:")) {
-        reject(new Error("Arquivo invalido."));
+        reject(new Error("Arquivo inválido."));
         return;
       }
       resolve(result);
     };
-    reader.onerror = () => reject(new Error("Nao foi possivel ler o arquivo."));
+    reader.onerror = () => reject(new Error("Não foi possível ler o arquivo."));
     reader.readAsDataURL(file);
   });
 }
@@ -150,14 +151,14 @@ async function fetchResidentAddressByCep(cep: string): Promise<{
 }> {
   const normalizedCep = digitsOnly(cep);
   if (normalizedCep.length !== 8) {
-    throw new Error("Informe um CEP valido com 8 digitos.");
+    throw new Error("Informe um CEP válido com 8 dígitos.");
   }
 
   const response = await fetch(`https://viacep.com.br/ws/${normalizedCep}/json/`);
-  if (!response.ok) throw new Error("Nao foi possivel consultar o ViaCEP.");
+  if (!response.ok) throw new Error("Não foi possível consultar o ViaCEP.");
 
   const data: ViaCepPayload = await response.json();
-  if (data.erro) throw new Error("CEP nao encontrado.");
+  if (data.erro) throw new Error("CEP não encontrado.");
 
   return {
     cep: maskCep(data.cep || normalizedCep),
@@ -183,7 +184,7 @@ function formatDateTimeLabel(value?: string | Date | null): string {
 }
 
 const familySchema = z.object({
-  name: z.string().min(2, "Nome obrigatorio"),
+  name: z.string().min(2, "Nome obrigatório"),
   relationship: z.string().min(2, "Parentesco obrigatorio"),
   phone: z.string().min(8, "Telefone obrigatorio"),
   phone2: z.string().optional(),
@@ -198,7 +199,7 @@ const familySchema = z.object({
   if (!data.portalAccess) return true;
   return !!data.portalUsername && data.portalUsername.trim().length >= 3;
 }, {
-  message: "Usuario de portal obrigatorio",
+  message: "Usuário de portal obrigatorio",
   path: ["portalUsername"],
 });
 
@@ -248,7 +249,7 @@ const contractSchema = z.object({
   status: z.enum(["active", "suspended", "terminated"]).default("active"),
 });
 const residentMedicationSchema = z.object({
-  name: z.string().min(2, "Medicacao obrigatoria"),
+  name: z.string().min(2, "Medicação obrigatoria"),
   dosage: z.string().min(1, "Dose obrigatoria"),
   frequency: z.string().min(1, "Frequencia obrigatoria"),
   status: z.enum(["active", "suspended"]).default("active"),
@@ -409,7 +410,7 @@ const medicationAdministrationStatusLabel: Record<
 > = {
   pending: "Pendente",
   given: "Administrado",
-  skipped: "Nao administrado",
+  skipped: "Não administrado",
   refused: "Recusado",
   late: "Atrasado",
 };
@@ -454,7 +455,7 @@ const shiftTypeMeta = {
   },
   avulso: {
     label: "Avulso",
-    hint: "horario livre",
+    hint: "horário livre",
     icon: ClipboardList,
     selectedStyle: "bg-emerald-100 text-emerald-800 border-emerald-200 ring-emerald-500/25",
   },
@@ -617,8 +618,8 @@ function subtractHoursFromDateTimeInput(value: string, hours: number): string | 
 function buildShiftRuleHint(rule: ReturnType<typeof getShiftProfileRule>): string | null {
   if (!rule.enabled) return null;
   const parts: string[] = [];
-  if (rule.exactShiftHours) parts.push(`somente plantoes de ${rule.exactShiftHours}h`);
-  if (rule.minRestHours) parts.push(`descanso minimo de ${rule.minRestHours}h entre escalas`);
+  if (rule.exactShiftHours) parts.push(`somente plantões de ${rule.exactShiftHours}h`);
+  if (rule.minRestHours) parts.push(`descanso mínimo de ${rule.minRestHours}h entre escalas`);
   if (rule.allowedShiftTypes.length > 0) {
     parts.push(`tipos permitidos: ${rule.allowedShiftTypes.join(", ")}`);
   }
@@ -674,7 +675,7 @@ async function fetchResidentData<T>(path: string, fallbackMessage: string): Prom
 
   if (!res.ok) {
     if (res.status === 403) {
-      throw new Error("Sem permissao para visualizar este conteudo.");
+      throw new Error("Sem permissão para visualizar este conteúdo.");
     }
     const serverMessage =
       payload && typeof payload === "object" && "message" in payload
@@ -880,7 +881,7 @@ export default function Residents() {
                         event.stopPropagation();
                         confirm({
                           title: "Excluir residente",
-                          description: `Excluir "${resident.name}"? Esta acao nao pode ser desfeita.`,
+                          description: `Excluir "${resident.name}"? Esta ação não pode ser desfeita.`,
                           confirmText: "Excluir",
                           pendingText: "Excluindo...",
                           variant: "destructive",
@@ -1101,7 +1102,7 @@ function ResidentDetailsDialog({
     queryFn: () =>
       fetchResidentData<MedicationWithResident[]>(
         `/api/medications?residentId=${residentId}`,
-        "Erro ao carregar medicacoes.",
+        "Erro ao carregar medicações.",
       ),
   });
   const [medicationScheduleRange, setMedicationScheduleRange] = useState(() => {
@@ -1192,7 +1193,7 @@ function ResidentDetailsDialog({
     queryFn: () =>
       fetchResidentData<MedicationAdministrationWithDetails[]>(
         `/api/medication-administrations?residentId=${residentId}`,
-        "Erro ao carregar historico de medicacoes.",
+        "Erro ao carregar historico de medicações.",
       ),
   });
 
@@ -1202,7 +1203,7 @@ function ResidentDetailsDialog({
     queryFn: () =>
       fetchResidentData<OccurrenceWithResident[]>(
         `/api/occurrences?residentId=${residentId}`,
-        "Erro ao carregar ocorrencias.",
+        "Erro ao carregar ocorrências.",
       ),
   });
 
@@ -1437,7 +1438,7 @@ function ResidentDetailsDialog({
     mutationFn: async (data: z.infer<typeof residentMedicationSchema>) => {
       const scheduleTime = normalizeScheduleTimeValue(data.scheduleTime);
       if (frequencyNeedsBaseTime(data.frequency) && !scheduleTime) {
-        throw new Error("Informe o horario base para esta frequencia.");
+        throw new Error("Informe o horário base para esta frequência.");
       }
       const payload = {
         residentId,
@@ -1459,7 +1460,7 @@ function ResidentDetailsDialog({
         body: JSON.stringify(payload),
       });
       if (!res.ok) {
-        let message = "Erro ao cadastrar medicacao.";
+        let message = "Erro ao cadastrar medicação.";
         try {
           const responseBody = await res.json();
           if (responseBody?.message) message = responseBody.message;
@@ -1485,10 +1486,10 @@ function ResidentDetailsDialog({
         startDate: "",
         endDate: "",
       });
-      toast({ title: "Medicacao cadastrada com sucesso" });
+      toast({ title: "Medicação cadastrada com sucesso" });
     },
     onError: (error: Error) => {
-      toast({ variant: "destructive", title: error.message || "Erro ao cadastrar medicacao" });
+      toast({ variant: "destructive", title: error.message || "Erro ao cadastrar medicação" });
     },
   });
 
@@ -1496,7 +1497,7 @@ function ResidentDetailsDialog({
     mutationFn: async ({ id, data }: { id: number; data: z.infer<typeof residentMedicationSchema> }) => {
       const scheduleTime = normalizeScheduleTimeValue(data.scheduleTime);
       if (frequencyNeedsBaseTime(data.frequency) && !scheduleTime) {
-        throw new Error("Informe o horario base para esta frequencia.");
+        throw new Error("Informe o horário base para esta frequência.");
       }
       const payload = {
         residentId,
@@ -1518,7 +1519,7 @@ function ResidentDetailsDialog({
         body: JSON.stringify(payload),
       });
       if (!res.ok) {
-        let message = "Erro ao atualizar medicacao.";
+        let message = "Erro ao atualizar medicação.";
         try {
           const responseBody = await res.json();
           if (responseBody?.message) message = responseBody.message;
@@ -1532,25 +1533,25 @@ function ResidentDetailsDialog({
       queryClient.invalidateQueries({ queryKey: ["/api/medications", "resident-details", residentId] });
       setIsMedicationDialogOpen(false);
       setEditingMedication(null);
-      toast({ title: "Medicacao atualizada com sucesso" });
+      toast({ title: "Medicação atualizada com sucesso" });
     },
     onError: (error: Error) => {
-      toast({ variant: "destructive", title: error.message || "Erro ao atualizar medicacao" });
+      toast({ variant: "destructive", title: error.message || "Erro ao atualizar medicação" });
     },
   });
 
   const deleteMedication = useMutation({
     mutationFn: async (id: number) => {
       const res = await fetch(`/api/medications/${id}`, { method: "DELETE", credentials: "include" });
-      if (!res.ok) throw new Error("Erro ao excluir medicacao.");
+      if (!res.ok) throw new Error("Erro ao excluir medicação.");
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/medications"] });
       queryClient.invalidateQueries({ queryKey: ["/api/medications", "resident-details", residentId] });
-      toast({ title: "Medicacao removida" });
+      toast({ title: "Medicação removida" });
     },
     onError: (error: Error) => {
-      toast({ variant: "destructive", title: error.message || "Erro ao excluir medicacao" });
+      toast({ variant: "destructive", title: error.message || "Erro ao excluir medicação" });
     },
   });
   const registerDoseAdministration = useMutation({
@@ -1573,7 +1574,7 @@ function ResidentDetailsDialog({
         body: JSON.stringify(payload),
       });
       if (!res.ok) {
-        let message = "Erro ao registrar administracao da dose.";
+        let message = "Erro ao registrar administração da dose.";
         try {
           const responseBody = await res.json();
           if (responseBody?.message) message = responseBody.message;
@@ -1603,7 +1604,7 @@ function ResidentDetailsDialog({
     onError: (error: Error) => {
       toast({
         variant: "destructive",
-        title: error.message || "Erro ao registrar administracao da dose",
+        title: error.message || "Erro ao registrar administração da dose",
       });
     },
   });
@@ -1724,7 +1725,7 @@ function ResidentDetailsDialog({
         body: JSON.stringify(payload),
       });
       if (!res.ok) {
-        let message = "Erro ao registrar ocorrencia.";
+        let message = "Erro ao registrar ocorrência.";
         try {
           const responseBody = await res.json();
           if (responseBody?.message) message = responseBody.message;
@@ -1746,10 +1747,10 @@ function ResidentDetailsDialog({
         status: "open",
         resolution: "",
       });
-      toast({ title: "Ocorrencia registrada com sucesso" });
+      toast({ title: "Ocorrência registrada com sucesso" });
     },
     onError: (error: Error) => {
-      toast({ variant: "destructive", title: error.message || "Erro ao registrar ocorrencia" });
+      toast({ variant: "destructive", title: error.message || "Erro ao registrar ocorrência" });
     },
   });
 
@@ -1773,7 +1774,7 @@ function ResidentDetailsDialog({
         body: JSON.stringify(payload),
       });
       if (!res.ok) {
-        let message = "Erro ao atualizar ocorrencia.";
+        let message = "Erro ao atualizar ocorrência.";
         try {
           const responseBody = await res.json();
           if (responseBody?.message) message = responseBody.message;
@@ -1788,26 +1789,26 @@ function ResidentDetailsDialog({
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
       setIsOccurrenceDialogOpen(false);
       setEditingOccurrence(null);
-      toast({ title: "Ocorrencia atualizada com sucesso" });
+      toast({ title: "Ocorrência atualizada com sucesso" });
     },
     onError: (error: Error) => {
-      toast({ variant: "destructive", title: error.message || "Erro ao atualizar ocorrencia" });
+      toast({ variant: "destructive", title: error.message || "Erro ao atualizar ocorrência" });
     },
   });
 
   const deleteOccurrence = useMutation({
     mutationFn: async (id: number) => {
       const res = await fetch(`/api/occurrences/${id}`, { method: "DELETE", credentials: "include" });
-      if (!res.ok) throw new Error("Erro ao excluir ocorrencia.");
+      if (!res.ok) throw new Error("Erro ao excluir ocorrência.");
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/occurrences"] });
       queryClient.invalidateQueries({ queryKey: ["/api/occurrences", "resident-details", residentId] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
-      toast({ title: "Ocorrencia removida" });
+      toast({ title: "Ocorrência removida" });
     },
     onError: (error: Error) => {
-      toast({ variant: "destructive", title: error.message || "Erro ao excluir ocorrencia" });
+      toast({ variant: "destructive", title: error.message || "Erro ao excluir ocorrência" });
     },
   });
 
@@ -2191,7 +2192,7 @@ function ResidentDetailsDialog({
     } catch (error) {
       toast({
         variant: "destructive",
-        title: error instanceof Error ? error.message : "Nao foi possivel carregar o arquivo.",
+        title: error instanceof Error ? error.message : "Não foi possível carregar o arquivo.",
       });
     } finally {
       event.target.value = "";
@@ -2271,7 +2272,7 @@ function ResidentDetailsDialog({
             <Tabs defaultValue={defaultTab} className="space-y-4">
               <TabsList className="flex h-auto w-full justify-start overflow-x-auto rounded-lg bg-muted/60 p-1">
                 <TabsTrigger className="min-w-[132px] flex-1 sm:flex-none" value="medications" disabled={!canViewMedications}>
-              Medicacoes
+              Medicações
                 </TabsTrigger>
                 <TabsTrigger className="min-w-[124px] flex-1 sm:flex-none" value="documents" disabled={!canManageDocuments}>
               Documentos
@@ -2280,7 +2281,7 @@ function ResidentDetailsDialog({
               Escalas
                 </TabsTrigger>
                 <TabsTrigger className="min-w-[124px] flex-1 sm:flex-none" value="occurrences" disabled={!canViewOccurrences}>
-              Ocorrencias
+              Ocorrências
                 </TabsTrigger>
                 <TabsTrigger className="min-w-[120px] flex-1 sm:flex-none" value="family" disabled={!canManageFamily}>
               Familiares
@@ -2293,34 +2294,34 @@ function ResidentDetailsDialog({
           <TabsContent value="medications" className="mt-0 space-y-4">
             {!canViewMedications ? (
               <ResidentTabNotice>
-                Sem permissao para visualizar medicacoes.
+                Sem permissão para visualizar medicações.
               </ResidentTabNotice>
             ) : (
               <>
                 <ResidentSectionHeader
-                  title="Medicacoes prescritas"
+                  title="Medicações prescritas"
                   description="Prescricoes ativas ou suspensas vinculadas ao residente."
                   action={
                     <Button size="sm" onClick={openCreateMedicationDialog}>
                       <Plus className="h-4 w-4 mr-1" />
-                      Nova Medicacao
+                      Nova Medicação
                     </Button>
                   }
                 />
 
                 {medicationsQuery.isLoading ? (
                   <ResidentTabNotice>
-                    Carregando medicacoes...
+                    Carregando medicações...
                   </ResidentTabNotice>
                 ) : medicationsQuery.error ? (
                   <ResidentTabNotice variant="destructive">
                     {medicationsQuery.error instanceof Error
                       ? medicationsQuery.error.message
-                      : "Erro ao carregar medicacoes."}
+                      : "Erro ao carregar medicações."}
                   </ResidentTabNotice>
                 ) : (medicationsQuery.data?.length ?? 0) === 0 ? (
                   <ResidentTabNotice>
-                    Nenhuma medicacao cadastrada para este residente.
+                    Nenhuma medicação cadastrada para este residente.
                   </ResidentTabNotice>
                 ) : (
                   <>
@@ -2363,8 +2364,8 @@ function ResidentDetailsDialog({
                               disabled={deleteMedication.isPending}
                               onClick={() => {
                                 confirm({
-                                  title: "Excluir medicaÃ§Ã£o",
-                                  description: `Excluir a medicaÃ§Ã£o "${medication.name}"?`,
+                                  title: "Excluir medicação",
+                                  description: `Excluir a medicação "${medication.name}"?`,
                                   confirmText: "Excluir",
                                   pendingText: "Excluindo...",
                                   variant: "destructive",
@@ -2386,7 +2387,7 @@ function ResidentDetailsDialog({
                           <TableHead>Dose</TableHead>
                           <TableHead>Frequencia</TableHead>
                           <TableHead>Status</TableHead>
-                          <TableHead className="text-right">Acoes</TableHead>
+                          <TableHead className="text-right">Ações</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -2448,7 +2449,7 @@ function ResidentDetailsDialog({
                         <div className="space-y-2">
                           <h4 className="text-sm font-semibold text-foreground">Agenda de doses</h4>
                           <p className="text-xs text-muted-foreground">
-                            Doses geradas por residente com base nos horarios e periodo das prescricoes.
+                            Doses geradas por residente com base nos horários e período das prescrições.
                           </p>
                           <div className="flex items-center gap-2">
                             <Switch
@@ -2571,11 +2572,11 @@ function ResidentDetailsDialog({
                         </ResidentTabNotice>
                       ) : (medicationDoseScheduleQuery.data?.doses.length ?? 0) === 0 ? (
                         <ResidentTabNotice>
-                          Nenhuma dose gerada no periodo selecionado.
+                          Nenhuma dose gerada no período selecionado.
                         </ResidentTabNotice>
                       ) : visibleMedicationScheduleDoses.length === 0 ? (
                         <ResidentTabNotice>
-                          Todas as doses deste periodo ja foram registradas. Ative "Mostrar registradas" para visualizar.
+                          Todas as doses deste período já foram registradas. Ative "Mostrar registradas" para visualizar.
                         </ResidentTabNotice>
                       ) : filteredVisibleMedicationScheduleDoses.length === 0 ? (
                         <ResidentTabNotice>
@@ -2623,11 +2624,11 @@ function ResidentDetailsDialog({
                             <TableHeader className="bg-muted/50">
                               <TableRow>
                                 <TableHead>Data/Hora</TableHead>
-                                <TableHead>Medicacao</TableHead>
+                                <TableHead>Medicação</TableHead>
                                 <TableHead>Dose</TableHead>
                                 <TableHead>Status</TableHead>
                                 <TableHead>Administrado por</TableHead>
-                                <TableHead className="text-right">Acoes</TableHead>
+                                <TableHead className="text-right">Ações</TableHead>
                               </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -2685,7 +2686,7 @@ function ResidentDetailsDialog({
                       <div>
                         <h4 className="text-sm font-semibold text-foreground">Historico de administracoes</h4>
                         <p className="text-xs text-muted-foreground">
-                          Rastreabilidade completa por dose, com status, observacoes e responsavel.
+                          Rastreabilidade completa por dose, com status, observações e responsável.
                         </p>
                       </div>
                       {medicationAdministrationHistoryQuery.isLoading ? (
@@ -2700,7 +2701,7 @@ function ResidentDetailsDialog({
                         </ResidentTabNotice>
                       ) : (medicationAdministrationHistoryQuery.data?.length ?? 0) === 0 ? (
                         <ResidentTabNotice>
-                          Nenhuma administracao registrada para este residente.
+                          Nenhuma administração registrada para este residente.
                         </ResidentTabNotice>
                       ) : (
                         <>
@@ -2738,11 +2739,11 @@ function ResidentDetailsDialog({
                             <TableHeader className="bg-muted/50">
                               <TableRow>
                                 <TableHead>Data/Hora da dose</TableHead>
-                                <TableHead>Medicacao</TableHead>
+                                <TableHead>Medicação</TableHead>
                                 <TableHead>Status</TableHead>
                                 <TableHead>Administrado por</TableHead>
                                 <TableHead>Registro em</TableHead>
-                                <TableHead>Observacoes</TableHead>
+                                <TableHead>Observações</TableHead>
                               </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -2790,7 +2791,7 @@ function ResidentDetailsDialog({
           <TabsContent value="documents" className="mt-0 space-y-4">
             {!canManageDocuments ? (
               <ResidentTabNotice>
-                Sem permissao para gerenciar documentos.
+                Sem permissão para gerenciar documentos.
               </ResidentTabNotice>
             ) : (
               <>
@@ -2863,7 +2864,7 @@ function ResidentDetailsDialog({
                             {patientDocumentForm.watch("fileName") || "Nenhum arquivo selecionado"}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            PDF, imagem ou documento ate 8MB.
+                            PDF, imagem ou documento até 15MB.
                             {patientDocumentForm.watch("fileSize")
                               ? ` Selecionado: ${formatFileSize(patientDocumentForm.watch("fileSize"))}.`
                               : ""}
@@ -2925,16 +2926,33 @@ function ResidentDetailsDialog({
                           </div>
                         </div>
                         <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-border pt-3">
-                          <Button asChild size="sm" variant="outline">
-                            <a href={document.fileData} target="_blank" rel="noreferrer">
-                              Abrir
-                            </a>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              if (!openDataUrlFile(document.fileData)) {
+                                toast({
+                                  variant: "destructive",
+                                  title: "Não foi possível abrir",
+                                  description: "Use o botao Baixar para salvar o arquivo.",
+                                });
+                              }
+                            }}
+                          >
+                            Abrir
                           </Button>
-                          <Button asChild size="sm" variant="outline" className="gap-1">
-                            <a href={document.fileData} download={document.fileName || "documento"}>
-                              <Download className="h-3.5 w-3.5" />
-                              Baixar
-                            </a>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="gap-1"
+                            onClick={() => {
+                              if (!downloadDataUrlFile(document.fileData, document.fileName || "documento")) {
+                                toast({ variant: "destructive", title: "Não foi possível baixar o documento." });
+                              }
+                            }}
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                            Baixar
                           </Button>
                           <Button
                             size="sm"
@@ -2966,13 +2984,13 @@ function ResidentDetailsDialog({
           <TabsContent value="shifts" className="mt-0 space-y-4">
             {!canViewEscalas ? (
               <ResidentTabNotice>
-                Sem permissao para visualizar escalas.
+                Sem permissão para visualizar escalas.
               </ResidentTabNotice>
             ) : (
               <>
                 <ResidentSectionHeader
                   title="Escalas vinculadas"
-                  description="Plantoes e cuidadores relacionados a este residente."
+                  description="Plantões e cuidadores relacionados a este residente."
                   action={
                     <Button size="sm" onClick={openCreateShiftDialog}>
                       <Plus className="h-4 w-4 mr-1" />
@@ -3052,8 +3070,8 @@ function ResidentDetailsDialog({
                           <TableHead>Tipo</TableHead>
                           <TableHead>Inicio</TableHead>
                           <TableHead>Fim</TableHead>
-                          <TableHead>Observacoes</TableHead>
-                          <TableHead className="text-right">Acoes</TableHead>
+                          <TableHead>Observações</TableHead>
+                          <TableHead className="text-right">Ações</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -3108,34 +3126,34 @@ function ResidentDetailsDialog({
           <TabsContent value="occurrences" className="mt-0 space-y-4">
             {!canViewOccurrences ? (
               <ResidentTabNotice>
-                Sem permissao para visualizar ocorrencias.
+                Sem permissão para visualizar ocorrências.
               </ResidentTabNotice>
             ) : (
               <>
                 <ResidentSectionHeader
-                  title="Ocorrencias"
-                  description="Registros clinicos, intercorrencias e pendencias acompanhadas pela equipe."
+                  title="Ocorrências"
+                  description="Registros clínicos, intercorrências e pendências acompanhadas pela equipe."
                   action={
                     <Button size="sm" variant="destructive" onClick={openCreateOccurrenceDialog}>
                       <Plus className="h-4 w-4 mr-1" />
-                      Nova Ocorrencia
+                      Nova Ocorrência
                     </Button>
                   }
                 />
 
                 {occurrencesQuery.isLoading ? (
                   <ResidentTabNotice>
-                    Carregando ocorrencias...
+                    Carregando ocorrências...
                   </ResidentTabNotice>
                 ) : occurrencesQuery.error ? (
                   <ResidentTabNotice variant="destructive">
                     {occurrencesQuery.error instanceof Error
                       ? occurrencesQuery.error.message
-                      : "Erro ao carregar ocorrencias."}
+                      : "Erro ao carregar ocorrências."}
                   </ResidentTabNotice>
                 ) : (occurrencesQuery.data?.length ?? 0) === 0 ? (
                   <ResidentTabNotice>
-                    Nenhuma ocorrencia registrada para este residente.
+                    Nenhuma ocorrência registrada para este residente.
                   </ResidentTabNotice>
                 ) : (
                   <>
@@ -3165,8 +3183,8 @@ function ResidentDetailsDialog({
                                 disabled={deleteOccurrence.isPending}
                                 onClick={() => {
                                   confirm({
-                                    title: "Excluir ocorrÃªncia",
-                                    description: "Excluir esta ocorrÃªncia?",
+                                    title: "Excluir ocorrência",
+                                    description: "Excluir esta ocorrência?",
                                     confirmText: "Excluir",
                                     pendingText: "Excluindo...",
                                     variant: "destructive",
@@ -3199,7 +3217,7 @@ function ResidentDetailsDialog({
                           <TableHead>Status</TableHead>
                           <TableHead>Data</TableHead>
                           <TableHead>Descricao</TableHead>
-                          <TableHead className="text-right">Acoes</TableHead>
+                          <TableHead className="text-right">Ações</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -3272,7 +3290,7 @@ function ResidentDetailsDialog({
           >
             <DialogContent className="max-w-xl">
               <DialogHeader>
-                <DialogTitle>{editingMedication ? "Editar Medicacao" : "Nova Medicacao"}</DialogTitle>
+                <DialogTitle>{editingMedication ? "Editar Medicação" : "Nova Medicação"}</DialogTitle>
               </DialogHeader>
               <Form {...medicationForm}>
                 <form
@@ -3290,7 +3308,7 @@ function ResidentDetailsDialog({
                     name="name"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Medicacao *</FormLabel>
+                        <FormLabel>Medicação *</FormLabel>
                         <FormControl>
                           <Input {...field} />
                         </FormControl>
@@ -3442,7 +3460,7 @@ function ResidentDetailsDialog({
                     name="notes"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Observacoes</FormLabel>
+                        <FormLabel>Observações</FormLabel>
                         <FormControl>
                           <Textarea {...field} value={field.value ?? ""} rows={3} />
                         </FormControl>
@@ -3474,7 +3492,7 @@ function ResidentDetailsDialog({
           >
             <DialogContent className="max-w-lg">
               <DialogHeader>
-                <DialogTitle>Registrar administracao da dose</DialogTitle>
+                <DialogTitle>Registrar administração da dose</DialogTitle>
               </DialogHeader>
               {selectedDoseItem ? (
                 <div className="space-y-3">
@@ -3515,7 +3533,7 @@ function ResidentDetailsDialog({
                               </FormControl>
                               <SelectContent>
                                 <SelectItem value="given">Administrado</SelectItem>
-                                <SelectItem value="skipped">Nao administrado</SelectItem>
+                                <SelectItem value="skipped">Não administrado</SelectItem>
                                 <SelectItem value="refused">Recusado</SelectItem>
                                 <SelectItem value="late">Atrasado</SelectItem>
                               </SelectContent>
@@ -3527,7 +3545,7 @@ function ResidentDetailsDialog({
 
                       {isCaregiver ? (
                         <div className="rounded-lg border border-border bg-muted/30 p-3">
-                          <p className="text-xs text-muted-foreground">Profissional responsavel</p>
+                          <p className="text-xs text-muted-foreground">Profissional responsável</p>
                           <p className="text-sm font-medium text-foreground">
                             {user?.name || "Cuidador logado"}
                           </p>
@@ -3567,13 +3585,13 @@ function ResidentDetailsDialog({
                         name="notes"
                         render={({ field }) => (
                           <FormItem>
-                            <FormLabel>Observacoes</FormLabel>
+                            <FormLabel>Observações</FormLabel>
                             <FormControl>
                               <Textarea
                                 {...field}
                                 value={field.value ?? ""}
                                 rows={3}
-                                placeholder="Ex: aferido sinais vitais antes da administracao"
+                                placeholder="Ex: aferido sinais vitais antes da administração"
                               />
                             </FormControl>
                             <FormMessage />
@@ -3629,7 +3647,7 @@ function ResidentDetailsDialog({
                     name="staffId"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Cuidador / Funcionario *</FormLabel>
+                        <FormLabel>Cuidador / Funcionário *</FormLabel>
                         <Select
                           onValueChange={(value) => {
                             const nextStaffId = Number(value);
@@ -3664,7 +3682,7 @@ function ResidentDetailsDialog({
                         >
                           <FormControl>
                             <SelectTrigger className="mt-1.5" data-testid="resident-shift-select-staff">
-                              <SelectValue placeholder="Selecione o funcionario" />
+                              <SelectValue placeholder="Selecione o funcionário" />
                             </SelectTrigger>
                           </FormControl>
                           <SelectContent>
@@ -3824,7 +3842,7 @@ function ResidentDetailsDialog({
                     <p className="text-xs text-muted-foreground">
                       {getResidentShiftDurationHours(selectedShiftType, selectedStaffRule)
                         ? `Inicio e fim sao editaveis; ao alterar um deles, o outro e recalculado para ${getResidentShiftDurationHours(selectedShiftType, selectedStaffRule)}h.`
-                        : "Inicio e fim podem ser ajustados livremente para plantao avulso."}
+                        : "Inicio e fim podem ser ajustados livremente para plantão avulso."}
                     </p>
                   </div>
 
@@ -3833,14 +3851,14 @@ function ResidentDetailsDialog({
                     name="notes"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Observacoes</FormLabel>
+                        <FormLabel>Observações</FormLabel>
                         <FormControl>
                           <Textarea
                             className="mt-1.5 resize-none"
                             {...field}
                             value={field.value ?? ""}
                             rows={2}
-                            placeholder="Anotacoes sobre este plantao..."
+                            placeholder="Anotações sobre este plantão..."
                           />
                         </FormControl>
                       </FormItem>
@@ -3877,7 +3895,7 @@ function ResidentDetailsDialog({
           >
             <DialogContent className="max-w-xl">
               <DialogHeader>
-                <DialogTitle>{editingOccurrence ? "Editar Ocorrencia" : "Nova Ocorrencia"}</DialogTitle>
+                <DialogTitle>{editingOccurrence ? "Editar Ocorrência" : "Nova Ocorrência"}</DialogTitle>
               </DialogHeader>
               <Form {...occurrenceForm}>
                 <form
@@ -3996,13 +4014,13 @@ function ResidentDetailsDialog({
           <TabsContent value="family" className="mt-0 space-y-4">
             {!canManageFamily ? (
               <ResidentTabNotice>
-                Sem permissao para gerenciar familiares.
+                Sem permissão para gerenciar familiares.
               </ResidentTabNotice>
             ) : (
               <>
                 <ResidentSectionHeader
                   title="Familiares e portal"
-                  description="Contatos autorizados, responsavel principal e acesso ao portal da familia."
+                  description="Contatos autorizados, responsável principal e acesso ao portal da família."
                   action={
                     <Button size="sm" onClick={openCreateFamilyDialog}>
                       <Plus className="h-4 w-4 mr-1" />
@@ -4221,7 +4239,7 @@ function ResidentDetailsDialog({
                             name="address"
                             render={({ field }) => (
                               <FormItem>
-                                <FormLabel>Endereco</FormLabel>
+                                <FormLabel>Endereço</FormLabel>
                                 <FormControl>
                                   <Input {...field} value={field.value ?? ""} />
                                 </FormControl>
@@ -4275,7 +4293,7 @@ function ResidentDetailsDialog({
                               name="portalUsername"
                               render={({ field }) => (
                                 <FormItem>
-                                  <FormLabel>Usuario do portal *</FormLabel>
+                                  <FormLabel>Usuário do portal *</FormLabel>
                                   <FormControl>
                                     <Input {...field} value={field.value ?? ""} />
                                   </FormControl>
@@ -4332,7 +4350,7 @@ function ResidentDetailsDialog({
           <TabsContent value="contracts" className="mt-0 space-y-4">
             {!canManageContracts ? (
               <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
-                Sem permissao para gerenciar contratos.
+                Sem permissão para gerenciar contratos.
               </div>
             ) : (
               <>
@@ -4479,7 +4497,7 @@ function ResidentDetailsDialog({
                             name="startDate"
                             render={({ field }) => (
                               <FormItem>
-                                <FormLabel>Data de inicio *</FormLabel>
+                                <FormLabel>Data de início *</FormLabel>
                                 <FormControl>
                                   <Input type="date" {...field} />
                                 </FormControl>
@@ -4554,7 +4572,7 @@ function ResidentDetailsDialog({
                           name="notes"
                           render={({ field }) => (
                             <FormItem>
-                              <FormLabel>Observacoes</FormLabel>
+                              <FormLabel>Observações</FormLabel>
                               <FormControl>
                                 <Textarea rows={3} {...field} value={field.value ?? ""} />
                               </FormControl>
@@ -4652,7 +4670,7 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
   async function handleLookupCep() {
     const currentCep = form.getValues("cep");
     if (digitsOnly(currentCep || "").length !== 8) {
-      form.setError("cep", { type: "manual", message: "Informe um CEP valido." });
+      form.setError("cep", { type: "manual", message: "Informe um CEP válido." });
       return;
     }
 
@@ -4664,11 +4682,11 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
       form.setValue("neighborhood", address.neighborhood, { shouldDirty: true, shouldValidate: true });
       form.setValue("city", address.city, { shouldDirty: true, shouldValidate: true });
       form.setValue("state", address.state, { shouldDirty: true, shouldValidate: true });
-      toast({ title: "Endereco preenchido pelo CEP." });
+      toast({ title: "Endereço preenchido pelo CEP." });
     } catch (error) {
       toast({
         variant: "destructive",
-        title: error instanceof Error ? error.message : "Nao foi possivel buscar o CEP.",
+        title: error instanceof Error ? error.message : "Não foi possível buscar o CEP.",
       });
     } finally {
       setIsLookingUpCep(false);
@@ -4686,7 +4704,7 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
     } catch (error) {
       toast({
         variant: "destructive",
-        title: error instanceof Error ? error.message : "Nao foi possivel carregar a foto.",
+        title: error instanceof Error ? error.message : "Não foi possível carregar a foto.",
       });
     } finally {
       setIsProcessingPhoto(false);
@@ -4766,7 +4784,7 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
                 name="name"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Nome Completo</FormLabel>
+                    <FormLabel>Nome Completo *</FormLabel>
                     <FormControl>
                       <Input {...field} />
                     </FormControl>
@@ -4779,7 +4797,7 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
                 name="birthDate"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Data de Nascimento</FormLabel>
+                    <FormLabel>Data de Nascimento *</FormLabel>
                     <FormControl>
                       <Input type="date" {...field} />
                     </FormControl>
@@ -4792,7 +4810,7 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
                 name="roomNumber"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Quarto/Leito</FormLabel>
+                    <FormLabel>Quarto/Leito *</FormLabel>
                     <FormControl>
                       <Input {...field} />
                     </FormControl>
@@ -4805,7 +4823,7 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
                 name="admissionDate"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Data de Admissão</FormLabel>
+                    <FormLabel>Data de Admissão *</FormLabel>
                     <FormControl>
                       <Input type="date" {...field} />
                     </FormControl>
@@ -4829,7 +4847,7 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        <SelectItem value="none">Nao informado</SelectItem>
+                        <SelectItem value="none">Não informado</SelectItem>
                         {BLOOD_TYPE_OPTIONS.map((item) => (
                           <SelectItem key={item} value={item}>{item}</SelectItem>
                         ))}
@@ -4855,7 +4873,7 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        <SelectItem value="none">Nao informado</SelectItem>
+                        <SelectItem value="none">Não informado</SelectItem>
                         {MOBILITY_STATUS_OPTIONS.map((item) => (
                           <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
                         ))}
@@ -4881,7 +4899,7 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        <SelectItem value="none">Nao informado</SelectItem>
+                        <SelectItem value="none">Não informado</SelectItem>
                         {COGNITIVE_STATUS_OPTIONS.map((item) => (
                           <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
                         ))}
@@ -4896,7 +4914,7 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
                 name="contactName"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Responsável</FormLabel>
+                    <FormLabel>Responsável *</FormLabel>
                     <FormControl>
                       <Input {...field} />
                     </FormControl>
@@ -4909,7 +4927,7 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
                 name="contactPhone"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Telefone Responsável</FormLabel>
+                    <FormLabel>Telefone Responsável *</FormLabel>
                     <FormControl>
                       <Input
                         {...field}
@@ -4927,7 +4945,7 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
             <div className="rounded-xl border border-border p-4 space-y-4">
               <div className="flex items-center gap-2">
                 <MapPin className="h-4 w-4 text-primary" />
-                <p className="text-sm font-medium text-foreground">Endereco e atendimento</p>
+                <p className="text-sm font-medium text-foreground">Endereço e atendimento</p>
               </div>
 
               <FormField
@@ -5002,7 +5020,7 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
                   name="addressNumber"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Numero</FormLabel>
+                      <FormLabel>Número</FormLabel>
                       <FormControl>
                         <Input {...field} value={field.value ?? ""} />
                       </FormControl>

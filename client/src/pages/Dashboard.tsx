@@ -228,7 +228,7 @@ export default function Dashboard() {
       rows.push([o.residentName ?? "—", o.type, o.description, sev, format(new Date(o.createdAt), "dd/MM/yyyy")]);
     });
 
-    downloadCSV(rows, `relatorio-easycare-${format(new Date(), "yyyy-MM-dd")}.csv`);
+    downloadCSV(rows, `relatório-easycare-${format(new Date(), "yyyy-MM-dd")}.csv`);
     toast({ title: "Relatório baixado!", description: "O arquivo CSV foi salvo no seu computador." });
   }
 
@@ -298,8 +298,8 @@ export default function Dashboard() {
         <KpiCard title="Residentes Ativos" value={stats.totalResidents} desc="Cadastrados no sistema" icon={Users} color={BRAND.blue} gradient={BRAND.cyan} to="/residents" />
         <KpiCard title="Taxa de Ocupação" value={`${stats.occupancyRate}%`} desc={`${stats.totalResidents} de ${stats.capacity} vagas ocupadas`} icon={BedDouble} color={BRAND.cyan} gradient={BRAND.blue} to="/residents" />
         <KpiCard title="Medicações Ativas" value={stats.activeMedications} desc="Prescrições vigentes" icon={Pill} color={BRAND.green} gradient={BRAND.cyan} to="/residents" />
-        <KpiCard title="Doses em Atraso" value={stats.overdueMedicationDoses} desc="Pendentes ate agora" icon={AlertCircle} color={BRAND.red} gradient={BRAND.yellow} to="/prontuario" />
-        <KpiCard title="Pendencias de Ponto" value={timeClockPendingTotal} desc="Acoes para revisar" icon={Clock3} color={timeClockPendingTotal > 0 ? BRAND.red : BRAND.green} gradient={BRAND.yellow} to="/ponto-eletronico" />
+        <KpiCard title="Doses em Atraso" value={stats.overdueMedicationDoses} desc="Pendentes até agora" icon={AlertCircle} color={BRAND.red} gradient={BRAND.yellow} to="/prontuario" />
+        <KpiCard title="Pendências de Ponto" value={timeClockPendingTotal} desc="Ações para revisar" icon={Clock3} color={timeClockPendingTotal > 0 ? BRAND.red : BRAND.green} gradient={BRAND.yellow} to="/ponto-eletronico" />
         <KpiCard title="Plantões Agora" value={activeShifts.length} desc="Em andamento agora" icon={Activity} color={BRAND.purple} gradient={BRAND.blue} to="/escalas" />
       </div>
 
@@ -313,7 +313,7 @@ export default function Dashboard() {
           <div className="flex min-w-0 items-start gap-2">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
             <div className="min-w-0">
-              <p className="text-sm font-semibold">Pendencias de ponto aguardando acao</p>
+              <p className="text-sm font-semibold">Pendências de ponto aguardando ação</p>
               <p className="mt-0.5 text-xs">
                 {(stats.timeClockPendingApprovals ?? 0)} batida(s) sem escala, {(stats.timeClockPendingAdjustments ?? 0)} ajuste(s), {(stats.timeClockIncompleteToday ?? 0)} jornada(s) incompleta(s) hoje e {(stats.timeClockOutOfRangeToday ?? 0)} tentativa(s) fora do raio hoje.
               </p>
@@ -500,7 +500,7 @@ export default function Dashboard() {
                   { label: "Medicações", val: stats.activeMedications, color: BRAND.green, to: "/residents" },
                   { label: "Doses atrasadas", val: stats.overdueMedicationDoses, color: BRAND.red, to: "/prontuario" },
                   { label: "Plantões ativos", val: activeShifts.length, color: BRAND.cyan, to: "/escalas" },
-                  { label: "Pendencias de ponto", val: timeClockPendingTotal, color: timeClockPendingTotal > 0 ? BRAND.red : BRAND.green, to: "/ponto-eletronico" },
+                  { label: "Pendências de ponto", val: timeClockPendingTotal, color: timeClockPendingTotal > 0 ? BRAND.red : BRAND.green, to: "/ponto-eletronico" },
                   { label: "Ocorrências abertas", val: stats.pendingOccurrences, color: BRAND.yellow, to: "/residents" },
                   { label: "Mensalidades vencidas", val: stats.overdueFeesCount, color: BRAND.red, to: "/financeiro" },
                 ].map((item) => (

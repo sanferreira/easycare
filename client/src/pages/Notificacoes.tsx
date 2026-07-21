@@ -73,7 +73,7 @@ export default function Notificacoes() {
     staleTime: 0,
     queryFn: async () => {
       const res = await fetch("/api/notifications?limit=100", { credentials: "include" });
-      if (!res.ok) throw new Error("Erro ao carregar notificacoes.");
+      if (!res.ok) throw new Error("Erro ao carregar notificações.");
       return res.json();
     },
   });
@@ -137,7 +137,7 @@ export default function Notificacoes() {
           </div>
           <h1 className="mt-1 text-2xl font-bold tracking-tight">Notificacoes</h1>
           <p className="text-sm text-muted-foreground">
-            Historico das notificacoes recebidas no sistema.
+            Historico das notificações recebidas no sistema.
           </p>
         </div>
         <Button
@@ -157,7 +157,7 @@ export default function Notificacoes() {
       <div className="grid gap-3 md:grid-cols-3">
         <Card className="border-border/70">
           <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground">Nao lidas</p>
+            <p className="text-xs text-muted-foreground">Não lidas</p>
             <p className="mt-1 text-2xl font-semibold">{unreadCount}</p>
           </CardContent>
         </Card>
@@ -196,7 +196,7 @@ export default function Notificacoes() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">Todas</SelectItem>
-                <SelectItem value="unread">Nao lidas</SelectItem>
+                <SelectItem value="unread">Não lidas</SelectItem>
                 <SelectItem value="read">Lidas</SelectItem>
               </SelectContent>
             </Select>
@@ -229,11 +229,11 @@ export default function Notificacoes() {
           {notificationsQuery.isLoading ? (
             <div className="flex items-center gap-2 rounded-lg border border-dashed p-6 text-sm text-muted-foreground">
               <Clock3 className="h-4 w-4 animate-pulse" />
-              Carregando notificacoes...
+              Carregando notificações...
             </div>
           ) : filteredNotifications.length === 0 ? (
             <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">
-              Nenhuma notificacao encontrada.
+              Nenhuma notificação encontrada.
             </div>
           ) : (
             <div className="divide-y rounded-lg border border-border/70">

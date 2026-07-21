@@ -8,6 +8,7 @@ import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "@/hooks/us
 import { useNotificationSound } from "@/hooks/use-notification-sound";
 import { toMonthInputValue } from "@/lib/date";
 import { downloadCsvRows } from "@/lib/csv";
+import { printHtmlDocument } from "@/lib/print";
 import { cn } from "@/lib/utils";
 import {
   DEFAULT_ENVIRONMENT_SETTINGS,
@@ -65,7 +66,7 @@ type TimeClockEntry = {
   eventTime: string | Date;
   distanceMeters?: number | null;
   notes?: string | null;
-  status: "valid" | "out_of_range" | "manual_adjusted" | "pending_approval" | "rejected";
+  status: "valid" | "out_of_range" | "manual_adjusted" | "pending_approval" | "rejected" | "corrected";
 };
 
 type TimeClockEventType = "clock_in" | "break_start" | "break_end" | "clock_out";
@@ -86,7 +87,7 @@ type TimeClockAdjustmentRequest = {
   status: TimeClockAdjustmentStatus;
   reviewerNotes?: string | null;
   appliedEntryId?: number | null;
-  createdAt?: string | Date | null;
+  createdAt: string | Date | null;
 };
 
 type TimeClockAuditLog = {
@@ -96,7 +97,7 @@ type TimeClockAuditLog = {
   entityType: string;
   action: string;
   reason?: string | null;
-  createdAt?: string | Date | null;
+  createdAt: string | Date | null;
 };
 
 type TimeClockClosure = {
@@ -104,8 +105,8 @@ type TimeClockClosure = {
   referenceMonth: string;
   status: "closed" | "reopened";
   notes?: string | null;
-  closedAt?: string | Date | null;
-  reopenedAt?: string | Date | null;
+  closedAt: string | Date | null;
+  reopenedAt: string | Date | null;
 };
 
 type TimeClockStatus = {
@@ -182,7 +183,7 @@ type CepLookupResponse = {
 
 type LocationPermissionState = "unknown" | "prompt" | "granted" | "denied" | "unsupported" | "insecure";
 type LocationListView = "active" | "inactive";
-type EntryStatusFilter = "all" | "valid" | "manual_adjusted" | "pending_approval" | "rejected" | "out_of_range";
+type EntryStatusFilter = "all" | "valid" | "manual_adjusted" | "pending_approval" | "rejected" | "out_of_range" | "corrected";
 type EntryEventFilter = "all" | TimeClockEventType;
 type TimeClockReviewTab = "closure" | "mirror" | "log";
 type EditingLocationForm = {
@@ -192,6 +193,7 @@ type EditingLocationForm = {
   radiusMeters: number;
 };
 
+const DEFAULT_LOCATION_NAME = "Unidade principal";
 const ENTRY_PAGE_SIZE = 8;
 const TIME_CLOCK_REALTIME_INTERVAL_MS = 5_000;
 const TIME_CLOCK_SUPPORTING_INTERVAL_MS = 10_000;
@@ -200,7 +202,7 @@ const EVENT_LABELS: Record<TimeClockEventType, string> = {
   clock_in: "Entrada",
   break_start: "Pausa",
   break_end: "Retorno",
-  clock_out: "Saida",
+  clock_out: "Saída",
 };
 
 const EVENT_ICONS: Record<TimeClockEventType, typeof LogIn> = {
@@ -223,8 +225,9 @@ const ADJUSTMENT_STATUS_LABELS: Record<TimeClockAdjustmentStatus, { label: strin
 };
 
 const ENTRY_STATUS_LABELS: Record<TimeClockEntry["status"], { label: string; tone: string }> = {
-  valid: { label: "Valido", tone: "border-emerald-200 bg-emerald-50 text-emerald-700" },
+  valid: { label: "Válido", tone: "border-emerald-200 bg-emerald-50 text-emerald-700" },
   manual_adjusted: { label: "Ajustado", tone: "border-blue-200 bg-blue-50 text-blue-700" },
+  corrected: { label: "Corrigido", tone: "border-sky-200 bg-sky-50 text-sky-700" },
   pending_approval: { label: "Pendente", tone: "border-amber-200 bg-amber-50 text-amber-700" },
   rejected: { label: "Reprovado", tone: "border-red-200 bg-red-50 text-red-700" },
   out_of_range: { label: "Fora do raio", tone: "border-red-200 bg-red-50 text-red-700" },
@@ -241,11 +244,11 @@ async function parseJson<T>(res: Response, fallback: string): Promise<T> {
 function getCurrentPosition(): Promise<GeolocationPosition> {
   return new Promise((resolve, reject) => {
     if (typeof window !== "undefined" && !window.isSecureContext) {
-      reject(new Error("Localizacao indisponivel neste acesso."));
+      reject(new Error("Localização indisponível neste acesso."));
       return;
     }
     if (!navigator.geolocation) {
-      reject(new Error("Geolocalizacao nao esta disponivel neste navegador."));
+      reject(new Error("Geolocalização não está disponível neste navegador."));
       return;
     }
     navigator.geolocation.getCurrentPosition(resolve, reject, {
@@ -366,7 +369,7 @@ export default function PontoEletronico() {
   const [focusedEntryId, setFocusedEntryId] = useState<number | null>(null);
   const [focusedAdjustmentId, setFocusedAdjustmentId] = useState<number | null>(null);
   const [locationListView, setLocationListView] = useState<LocationListView>("active");
-  const [locationName, setLocationName] = useState("Unidade principal");
+  const [locationName, setLocationName] = useState(DEFAULT_LOCATION_NAME);
   const [locationCep, setLocationCep] = useState("");
   const [locationNumber, setLocationNumber] = useState("");
   const [locationAddress, setLocationAddress] = useState("");
@@ -654,17 +657,17 @@ export default function PontoEletronico() {
     && !hasBlockingOutOfRangeAttempts;
   const closureStatusView = monthIsClosed
     ? {
-      label: "Competencia fechada",
+      label: "Competência fechada",
       description: `Fechada em ${formatDateTime(closure?.closedAt)}`,
       tone: "border-emerald-200 bg-emerald-50 text-emerald-700",
     }
     : {
-      label: "Competencia aberta",
+      label: "Competência aberta",
       description: pendingAdjustments.length > 0
         ? "Ajustes pendentes bloqueiam o fechamento."
         : dailySummaries.length === 0
-          ? "Sem registros para fechamento neste mes."
-          : "Espelho disponivel para revisao.",
+          ? "Sem registros para fechamento neste mês."
+          : "Espelho disponível para revisão.",
       tone: "border-amber-200 bg-amber-50 text-amber-800",
     };
   const closureChecks = [
@@ -700,34 +703,34 @@ export default function PontoEletronico() {
   const isLookingUpLocation = isReadingLocation || isResolvingLocationName || isLookingUpCep || isGeocodingAddress;
   const permissionView = {
     unknown: {
-      label: "Verificando localizacao",
-      description: "Status do GPS ainda nao identificado.",
+      label: "Verificando localização",
+      description: "Status do GPS ainda não identificado.",
       tone: "border-slate-200 bg-slate-50 text-slate-700",
     },
     prompt: {
-      label: "Localizacao pendente",
-      description: "Ative a permissao antes de registrar o ponto.",
+      label: "Localização pendente",
+      description: "Ative a permissão antes de registrar o ponto.",
       tone: "border-amber-200 bg-amber-50 text-amber-800",
     },
     granted: {
-      label: "Localizacao ativa",
+      label: "Localização ativa",
       description: lastKnownLocation
         ? `${formatCoordinate(lastKnownLocation.latitude)}, ${formatCoordinate(lastKnownLocation.longitude)}`
         : "Permissao concedida para este navegador.",
       tone: "border-emerald-200 bg-emerald-50 text-emerald-700",
     },
     denied: {
-      label: "Localizacao bloqueada",
-      description: "Libere a permissao de localizacao nas configuracoes do navegador.",
+      label: "Localização bloqueada",
+      description: "Libere a permissão de localização nas configurações do navegador.",
       tone: "border-red-200 bg-red-50 text-red-700",
     },
     unsupported: {
-      label: "Localizacao indisponivel",
-      description: "Este navegador nao liberou o recurso de geolocalizacao.",
+      label: "Localização indisponível",
+      description: "Este navegador não liberou o recurso de geolocalização.",
       tone: "border-red-200 bg-red-50 text-red-700",
     },
     insecure: {
-      label: "Localizacao indisponivel",
+      label: "Localização indisponível",
       description: "Abra a pagina por um link seguro para ativar o GPS.",
       tone: "border-red-200 bg-red-50 text-red-700",
     },
@@ -739,13 +742,13 @@ export default function PontoEletronico() {
   const todayPendingApprovalEntries = todayVisibleEntries.filter((entry) => entry.status === "pending_approval");
   const nextActionText = nextActions.length > 0
     ? nextActions.map((action) => EVENT_LABELS[action]).join(" ou ")
-    : statusQuery.data?.current.message ?? "Sem acao pendente";
+    : statusQuery.data?.current.message ?? "Sem ação pendente";
   const timeClockAlerts = useMemo(() => {
     const alerts: Array<{ title: string; description: string; tone: string }> = [];
     if (isManager) {
       if (pendingApprovalEntries.length > 0) {
         alerts.push({
-          title: "Batidas sem escala aguardando aprovacao",
+          title: "Batidas sem escala aguardando aprovação",
           description: `${pendingApprovalEntries.length} batida(s) precisam ser aprovadas ou reprovadas para entrar no fechamento.`,
           tone: "border-amber-200 bg-amber-50 text-amber-800",
         });
@@ -753,13 +756,13 @@ export default function PontoEletronico() {
       if (pendingAdjustments.length > 0) {
         alerts.push({
           title: "Ajustes de ponto pendentes",
-          description: `${pendingAdjustments.length} solicitacao(oes) aguardando revisao do gestor.`,
+          description: `${pendingAdjustments.length} solicitação(oes) aguardando revisão do gestor.`,
           tone: "border-amber-200 bg-amber-50 text-amber-800",
         });
       }
       if (monthSummary.incompleteDays > 0) {
         alerts.push({
-          title: "Jornadas incompletas no periodo",
+          title: "Jornadas incompletas no período",
           description: `${monthSummary.incompleteDays} jornada(s) sem fechamento completo no espelho.`,
           tone: "border-red-200 bg-red-50 text-red-700",
         });
@@ -767,7 +770,7 @@ export default function PontoEletronico() {
       if (monthSummary.absences > 0) {
         alerts.push({
           title: "Faltas identificadas",
-          description: `${monthSummary.absences} falta(s) aparecem no fechamento do periodo.`,
+          description: `${monthSummary.absences} falta(s) aparecem no fechamento do período.`,
           tone: "border-red-200 bg-red-50 text-red-700",
         });
       }
@@ -783,22 +786,22 @@ export default function PontoEletronico() {
 
     if (monthIsClosed) {
       alerts.push({
-        title: "Competencia fechada",
-        description: "Novas batidas e solicitacoes ficam bloqueadas ate reabertura do mes.",
+        title: "Competência fechada",
+        description: "Novas batidas e solicitações ficam bloqueadas até reabertura do mês.",
         tone: "border-emerald-200 bg-emerald-50 text-emerald-700",
       });
     }
     if (statusQuery.data?.hasShiftToday === false) {
       alerts.push({
         title: "Sem escala prevista hoje",
-        description: "Batidas feitas sem escala ficam pendentes ate aprovacao do admin.",
+        description: "Batidas feitas sem escala ficam pendentes até aprovação do admin.",
         tone: "border-amber-200 bg-amber-50 text-amber-800",
       });
     }
     if (todayPendingApprovalEntries.length > 0) {
       alerts.push({
-        title: "Batida aguardando aprovacao",
-        description: `${todayPendingApprovalEntries.length} batida(s) de hoje ainda nao contam no banco de horas.`,
+        title: "Batida aguardando aprovação",
+        description: `${todayPendingApprovalEntries.length} batida(s) de hoje ainda não contam no banco de horas.`,
         tone: "border-amber-200 bg-amber-50 text-amber-800",
       });
     }
@@ -893,7 +896,7 @@ export default function PontoEletronico() {
         const res = await fetch(`/api/time-clock/lookup-cep?${params.toString()}`, {
           credentials: "include",
         });
-        const data = await parseJson<CepLookupResponse>(res, "CEP nao encontrado.");
+        const data = await parseJson<CepLookupResponse>(res, "CEP não encontrado.");
         if (cancelled) return;
         setLocationAddress(data.address);
         setCapturedLocation(null);
@@ -904,7 +907,7 @@ export default function PontoEletronico() {
         }
       } catch (error) {
         if (!cancelled) {
-          const message = error instanceof Error ? error.message : "CEP nao encontrado.";
+          const message = error instanceof Error ? error.message : "CEP não encontrado.";
           toast({ variant: "destructive", title: message });
         }
       } finally {
@@ -1021,7 +1024,7 @@ export default function PontoEletronico() {
 
   const createAdjustmentMutation = useMutation({
     mutationFn: async () => {
-      if (!adjustmentDateTime) throw new Error("Informe data e horario do ajuste.");
+      if (!adjustmentDateTime) throw new Error("Informe data e horário do ajuste.");
       const res = await fetch("/api/time-clock/adjustments", {
         method: "POST",
         credentials: "include",
@@ -1043,7 +1046,7 @@ export default function PontoEletronico() {
       queryClient.invalidateQueries({ queryKey: ["/api/time-clock/adjustments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/time-clock/audit"] });
       queryClient.invalidateQueries({ queryKey: ["notifications"] });
-      toast({ title: "Solicitacao enviada" });
+      toast({ title: "Solicitação enviada" });
     },
     onError: (error: Error) => toast({ variant: "destructive", title: error.message }),
   });
@@ -1124,7 +1127,7 @@ export default function PontoEletronico() {
     const res = await fetch(`/api/time-clock/reverse-geocode?${params.toString()}`, {
       credentials: "include",
     });
-    return parseJson<ReverseGeocodeResponse>(res, "Nao foi possivel identificar o local.");
+    return parseJson<ReverseGeocodeResponse>(res, "Não foi possível identificar o local.");
   }
 
   async function geocodeAddressLocation(): Promise<GeocodeAddressResponse> {
@@ -1135,16 +1138,21 @@ export default function PontoEletronico() {
     const res = await fetch(`/api/time-clock/geocode-address?${params.toString()}`, {
       credentials: "include",
     });
-    return parseJson<GeocodeAddressResponse>(res, "Nao foi possivel localizar este endereco.");
+    return parseJson<GeocodeAddressResponse>(res, "Não foi possível localizar este endereço.");
   }
 
   async function resolveAddressLocationFromForm(): Promise<{ location: CapturedLocation; address: string; name: string }> {
     if (!locationAddress.trim() && !locationCep.trim()) {
-      throw new Error("Informe um endereco ou CEP.");
+      throw new Error("Informe um endereço ou CEP.");
     }
     const result = await geocodeAddressLocation();
+    const currentName = locationName.trim();
+    const hasCustomName = Boolean(currentName && currentName !== DEFAULT_LOCATION_NAME);
     const resolvedAddress = result.address || result.displayName || locationAddress;
-    const resolvedName = result.name || locationName;
+    const suggestedName = result.name || result.displayName || "";
+    const resolvedName = hasCustomName
+      ? currentName
+      : suggestedName || currentName || DEFAULT_LOCATION_NAME;
     const location = {
       latitude: result.latitude,
       longitude: result.longitude,
@@ -1153,7 +1161,7 @@ export default function PontoEletronico() {
     };
     setCapturedLocation(location);
     if (resolvedAddress) setLocationAddress(resolvedAddress);
-    if (resolvedName && (!locationName.trim() || locationName === "Unidade principal")) {
+    if (!hasCustomName && suggestedName) {
       setLocationName(resolvedName);
     }
     return { location, address: resolvedAddress, name: resolvedName };
@@ -1170,10 +1178,10 @@ export default function PontoEletronico() {
       const positionError = error as GeolocationPositionError;
       if (positionError?.code === 1) {
         setLocationPermission("denied");
-      } else if (error instanceof Error && error.message.includes("indisponivel neste acesso")) {
+      } else if (error instanceof Error && error.message.includes("indisponível neste acesso")) {
         setLocationPermission("insecure");
       }
-      const message = error instanceof Error ? error.message : "Nao foi possivel obter a localizacao.";
+      const message = error instanceof Error ? error.message : "Não foi possível obter a localização.";
       toast({ variant: "destructive", title: message });
     } finally {
       setIsReadingLocation(false);
@@ -1186,7 +1194,7 @@ export default function PontoEletronico() {
 
   const handleEnableLocation = () => {
     withPosition(() => {
-      toast({ title: "Localizacao ativada" });
+      toast({ title: "Localização ativada" });
     });
   };
 
@@ -1210,12 +1218,14 @@ export default function PontoEletronico() {
         const suggestedAddress = result?.address || result?.displayName;
         const nextLocation = { ...location, label: suggestedAddress ?? result?.name ?? null };
         setCapturedLocation(nextLocation);
-        if (suggestedName) {
+        const currentName = locationName.trim();
+        const hasCustomName = Boolean(currentName && currentName !== DEFAULT_LOCATION_NAME);
+        if (suggestedName && !hasCustomName) {
           setLocationName(suggestedName);
         }
         if (suggestedAddress) {
           setLocationAddress(suggestedAddress);
-          toast({ title: "Endereco encontrado" });
+          toast({ title: "Endereço encontrado" });
         } else if (suggestedName) {
           toast({ title: "Local encontrado" });
         } else {
@@ -1233,9 +1243,9 @@ export default function PontoEletronico() {
     setIsGeocodingAddress(true);
     try {
       await resolveAddressLocationFromForm();
-      toast({ title: "Endereco localizado" });
+      toast({ title: "Endereço localizado" });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Nao foi possivel localizar este endereco.";
+      const message = error instanceof Error ? error.message : "Não foi possível localizar este endereço.";
       toast({ variant: "destructive", title: message });
     } finally {
       setIsGeocodingAddress(false);
@@ -1264,7 +1274,7 @@ export default function PontoEletronico() {
           radiusMeters: locationRadius,
         });
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Nao foi possivel localizar este endereco.";
+        const message = error instanceof Error ? error.message : "Não foi possível localizar este endereço.";
         toast({ variant: "destructive", title: message });
       } finally {
         setIsGeocodingAddress(false);
@@ -1317,7 +1327,7 @@ export default function PontoEletronico() {
     setSelectedAdjustmentEntryId(entry.id);
     setAdjustmentEventType(entry.eventType);
     setAdjustmentDateTime(toDateTimeLocalInputValue(entry.eventTime));
-    setAdjustmentReason("Correcao de batida registrada");
+    setAdjustmentReason("Correção de batida registrada");
     setAdjustmentNotes((current) => current.trim() || `Batida original: ${EVENT_LABELS[entry.eventType]} em ${formatDateTime(entry.eventTime)}.`);
   };
 
@@ -1371,10 +1381,10 @@ export default function PontoEletronico() {
       ["Tolerancia de hora extra", formatMinutes(timeClockSettings.overtimeToleranceMinutes)],
       ["Duracao padrao da pausa", formatMinutes(timeClockSettings.breakDurationMinutes)],
       ["Aviso antes do fim da pausa", formatMinutes(timeClockSettings.breakReminderBeforeMinutes)],
-      ["Adicional noturno", `${timeClockSettings.nightStartTime} ate ${timeClockSettings.nightEndTime}`],
-      ["Bloqueia fechamento com jornadas incompletas", timeClockSettings.blockCloseWithIncompleteDays ? "Sim" : "Nao"],
-      ["Bloqueia fechamento com faltas", timeClockSettings.blockCloseWithAbsences ? "Sim" : "Nao"],
-      ["Bloqueia fechamento com tentativa fora do raio", timeClockSettings.blockCloseWithOutOfRangeAttempts ? "Sim" : "Nao"],
+      ["Adicional noturno", `${timeClockSettings.nightStartTime} até ${timeClockSettings.nightEndTime}`],
+      ["Bloqueia fechamento com jornadas incompletas", timeClockSettings.blockCloseWithIncompleteDays ? "Sim" : "Não"],
+      ["Bloqueia fechamento com faltas", timeClockSettings.blockCloseWithAbsences ? "Sim" : "Não"],
+      ["Bloqueia fechamento com tentativa fora do raio", timeClockSettings.blockCloseWithOutOfRangeAttempts ? "Sim" : "Não"],
       [],
       ["RESUMO DO PERIODO"],
       ["Previsto", formatMinutes(monthSummary.expectedMinutes)],
@@ -1402,7 +1412,7 @@ export default function PontoEletronico() {
         "Falta",
         "Incompleto",
         "Primeira entrada",
-        "Ultima saida",
+        "Última saída",
       ],
       ...dailySummaries.map((summary) => [
         formatDate(summary.date),
@@ -1413,14 +1423,14 @@ export default function PontoEletronico() {
         formatMinutes(summary.lateMinutes ?? 0),
         formatMinutes(summary.overtimeMinutes ?? 0),
         formatMinutes(summary.nightMinutes ?? 0),
-        summary.absence ? "Sim" : "Nao",
-        summary.incomplete ? "Sim" : "Nao",
+        summary.absence ? "Sim" : "Não",
+        summary.incomplete ? "Sim" : "Não",
         formatDateTime(summary.firstClockIn),
         formatDateTime(summary.lastClockOut),
       ]),
       [],
       ["BATIDAS SEM ESCALA PENDENTES"],
-      ["Data/Hora", "Colaborador", "Evento", "Local", "Distancia", "Observacao"],
+      ["Data/Hora", "Colaborador", "Evento", "Local", "Distância", "Observação"],
       ...pendingApprovalEntries.map((entry) => [
         formatDateTime(entry.eventTime),
         entry.staffName ?? "",
@@ -1431,7 +1441,7 @@ export default function PontoEletronico() {
       ]),
       [],
       ["LOG DE BATIDAS"],
-      ["Data/Hora", "Colaborador", "Evento", "Status", "Local", "Endereco", "Distancia", "Observacao"],
+      ["Data/Hora", "Colaborador", "Evento", "Status", "Local", "Endereço", "Distância", "Observação"],
       ...entries.map((entry) => [
         formatDateTime(entry.eventTime),
         entry.staffName ?? "",
@@ -1454,7 +1464,7 @@ export default function PontoEletronico() {
       toast({
         variant: "destructive",
         title: "Sem dados para exportar",
-        description: "Selecione uma competencia com batidas ou espelho mensal.",
+        description: "Selecione uma competência com batidas ou espelho mensal.",
       });
       return;
     }
@@ -1490,14 +1500,14 @@ export default function PontoEletronico() {
       {
         label: "Saldo",
         value: formatMinutes(monthSummary.balanceMinutes),
-        detail: monthSummary.balanceMinutes < 0 ? "Debito no periodo" : "Credito no periodo",
+        detail: monthSummary.balanceMinutes < 0 ? "Debito no período" : "Credito no período",
         tone: monthSummary.balanceMinutes < 0 ? "negative" : monthSummary.balanceMinutes > 0 ? "positive" : "neutral",
       },
       { label: "Atraso", value: formatMinutes(monthSummary.lateMinutes), detail: "Alem da tolerancia" },
       { label: "Hora extra", value: formatMinutes(monthSummary.overtimeMinutes), detail: "Aguardando fechamento" },
-      { label: "Adic. noturno", value: formatMinutes(monthSummary.nightMinutes), detail: `${timeClockSettings.nightStartTime} ate ${timeClockSettings.nightEndTime}` },
+      { label: "Adic. noturno", value: formatMinutes(monthSummary.nightMinutes), detail: `${timeClockSettings.nightStartTime} até ${timeClockSettings.nightEndTime}` },
       { label: "Faltas", value: monthSummary.absences, detail: "Dias sem registro" },
-      { label: "Incompletas", value: monthSummary.incompleteDays, detail: "Jornadas sem saida" },
+      { label: "Incompletas", value: monthSummary.incompleteDays, detail: "Jornadas sem saída" },
     ];
 
     const summaryCardsHtml = summaryCards.map((item) => `
@@ -1509,7 +1519,7 @@ export default function PontoEletronico() {
     `).join("");
 
     const dailyRowsHtml = sortedDailySummaries.length === 0
-      ? `<tr><td colspan="12" class="empty">Nenhum espelho diario encontrado para a competencia.</td></tr>`
+      ? `<tr><td colspan="12" class="empty">Nenhum espelho diário encontrado para a competência.</td></tr>`
       : sortedDailySummaries.map((summary) => {
         const status = [
           summary.absence ? "Falta" : null,
@@ -1549,7 +1559,7 @@ export default function PontoEletronico() {
         `).join("");
 
     const adjustmentRowsHtml = sortedPendingAdjustments.length === 0
-      ? `<tr><td colspan="5" class="empty">Nenhuma solicitacao de ajuste pendente.</td></tr>`
+      ? `<tr><td colspan="5" class="empty">Nenhuma solicitação de ajuste pendente.</td></tr>`
       : sortedPendingAdjustments.map((item) => `
           <tr>
             <td>${escapeHtml(formatDateTime(item.createdAt))}</td>
@@ -1561,7 +1571,7 @@ export default function PontoEletronico() {
         `).join("");
 
     const entryRowsHtml = sortedEntries.length === 0
-      ? `<tr><td colspan="8" class="empty">Nenhuma batida registrada no periodo.</td></tr>`
+      ? `<tr><td colspan="8" class="empty">Nenhuma batida registrada no período.</td></tr>`
       : sortedEntries.map((entry) => `
           <tr>
             <td>${escapeHtml(formatDateTime(entry.eventTime))}</td>
@@ -1576,7 +1586,7 @@ export default function PontoEletronico() {
         `).join("");
 
     const outOfRangeRowsHtml = outOfRangeAttempts.length === 0
-      ? `<tr><td colspan="4" class="empty">Nenhuma tentativa bloqueada por distancia na competencia.</td></tr>`
+      ? `<tr><td colspan="4" class="empty">Nenhuma tentativa bloqueada por distância na competência.</td></tr>`
       : outOfRangeAttempts.map((log) => `
           <tr>
             <td>${escapeHtml(formatDateTime(log.createdAt))}</td>
@@ -1586,17 +1596,7 @@ export default function PontoEletronico() {
           </tr>
         `).join("");
 
-    const printWindow = window.open("", "_blank", "width=1200,height=900");
-    if (!printWindow) {
-      toast({
-        variant: "destructive",
-        title: "Nao foi possivel abrir o relatorio",
-        description: "Permita pop-ups para gerar o PDF do espelho de ponto.",
-      });
-      return;
-    }
-
-    printWindow.document.write(`
+    const printed = printHtmlDocument(`
 <!doctype html>
 <html lang="pt-BR">
   <head>
@@ -1794,19 +1794,19 @@ export default function PontoEletronico() {
   </head>
   <body>
     <div class="toolbar no-print">
-      <strong>Espelho de ponto pronto para impressao</strong>
+      <strong>Espelho de ponto pronto para impressão</strong>
       <button type="button" onclick="window.print()">Imprimir / salvar PDF</button>
     </div>
     <main class="page">
       <article class="sheet">
         <header class="header">
           <div class="brand">
-            <small>EasyCare Gestao Inteligente</small>
+            <small>EasyCare Gestão Inteligente</small>
             <h1>Espelho de Ponto</h1>
           </div>
           <div class="meta">
             <div><strong>Empresa:</strong> ${escapeHtml(user?.organizationName ?? "-")}</div>
-            <div><strong>Competencia:</strong> ${escapeHtml(reportMonth)}</div>
+            <div><strong>Competência:</strong> ${escapeHtml(reportMonth)}</div>
             <div><strong>Colaborador:</strong> ${escapeHtml(selectedStaff)}</div>
             <div><strong>Status:</strong> ${escapeHtml(closureLabel)}</div>
             <div><strong>Gerado em:</strong> ${escapeHtml(generatedAt)}</div>
@@ -1815,7 +1815,7 @@ export default function PontoEletronico() {
 
         <section class="section">
           <div class="section-title">
-            <h2>Resumo do periodo</h2>
+            <h2>Resumo do período</h2>
             <span class="muted">Baseado em escalas, batidas validas e ajustes aprovados.</span>
           </div>
           <div class="grid">${summaryCardsHtml}</div>
@@ -1823,14 +1823,14 @@ export default function PontoEletronico() {
 
         <section class="section">
           <div class="section-title">
-            <h2>Regras usadas no calculo</h2>
+            <h2>Regras usadas no cálculo</h2>
           </div>
           <div class="rules">
             <div><span>Tolerancia de atraso</span>${escapeHtml(formatMinutes(timeClockSettings.lateToleranceMinutes))}</div>
             <div><span>Tolerancia de hora extra</span>${escapeHtml(formatMinutes(timeClockSettings.overtimeToleranceMinutes))}</div>
             <div><span>Pausa padrao</span>${escapeHtml(formatMinutes(timeClockSettings.breakDurationMinutes))}</div>
             <div><span>Aviso fim da pausa</span>${escapeHtml(formatMinutes(timeClockSettings.breakReminderBeforeMinutes))}</div>
-            <div><span>Adicional noturno</span>${escapeHtml(`${timeClockSettings.nightStartTime} ate ${timeClockSettings.nightEndTime}`)}</div>
+            <div><span>Adicional noturno</span>${escapeHtml(`${timeClockSettings.nightStartTime} até ${timeClockSettings.nightEndTime}`)}</div>
             <div><span>Bloqueios de fechamento</span>${escapeHtml([
               timeClockSettings.blockCloseWithIncompleteDays ? "jornadas incompletas" : null,
               timeClockSettings.blockCloseWithAbsences ? "faltas" : null,
@@ -1841,7 +1841,7 @@ export default function PontoEletronico() {
 
         <section class="section">
           <div class="section-title">
-            <h2>Espelho diario</h2>
+            <h2>Espelho diário</h2>
             <span class="muted">${escapeHtml(sortedDailySummaries.length)} dia(s)</span>
           </div>
           <table>
@@ -1850,7 +1850,7 @@ export default function PontoEletronico() {
                 <th>Dia</th>
                 <th>Colaborador</th>
                 <th>Entrada prev.</th>
-                <th>Saida prev.</th>
+                <th>Saída prev.</th>
                 <th>Previsto</th>
                 <th>Realizado</th>
                 <th>Saldo</th>
@@ -1867,7 +1867,7 @@ export default function PontoEletronico() {
 
         <section class="section">
           <div class="section-title">
-            <h2>Pendencias para fechamento</h2>
+            <h2>Pendências para fechamento</h2>
             <span class="muted">${escapeHtml(pendingApprovalEntries.length + sortedPendingAdjustments.length)} item(ns)</span>
           </div>
           <table>
@@ -1877,8 +1877,8 @@ export default function PontoEletronico() {
                 <th>Colaborador</th>
                 <th>Evento</th>
                 <th>Local</th>
-                <th>Distancia</th>
-                <th>Observacao</th>
+                <th>Distância</th>
+                <th>Observação</th>
               </tr>
             </thead>
             <tbody>${pendingRowsHtml}</tbody>
@@ -1910,9 +1910,9 @@ export default function PontoEletronico() {
                 <th>Evento</th>
                 <th>Status</th>
                 <th>Local</th>
-                <th>Endereco</th>
-                <th>Distancia</th>
-                <th>Observacao</th>
+                <th>Endereço</th>
+                <th>Distância</th>
+                <th>Observação</th>
               </tr>
             </thead>
             <tbody>${entryRowsHtml}</tbody>
@@ -1938,19 +1938,22 @@ export default function PontoEletronico() {
         </section>
 
         <section class="signatures">
-          <div class="signature">Responsavel pela empresa</div>
+          <div class="signature">Responsável pela empresa</div>
           <div class="signature">Colaborador</div>
           <div class="signature">Data</div>
         </section>
       </article>
     </main>
-    <script>
-      window.addEventListener("load", () => window.setTimeout(() => window.print(), 250));
-    </script>
   </body>
 </html>
     `);
-    printWindow.document.close();
+    if (!printed) {
+      toast({
+        variant: "destructive",
+        title: "Não foi possível gerar o relatório",
+        description: "Tente novamente pelo navegador principal.",
+      });
+    }
   };
 
   return (
@@ -1958,10 +1961,10 @@ export default function PontoEletronico() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-foreground" style={{ fontFamily: "var(--font-display)" }}>
-            Ponto eletronico
+            Ponto eletrônico
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {isManager ? "Gestao de jornada, locais e banco de horas." : "Registro de jornada e banco de horas."}
+            {isManager ? "Gestão de jornada, locais e banco de horas." : "Registro de jornada e banco de horas."}
           </p>
         </div>
         <div className="flex flex-wrap items-end gap-2">
@@ -2050,7 +2053,7 @@ export default function PontoEletronico() {
               <CardContent className="p-4">
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <TimerReset className="h-3.5 w-3.5" />
-                  Saldo do periodo
+                  Saldo do período
                 </div>
                 <p className={`mt-2 text-2xl font-semibold ${monthSummary.balanceMinutes < 0 ? "text-red-600" : "text-emerald-600"}`}>
                   {formatMinutes(monthSummary.balanceMinutes)}
@@ -2099,7 +2102,7 @@ export default function PontoEletronico() {
                 <div>
                   <CardTitle className="text-base">Meu ponto</CardTitle>
                   <p className="text-sm text-muted-foreground">
-                    {statusQuery.data?.staff?.name ?? "Colaborador nao vinculado"}
+                    {statusQuery.data?.staff?.name ?? "Colaborador não vinculado"}
                   </p>
                 </div>
                 <Badge variant="outline" className={STATE_LABELS[currentState]?.tone ?? STATE_LABELS.closed.tone}>
@@ -2133,7 +2136,7 @@ export default function PontoEletronico() {
 
               {monthIsClosed ? (
                 <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">
-                  Competencia fechada. Novas batidas e ajustes ficam bloqueados ate reabertura.
+                  Competência fechada. Novas batidas e ajustes ficam bloqueados até reabertura.
                 </div>
               ) : null}
 
@@ -2156,7 +2159,7 @@ export default function PontoEletronico() {
                       onClick={handleEnableLocation}
                     >
                       <Navigation className="h-4 w-4" />
-                      {isReadingLocation ? "Localizando..." : "Ativar localizacao"}
+                      {isReadingLocation ? "Localizando..." : "Ativar localização"}
                     </Button>
                   )}
                 </div>
@@ -2164,7 +2167,7 @@ export default function PontoEletronico() {
 
               {!statusQuery.data?.staff ? (
                 <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                  Usuario sem colaborador vinculado.
+                  Usuário sem colaborador vinculado.
                 </div>
               ) : null}
 
@@ -2232,7 +2235,7 @@ export default function PontoEletronico() {
         <Card className="border-border/70">
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between gap-2">
-              <CardTitle className="text-base">{isManager ? "Pendencias de ponto" : "Solicitar correcao"}</CardTitle>
+              <CardTitle className="text-base">{isManager ? "Pendências de ponto" : "Solicitar correção"}</CardTitle>
               <Badge variant="outline">
                 {isManager ? pendingAdjustments.length + pendingApprovalEntries.length : pendingAdjustments.length} pendente(s)
               </Badge>
@@ -2244,12 +2247,12 @@ export default function PontoEletronico() {
                 <div className="flex flex-col gap-2 rounded-lg border border-border/70 bg-muted/20 p-3 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
                     <p className="text-sm font-medium">
-                      {selectedAdjustmentEntry ? "Corrigindo batida existente" : "Solicitacao de batida"}
+                      {selectedAdjustmentEntry ? "Corrigindo batida existente" : "Solicitação de batida"}
                     </p>
                     <p className="mt-0.5 text-xs text-muted-foreground">
                       {selectedAdjustmentEntry
                         ? `${EVENT_LABELS[selectedAdjustmentEntry.eventType]} - ${formatDateTime(selectedAdjustmentEntry.eventTime)}`
-                        : "Registrar entrada, pausa, retorno ou saida que ficou faltando."}
+                        : "Registrar entrada, pausa, retorno ou saída que ficou faltando."}
                     </p>
                   </div>
                   <Button
@@ -2259,7 +2262,7 @@ export default function PontoEletronico() {
                     className="w-full gap-2 sm:w-auto"
                     onClick={startNewAdjustmentRequest}
                   >
-                    Nova solicitacao
+                    Nova solicitação
                   </Button>
                 </div>
 
@@ -2278,7 +2281,7 @@ export default function PontoEletronico() {
                     </Select>
                   </div>
                   <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">Data e horario correto</Label>
+                    <Label className="text-xs text-muted-foreground">Data e horário correto</Label>
                     <Input
                       type="datetime-local"
                       value={adjustmentDateTime}
@@ -2290,12 +2293,12 @@ export default function PontoEletronico() {
                     <Input value={adjustmentReason} onChange={(event) => setAdjustmentReason(event.target.value)} />
                   </div>
                   <div className="space-y-1 md:col-span-2">
-                    <Label className="text-xs text-muted-foreground">Observacao</Label>
+                    <Label className="text-xs text-muted-foreground">Observação</Label>
                     <Textarea
                       rows={2}
                       value={adjustmentNotes}
                       onChange={(event) => setAdjustmentNotes(event.target.value)}
-                      placeholder="Ex: esqueci de registrar a saida do intervalo."
+                      placeholder="Ex: esqueci de registrar a saída do intervalo."
                     />
                   </div>
                   <div className="md:col-span-2">
@@ -2306,7 +2309,7 @@ export default function PontoEletronico() {
                       onClick={() => createAdjustmentMutation.mutate()}
                     >
                       <Save className="h-4 w-4" />
-                      {selectedAdjustmentEntry ? "Enviar correcao" : "Enviar solicitacao"}
+                      {selectedAdjustmentEntry ? "Enviar correção" : "Enviar solicitação"}
                     </Button>
                   </div>
                 </div>
@@ -2394,7 +2397,7 @@ export default function PontoEletronico() {
                         rows={2}
                         value={entryReviewNotesById[entry.id] ?? ""}
                         onChange={(event) => setEntryReviewNotesById((current) => ({ ...current, [entry.id]: event.target.value }))}
-                        placeholder="Observacao da revisao"
+                        placeholder="Observação da revisão"
                       />
                       <div className="flex justify-end gap-2">
                         <Button
@@ -2426,10 +2429,16 @@ export default function PontoEletronico() {
               {adjustmentsQuery.isLoading ? (
                 <p className="text-sm text-muted-foreground">Carregando...</p>
               ) : adjustments.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Nenhuma solicitacao no periodo.</p>
+                <p className="text-sm text-muted-foreground">Nenhuma solicitação no período.</p>
               ) : (
                 adjustments.slice(0, isManager ? 8 : 5).map((item) => {
                   const statusView = ADJUSTMENT_STATUS_LABELS[item.status] ?? ADJUSTMENT_STATUS_LABELS.pending;
+                  const originalEntry = item.entryId
+                    ? entries.find((entry) => entry.id === item.entryId) ?? null
+                    : null;
+                  const appliedEntry = item.appliedEntryId
+                    ? entries.find((entry) => entry.id === item.appliedEntryId) ?? null
+                    : null;
                   return (
                     <div
                       key={item.id}
@@ -2448,6 +2457,24 @@ export default function PontoEletronico() {
                             {item.staffName ?? "Colaborador"} | {item.reason}
                           </p>
                           {item.notes && <p className="mt-1 text-xs text-muted-foreground">{item.notes}</p>}
+                          {(originalEntry || appliedEntry) && (
+                            <div className="mt-2 space-y-1 rounded-md border border-border/60 bg-muted/30 px-2 py-1.5 text-xs text-muted-foreground">
+                              {originalEntry && (
+                                <p>
+                                  Original: {EVENT_LABELS[originalEntry.eventType]} - {formatDateTime(originalEntry.eventTime)}
+                                  {" | "}
+                                  {originalEntry.locationName ?? "Sem local"}
+                                </p>
+                              )}
+                              {appliedEntry && (
+                                <p>
+                                  Correção: {EVENT_LABELS[appliedEntry.eventType]} - {formatDateTime(appliedEntry.eventTime)}
+                                  {" | "}
+                                  {appliedEntry.locationName ?? "Sem local"}
+                                </p>
+                              )}
+                            </div>
+                          )}
                         </div>
                         <Badge variant="outline" className={statusView.tone}>{statusView.label}</Badge>
                       </div>
@@ -2457,7 +2484,7 @@ export default function PontoEletronico() {
                             rows={2}
                             value={reviewNotesById[item.id] ?? ""}
                             onChange={(event) => setReviewNotesById((current) => ({ ...current, [item.id]: event.target.value }))}
-                            placeholder="Observacao da revisao"
+                            placeholder="Observação da revisão"
                           />
                           <div className="flex justify-end gap-2">
                             <Button
@@ -2517,7 +2544,7 @@ export default function PontoEletronico() {
                 />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">Numero</Label>
+                <Label className="text-xs text-muted-foreground">Número</Label>
                 <Input
                   value={locationNumber}
                   onChange={(event) => {
@@ -2540,14 +2567,14 @@ export default function PontoEletronico() {
             </div>
             <div className="grid gap-3 lg:grid-cols-[minmax(260px,1fr)_auto_auto_auto]">
               <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">Endereco</Label>
+                <Label className="text-xs text-muted-foreground">Endereço</Label>
                 <Input
                   value={locationAddress}
                   onChange={(event) => {
                     setLocationAddress(event.target.value);
                     setCapturedLocation(null);
                   }}
-                  placeholder="Rua, numero, bairro"
+                  placeholder="Rua, número, bairro"
                 />
               </div>
               <Button
@@ -2557,7 +2584,7 @@ export default function PontoEletronico() {
                 disabled={isLookingUpLocation || createLocationMutation.isPending}
               >
                 <MapPin className="h-4 w-4" />
-                {isGeocodingAddress ? "Buscando..." : "Buscar local pelo endereco"}
+                {isGeocodingAddress ? "Buscando..." : "Buscar local pelo endereço"}
               </Button>
               <Button
                 variant="outline"
@@ -2644,7 +2671,7 @@ export default function PontoEletronico() {
                             />
                           </div>
                           <div className="space-y-1">
-                            <Label className="text-xs text-muted-foreground">Endereco</Label>
+                            <Label className="text-xs text-muted-foreground">Endereço</Label>
                             <Input
                               value={editingLocation.address}
                               onChange={(event) => setEditingLocation((current) =>
@@ -2872,7 +2899,7 @@ export default function PontoEletronico() {
 
                     <div className="rounded-lg border border-border/70">
                       <div className="flex flex-col gap-2 border-b border-border/70 bg-muted/30 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
-                        <p className="text-xs font-medium text-muted-foreground">Regras de calculo</p>
+                        <p className="text-xs font-medium text-muted-foreground">Regras de cálculo</p>
                         {!canConfigureTimeClockRules && (
                           <Badge variant="outline" className="w-fit">Somente admin edita</Badge>
                         )}
@@ -2990,7 +3017,7 @@ export default function PontoEletronico() {
                   <div className="space-y-4">
                     <div className="rounded-lg border border-border/70 p-4">
                       <div className="flex items-center justify-between gap-2">
-                        <p className="text-sm font-semibold">Acao do mes</p>
+                        <p className="text-sm font-semibold">Ação do mês</p>
                         {monthIsClosed ? (
                           <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">Fechado</Badge>
                         ) : (
@@ -2998,12 +3025,12 @@ export default function PontoEletronico() {
                         )}
                       </div>
                       <div className="mt-4 space-y-1">
-                        <Label className="text-xs text-muted-foreground">Observacao</Label>
+                        <Label className="text-xs text-muted-foreground">Observação</Label>
                         <Textarea
                           rows={4}
                           value={closureNotes}
                           onChange={(event) => setClosureNotes(event.target.value)}
-                          placeholder="Ex: fechamento validado com pendencias justificadas."
+                          placeholder="Ex: fechamento validado com pendências justificadas."
                         />
                       </div>
                       <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
@@ -3014,7 +3041,7 @@ export default function PontoEletronico() {
                           onClick={() => closureMutation.mutate("close")}
                         >
                           <CheckCircle2 className="h-4 w-4" />
-                          Fechar mes
+                          Fechar mês
                         </Button>
                         <Button
                           type="button"
@@ -3024,7 +3051,7 @@ export default function PontoEletronico() {
                           onClick={() => closureMutation.mutate("reopen")}
                         >
                           <RotateCcw className="h-4 w-4" />
-                          Reabrir mes
+                          Reabrir mês
                         </Button>
                       </div>
                     </div>
@@ -3034,7 +3061,7 @@ export default function PontoEletronico() {
                         Auditoria recente
                       </div>
                       {recentAuditLogs.length === 0 ? (
-                        <p className="p-3 text-sm text-muted-foreground">Sem eventos no periodo.</p>
+                        <p className="p-3 text-sm text-muted-foreground">Sem eventos no período.</p>
                       ) : (
                         <div className="divide-y divide-border/70">
                           {recentAuditLogs.slice(0, 5).map((log) => (
@@ -3058,7 +3085,7 @@ export default function PontoEletronico() {
               {entriesQuery.isLoading ? (
                 <p className="text-sm text-muted-foreground">Carregando...</p>
               ) : dailySummaries.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Sem dados no mes.</p>
+                <p className="text-sm text-muted-foreground">Sem dados no mês.</p>
               ) : (
                 <>
                   <div className="space-y-3 md:hidden">
@@ -3172,7 +3199,7 @@ export default function PontoEletronico() {
                         setEntrySearch(event.target.value);
                         setEntryPage(1);
                       }}
-                      placeholder="Colaborador, local ou endereco"
+                      placeholder="Colaborador, local ou endereço"
                     />
                   </div>
                   <div className="space-y-1">
@@ -3209,8 +3236,9 @@ export default function PontoEletronico() {
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">Todos</SelectItem>
-                        <SelectItem value="valid">Validos</SelectItem>
+                        <SelectItem value="valid">Válidos</SelectItem>
                         <SelectItem value="manual_adjusted">Ajustados</SelectItem>
+                        <SelectItem value="corrected">Corrigidos</SelectItem>
                         <SelectItem value="pending_approval">Pendentes</SelectItem>
                         <SelectItem value="rejected">Reprovados</SelectItem>
                         <SelectItem value="out_of_range">Fora do raio</SelectItem>
@@ -3226,7 +3254,7 @@ export default function PontoEletronico() {
               {entriesQuery.isLoading ? (
                 <p className="text-sm text-muted-foreground">Carregando...</p>
               ) : entries.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Sem batidas no mes.</p>
+                <p className="text-sm text-muted-foreground">Sem batidas no mês.</p>
               ) : filteredEntries.length === 0 ? (
                 <p className="text-sm text-muted-foreground">Nenhuma batida encontrada com os filtros atuais.</p>
               ) : (

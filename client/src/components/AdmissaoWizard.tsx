@@ -109,14 +109,14 @@ async function fetchAddressByCep(cep: string): Promise<{
 }> {
   const normalizedCep = digitsOnly(cep);
   if (normalizedCep.length !== 8) {
-    throw new Error("Informe um CEP valido com 8 digitos.");
+    throw new Error("Informe um CEP válido com 8 dígitos.");
   }
 
   const response = await fetch(`https://viacep.com.br/ws/${normalizedCep}/json/`);
-  if (!response.ok) throw new Error("Nao foi possivel consultar o ViaCEP.");
+  if (!response.ok) throw new Error("Não foi possível consultar o ViaCEP.");
 
   const data: ViaCepPayload = await response.json();
-  if (data.erro) throw new Error("CEP nao encontrado.");
+  if (data.erro) throw new Error("CEP não encontrado.");
 
   return {
     cep: maskCep(data.cep || normalizedCep),
@@ -211,7 +211,14 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
         credentials: "include",
         body: JSON.stringify({ ...s1, photoUrl: s1.photoUrl?.trim() || null, status: "active" }),
       });
-      if (!resRes.ok) throw new Error("Erro ao criar residente");
+      if (!resRes.ok) {
+        let message = "Erro ao criar residente";
+        try {
+          const responseBody = await resRes.json();
+          if (responseBody?.message) message = responseBody.message;
+        } catch {}
+        throw new Error(message);
+      }
       const resident = await resRes.json();
       const residentId: number = resident.id;
 
@@ -302,7 +309,7 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
     async function handleLookupCep() {
       const currentCep = form.getValues("cep");
       if (digitsOnly(currentCep || "").length !== 8) {
-        form.setError("cep", { type: "manual", message: "Informe um CEP valido." });
+        form.setError("cep", { type: "manual", message: "Informe um CEP válido." });
         return;
       }
 
@@ -314,11 +321,11 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
         form.setValue("neighborhood", address.neighborhood, { shouldDirty: true, shouldValidate: true });
         form.setValue("city", address.city, { shouldDirty: true, shouldValidate: true });
         form.setValue("state", address.state, { shouldDirty: true, shouldValidate: true });
-        toast({ title: "Endereco preenchido pelo CEP." });
+        toast({ title: "Endereço preenchido pelo CEP." });
       } catch (error) {
         toast({
           variant: "destructive",
-          title: error instanceof Error ? error.message : "Nao foi possivel buscar o CEP.",
+          title: error instanceof Error ? error.message : "Não foi possível buscar o CEP.",
         });
       } finally {
         setIsLookingUpCep(false);
@@ -336,7 +343,7 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
       } catch (error) {
         toast({
           variant: "destructive",
-          title: error instanceof Error ? error.message : "Nao foi possivel carregar a foto.",
+          title: error instanceof Error ? error.message : "Não foi possível carregar a foto.",
         });
       } finally {
         setIsProcessingPhoto(false);
@@ -480,7 +487,7 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
             <div className="sm:col-span-2 rounded-xl border border-border p-4 space-y-4">
               <div className="flex items-center gap-2">
                 <MapPin className="h-4 w-4 text-primary" />
-                <p className="text-sm font-medium text-foreground">Endereco e atendimento</p>
+                <p className="text-sm font-medium text-foreground">Endereço e atendimento</p>
               </div>
               <FormField control={form.control} name="careType" render={({ field }) => (
                 <FormItem>
@@ -524,7 +531,7 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
               <div className="grid grid-cols-1 gap-4 md:grid-cols-[140px_1fr_1fr_96px]">
                 <FormField control={form.control} name="addressNumber" render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Numero</FormLabel>
+                    <FormLabel>Número</FormLabel>
                     <FormControl><Input {...field} value={field.value ?? ""} /></FormControl>
                   </FormItem>
                 )} />
@@ -575,8 +582,8 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
             )} />
           </div>
           <div className="flex justify-end pt-2">
-            <Button type="submit" className="gap-2" data-testid="wizard-next-1">
-              Próximo <ChevronRight className="h-4 w-4" />
+            <Button type="submit" className="gap-2" disabled={isProcessingPhoto} data-testid="wizard-next-1">
+              {isProcessingPhoto ? "Processando foto..." : "Próximo"} <ChevronRight className="h-4 w-4" />
             </Button>
           </div>
         </form>

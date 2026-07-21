@@ -21,7 +21,7 @@ export async function fetchJsonOrThrow<T>(
 
   if (!response.ok) {
     if (response.status === 403) {
-      throw new Error("Sem permissao para visualizar este conteudo.");
+      throw new Error("Sem permissão para visualizar este conteúdo.");
     }
 
     const apiMessage =
@@ -34,14 +34,14 @@ export async function fetchJsonOrThrow<T>(
     }
 
     if (rawBody.trim().startsWith("<!DOCTYPE")) {
-      throw new Error("Resposta invalida do servidor. Verifique se a API foi atualizada.");
+      throw new Error("Resposta inválida do servidor. Verifique se a API foi atualizada.");
     }
 
     throw new Error(fallbackMessage);
   }
 
   if (payload === null && rawBody.trim().length > 0) {
-    throw new Error("Resposta invalida do servidor.");
+    throw new Error("Resposta inválida do servidor.");
   }
 
   return payload as T;

@@ -32,7 +32,7 @@ export function useAuth() {
 
       if (!res.ok) {
         const payload = await res.json().catch(() => null);
-        throw new Error(payload?.message || "Credenciais invalidas");
+        throw new Error(payload?.message || "Credenciais inválidas");
       }
       return res.json();
     },

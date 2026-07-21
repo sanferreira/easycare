@@ -25,7 +25,7 @@ import { NotificationCenter } from "@/components/NotificationCenter";
 const allNavItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/residents", label: "Residentes", icon: Users },
-  { href: "/prontuario", label: "Prontuario", icon: FileText },
+  { href: "/prontuario", label: "Prontuário", icon: FileText },
   { href: "/staff", label: "Equipe", icon: UserCheck },
   { href: "/escalas", label: "Escalas", icon: Calendar },
   { href: "/ponto-eletronico", label: "Ponto", icon: Clock3 },
@@ -69,7 +69,7 @@ function NavContent({ onClose }: { onClose?: () => void }) {
               <span style={{ color: "#22D3EE" }}>Care</span>
             </p>
             <p className="text-[10px] mt-0.5" style={{ color: "rgba(255,255,255,0.4)" }}>
-              Gestao Inteligente
+              Gestão Inteligente
             </p>
           </div>
         </div>
@@ -176,7 +176,7 @@ export function Sidebar() {
             <p className="truncate text-sm font-semibold text-foreground">
               {user?.organizationName ?? "EasyCare"}
             </p>
-            <p className="text-[11px] text-muted-foreground">Gestao Inteligente</p>
+            <p className="text-[11px] text-muted-foreground">Gestão Inteligente</p>
           </div>
           <div className="ml-auto">
             <NotificationCenter surface="light" />

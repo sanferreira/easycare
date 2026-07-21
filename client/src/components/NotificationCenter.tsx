@@ -89,7 +89,7 @@ export function NotificationCenter({ surface = "dark" }: NotificationCenterProps
     staleTime: 0,
     queryFn: async () => {
       const res = await fetch("/api/notifications?unreadOnly=true&limit=10", { credentials: "include" });
-      if (!res.ok) throw new Error("Erro ao carregar notificacoes.");
+      if (!res.ok) throw new Error("Erro ao carregar notificações.");
       return res.json();
     },
   });
@@ -211,9 +211,9 @@ export function NotificationCenter({ surface = "dark" }: NotificationCenterProps
       >
         <div className="flex flex-col gap-2 border-b px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-sm font-semibold text-foreground">Pendencias</p>
+            <p className="text-sm font-semibold text-foreground">Pendências</p>
             <p className="text-xs text-muted-foreground">
-              {unreadCount > 0 ? `${unreadCount} nao lida(s)` : "Nenhuma pendencia nova"}
+              {unreadCount > 0 ? `${unreadCount} não lida(s)` : "Nenhuma pendência nova"}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
@@ -254,7 +254,7 @@ export function NotificationCenter({ surface = "dark" }: NotificationCenterProps
           <div className="border-b bg-muted/35 px-4 py-2 text-xs text-muted-foreground">
             {pushEnabled
               ? "Alertas push ativos neste navegador."
-              : pushError || "Web Push ainda nao configurado no servidor; usando alerta enquanto a aba estiver aberta."}
+              : pushError || "Web Push ainda não configurado no servidor; usando alerta enquanto a aba estiver aberta."}
           </div>
         )}
 
@@ -262,11 +262,11 @@ export function NotificationCenter({ surface = "dark" }: NotificationCenterProps
           {notificationsQuery.isLoading ? (
             <div className="flex items-center gap-2 px-4 py-8 text-sm text-muted-foreground">
               <Clock3 className="h-4 w-4 animate-pulse" />
-              Carregando notificacoes...
+              Carregando notificações...
             </div>
           ) : notifications.length === 0 ? (
             <div className="px-4 py-8 text-sm text-muted-foreground">
-              Nenhuma notificacao pendente.
+              Nenhuma notificação pendente.
             </div>
           ) : (
             <div className="divide-y">
@@ -313,7 +313,7 @@ export function NotificationCenter({ surface = "dark" }: NotificationCenterProps
             variant="outline"
             size="sm"
             className="w-full gap-2"
-            onClick={() => navigate("/notificacoes")}
+            onClick={() => navigate("/notificações")}
           >
             <ListChecks className="h-4 w-4" />
             Ver historico

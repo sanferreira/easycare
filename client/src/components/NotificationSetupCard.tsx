@@ -59,21 +59,21 @@ export function NotificationSetupCard() {
       : permission === "denied"
         ? {
           label: "Bloqueado",
-          description: "A permissao foi bloqueada nas configuracoes do navegador.",
+          description: "A permissão foi bloqueada nas configurações do navegador.",
           tone: "border-red-200 bg-red-50 text-red-700",
           icon: XCircle,
         }
         : !webPushConfigured
           ? {
             label: "Servidor pendente",
-            description: "As chaves de Push ainda nao estao configuradas no servidor.",
+            description: "As chaves de Push ainda não estão configuradas no servidor.",
             tone: "border-amber-200 bg-amber-50 text-amber-700",
             icon: XCircle,
           }
           : !pushSupported
             ? {
-              label: "Indisponivel",
-              description: "Este navegador nao liberou Web Push para esta sessao.",
+              label: "Indisponível",
+              description: "Este navegador não liberou Web Push para esta sessão.",
               tone: "border-slate-200 bg-slate-50 text-slate-700",
               icon: XCircle,
             }
@@ -114,7 +114,7 @@ export function NotificationSetupCard() {
               Alertas no celular
             </CardTitle>
             <CardDescription>
-              Configure este aparelho para receber notificacoes do EasyCare.
+              Configure este aparelho para receber notificações do EasyCare.
             </CardDescription>
           </div>
           <Badge variant="outline" className={cn("w-fit", pushStatus.tone)}>
@@ -176,7 +176,7 @@ export function NotificationSetupCard() {
                 ? "Push ativo neste dispositivo"
                 : needsIosInstall
                   ? "Abra pelo app instalado"
-                  : "Ativar notificacoes push"}
+                  : "Ativar notificações push"}
           </Button>
           {pushEnabled ? (
             <>

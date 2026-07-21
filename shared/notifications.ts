@@ -1,10 +1,10 @@
 export const NOTIFICATION_MODULE_LABELS = {
   system: "Sistema",
   time_clock: "Ponto",
-  medications: "Medicacoes",
+  medications: "Medicações",
   finance: "Financeiro",
   crm: "CRM",
-  clinical: "Prontuario",
+  clinical: "Prontuário",
   schedules: "Escalas",
 } as const;
 

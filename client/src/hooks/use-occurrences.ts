@@ -11,7 +11,7 @@ export function useOccurrences(residentId?: number) {
     queryKey: [api.occurrences.list.path, residentId],
     queryFn: async () => {
       const res = await fetch(path, { credentials: "include" });
-      if (!res.ok) throw new Error("Falha ao carregar ocorrencias");
+      if (!res.ok) throw new Error("Falha ao carregar ocorrências");
       return api.occurrences.list.responses[200].parse(await res.json());
     },
   });
@@ -30,12 +30,12 @@ export function useCreateOccurrence() {
         body: JSON.stringify(validated),
         credentials: "include",
       });
-      if (!res.ok) throw new Error("Falha ao registrar ocorrencia");
+      if (!res.ok) throw new Error("Falha ao registrar ocorrência");
       return api.occurrences.create.responses[201].parse(await res.json());
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [api.occurrences.list.path] });
-      toast({ title: "Sucesso", description: "Ocorrencia registrada" });
+      toast({ title: "Sucesso", description: "Ocorrência registrada" });
     },
     onError: (error) => {
       toast({ variant: "destructive", title: "Erro", description: error.message });
@@ -65,13 +65,13 @@ export function useDeleteOccurrence() {
             }
           } catch {
             if (raw.startsWith("<!doctype") || raw.startsWith("<html")) {
-              throw new Error(`Rota de exclusao nao ativa no backend (HTTP ${res.status}). Reinicie o servidor local.`);
+              throw new Error(`Rota de exclusão não ativa no backend (HTTP ${res.status}). Reinicie o servidor local.`);
             }
           }
         }
 
         const rawPreview = raw ? ` - ${raw.slice(0, 120)}` : "";
-        throw new Error(`Falha ao excluir ocorrencia (HTTP ${res.status})${rawPreview}`);
+        throw new Error(`Falha ao excluir ocorrência (HTTP ${res.status})${rawPreview}`);
       }
       return id;
     },
@@ -85,7 +85,7 @@ export function useDeleteOccurrence() {
       );
       queryClient.invalidateQueries({ queryKey: [api.occurrences.list.path] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
-      toast({ title: "Sucesso", description: "Ocorrencia excluida" });
+      toast({ title: "Sucesso", description: "Ocorrência excluída" });
     },
     onError: (error) => {
       toast({ variant: "destructive", title: "Erro", description: error.message });

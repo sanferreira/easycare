@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 
 type FamilySession = { id: number; name: string; relationship: string; residentId: number; organizationId: number };
 type Resident = { id: number; name: string; birthDate: string; roomNumber: string; admissionDate: string; healthNotes?: string; allergies?: string; dietaryRestrictions?: string; mobilityStatus?: string; cognitiveStatus?: string; status: string };
-type MedicalRecord = { id: number; date: string; title: string; content: string; type: string; bloodPressure?: string; heartRate?: number; temperature?: number; oxygenSat?: number; weight?: number; mood?: string };
+type MedicalRecord = { id: number; date: string; title: string; content: string; type: string; bloodPressure?: string; heartRate?: number; temperature?: number; oxygenSat: number; weight?: number; mood?: string };
 type Medication = { id: number; name: string; dosage: string; frequency: string; route?: string; scheduleTime?: string; prescribedBy?: string };
 type Occurrence = { id: number; type: string; description: string; severity: string; status: string; createdAt: string; resolution?: string };
 

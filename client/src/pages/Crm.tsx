@@ -7,6 +7,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { toDateInputValue } from "@/lib/date";
 import { fetchJsonOrThrow } from "@/lib/fetch-json";
+import { printHtmlDocument } from "@/lib/print";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -21,6 +22,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -129,6 +131,13 @@ type CrmStagesApiResponse = {
 
 type CrmViewMode = "list" | "kanban";
 type CrmFollowUpFilter = "all" | "pending" | "overdue" | "today" | "none";
+type ProposalPresetKey = "ilpi" | "home_care" | "complete" | "custom";
+
+type ProposalOfferItem = {
+  id: string;
+  title: string;
+  description: string;
+};
 
 const DEFAULT_CRM_STAGES: CrmStagePayload[] = [
   { value: "lead", label: "Lead", color: "#64748B" },
@@ -136,8 +145,110 @@ const DEFAULT_CRM_STAGES: CrmStagePayload[] = [
   { value: "proposal", label: "Proposta", color: "#F59E0B" },
   { value: "negotiation", label: "Negociacao", color: "#8B5CF6" },
   { value: "won", label: "Ganho", color: "#10B981" },
-  { value: "no_interest", label: "Nao tem interesse", color: "#F97316" },
+  { value: "no_interest", label: "Não tem interesse", color: "#F97316" },
 ];
+
+const PROPOSAL_OFFER_ITEMS: ProposalOfferItem[] = [
+  {
+    id: "initial_assessment",
+    title: "Avaliacao inicial do residente",
+    description: "Levantamento do perfil, rotina, grau de dependência e necessidades assistenciais.",
+  },
+  {
+    id: "care_plan",
+    title: "Plano de cuidados individualizado",
+    description: "Organização da rotina, cuidados diarios, sinais de alerta e orientacoes para a equipe.",
+  },
+  {
+    id: "assisted_living",
+    title: "Hospedagem e cuidados em residencia assistida",
+    description: "Acompanhamento diário em ambiente estruturado para segurança, higiene, alimentação e bem-estar.",
+  },
+  {
+    id: "home_care",
+    title: "Atendimento Home Care",
+    description: "Cuidado no domicilio conforme jornada combinada, perfil do residente e escala aprovada.",
+  },
+  {
+    id: "medication_management",
+    title: "Controle e administração de medicamentos",
+    description: "Organização de horários, registro de administração e acompanhamento de doses pendentes.",
+  },
+  {
+    id: "daily_evolution",
+    title: "Evolução diaria e registros assistenciais",
+    description: "Registro de evoluções, anotações, sinais vitais, glicemia, checklist e intercorrências.",
+  },
+  {
+    id: "hygiene_routine",
+    title: "Rotina de higiene, banho e conforto",
+    description: "Apoio nas atividades de vida diaria conforme autonomia e necessidade do residente.",
+  },
+  {
+    id: "nutrition",
+    title: "Acompanhamento alimentar",
+    description: "Organização das refeicoes, restrições alimentares e registro de aceitação quando aplicavel.",
+  },
+  {
+    id: "family_reports",
+    title: "Comunicacao e relatórios para a familia",
+    description: "Compartilhamento de informações relevantes sobre rotina, cuidados e evolução do paciente.",
+  },
+  {
+    id: "technical_supervision",
+    title: "Supervisao tecnica da equipe",
+    description: "Acompanhamento operacional da escala, orientacoes e apoio para padronizacao do cuidado.",
+  },
+  {
+    id: "therapies",
+    title: "Terapias e atendimentos complementares",
+    description: "Possibilidade de incluir fisioterapia, enfermagem, medico, nutricionista ou outros profissionais.",
+  },
+  {
+    id: "documents",
+    title: "Organização documental",
+    description: "Armazenamento de documentos, exames, anamneses, contratos e arquivos vinculados ao residente.",
+  },
+];
+
+const PROPOSAL_PRESETS: Record<ProposalPresetKey, { label: string; itemIds: string[] }> = {
+  ilpi: {
+    label: "ILPI / residencia assistida",
+    itemIds: [
+      "initial_assessment",
+      "care_plan",
+      "assisted_living",
+      "medication_management",
+      "daily_evolution",
+      "hygiene_routine",
+      "nutrition",
+      "family_reports",
+      "technical_supervision",
+      "documents",
+    ],
+  },
+  home_care: {
+    label: "Home Care",
+    itemIds: [
+      "initial_assessment",
+      "care_plan",
+      "home_care",
+      "medication_management",
+      "daily_evolution",
+      "hygiene_routine",
+      "family_reports",
+      "technical_supervision",
+    ],
+  },
+  complete: {
+    label: "Completo",
+    itemIds: PROPOSAL_OFFER_ITEMS.map((item) => item.id),
+  },
+  custom: {
+    label: "Personalizado",
+    itemIds: [],
+  },
+};
 
 const STAGE_FALLBACK_COLORS = [
   "#64748B",
@@ -200,7 +311,7 @@ const opportunitySchema = z.object({
   contactEmail: z.string().optional(),
   source: z.string().optional(),
   stage: z.string().trim().min(1, "Etapa obrigatoria"),
-  amount: z.coerce.number().min(0, "Valor invalido"),
+  amount: z.coerce.number().min(0, "Valor inválido"),
   expectedCloseDate: z.string().optional(),
   ownerStaffId: z.preprocess(
     (value) => {
@@ -370,6 +481,13 @@ export default function CrmPage() {
   const [newStageLabel, setNewStageLabel] = useState("");
   const [draggingStageIndex, setDraggingStageIndex] = useState<number | null>(null);
   const [dragOverStageIndex, setDragOverStageIndex] = useState<number | null>(null);
+  const [proposalDialogOpen, setProposalDialogOpen] = useState(false);
+  const [proposalOpportunity, setProposalOpportunity] = useState<CrmOpportunity | null>(null);
+  const [proposalPreset, setProposalPreset] = useState<ProposalPresetKey>("ilpi");
+  const [selectedProposalItemIds, setSelectedProposalItemIds] = useState<string[]>(PROPOSAL_PRESETS.ilpi.itemIds);
+  const [proposalValidityDays, setProposalValidityDays] = useState(7);
+  const [proposalPaymentTerms, setProposalPaymentTerms] = useState("Mensalidade com vencimento a combinar. Valores sujeitos a ajuste apos avaliacao inicial e definicao final do plano.");
+  const [proposalExtraNotes, setProposalExtraNotes] = useState("");
 
   const form = useForm<z.infer<typeof opportunitySchema>>({
     resolver: zodResolver(opportunitySchema),
@@ -418,7 +536,7 @@ export default function CrmPage() {
         if (
           error instanceof Error
           && (
-            error.message.includes("Resposta invalida do servidor")
+            error.message.includes("Resposta inválida do servidor")
             || error.message.includes("Erro ao carregar etapas do CRM.")
           )
         ) {
@@ -741,7 +859,7 @@ export default function CrmPage() {
   const createOpportunity = useMutation({
     mutationFn: async (data: z.infer<typeof opportunitySchema>) => {
       if (!scopedOrganizationId) {
-        throw new Error("Selecione uma organizacao para continuar.");
+        throw new Error("Selecione uma organização para continuar.");
       }
       return fetchJsonOrThrow("/api/crm/opportunities", "Erro ao criar oportunidade.", {
         method: "POST",
@@ -775,7 +893,7 @@ export default function CrmPage() {
   const updateOpportunity = useMutation({
     mutationFn: async ({ id, data }: { id: number; data: z.infer<typeof opportunitySchema> }) => {
       if (!scopedOrganizationId) {
-        throw new Error("Selecione uma organizacao para continuar.");
+        throw new Error("Selecione uma organização para continuar.");
       }
       return fetchJsonOrThrow(`/api/crm/opportunities/${id}`, "Erro ao atualizar oportunidade.", {
         method: "PUT",
@@ -808,7 +926,7 @@ export default function CrmPage() {
 
   const moveOpportunity = useMutation({
     mutationFn: async ({ id, stage }: { id: number; stage: string }) => {
-      if (!scopedOrganizationId) throw new Error("Selecione uma organizacao para continuar.");
+      if (!scopedOrganizationId) throw new Error("Selecione uma organização para continuar.");
       return fetchJsonOrThrow(`/api/crm/opportunities/${id}/stage`, "Erro ao mover oportunidade.", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -823,7 +941,7 @@ export default function CrmPage() {
 
   const deleteOpportunity = useMutation({
     mutationFn: async (id: number) => {
-      if (!scopedOrganizationId) throw new Error("Selecione uma organizacao para continuar.");
+      if (!scopedOrganizationId) throw new Error("Selecione uma organização para continuar.");
       return fetchJsonOrThrow(
         buildCrmUrl(`/api/crm/opportunities/${id}`, { organizationId: scopedOrganizationId }),
         "Erro ao excluir oportunidade.",
@@ -839,7 +957,7 @@ export default function CrmPage() {
 
   const saveFollowUps = useMutation({
     mutationFn: async ({ id, tasks }: { id: number; tasks: CrmFollowUpTask[] }) => {
-      if (!scopedOrganizationId) throw new Error("Selecione uma organizacao para continuar.");
+      if (!scopedOrganizationId) throw new Error("Selecione uma organização para continuar.");
       return fetchJsonOrThrow(`/api/crm/opportunities/${id}/follow-ups`, "Erro ao salvar follow-ups.", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -865,7 +983,7 @@ export default function CrmPage() {
 
   const saveStages = useMutation({
     mutationFn: async (stages: Array<{ value: string; label: string; color: string }>) => {
-      if (!scopedOrganizationId) throw new Error("Selecione uma organizacao para continuar.");
+      if (!scopedOrganizationId) throw new Error("Selecione uma organização para continuar.");
       try {
         return await fetchJsonOrThrow("/api/crm/stages", "Erro ao salvar etapas do CRM.", {
           method: "PUT",
@@ -878,9 +996,9 @@ export default function CrmPage() {
       } catch (error) {
         if (
           error instanceof Error
-          && error.message.includes("Resposta invalida do servidor")
+          && error.message.includes("Resposta inválida do servidor")
         ) {
-          throw new Error("API do CRM ainda nao foi atualizada no servidor. Reinicie e atualize o backend.");
+          throw new Error("API do CRM ainda não foi atualizada no servidor. Reinicie e atualize o backend.");
         }
         throw error;
       }
@@ -1062,18 +1180,52 @@ export default function CrmPage() {
     setFollowUpDialogOpen(true);
   };
 
-  const printProposalDocument = (opportunity: CrmOpportunity) => {
-    const printWindow = window.open("", "_blank", "noopener,noreferrer,width=1000,height=900");
-    if (!printWindow) {
-      toast({ variant: "destructive", title: "Permita pop-ups para gerar a proposta." });
-      return;
-    }
+  const openProposalDialog = (opportunity: CrmOpportunity) => {
+    setProposalOpportunity(opportunity);
+    setProposalPreset("ilpi");
+    setSelectedProposalItemIds(PROPOSAL_PRESETS.ilpi.itemIds);
+    setProposalValidityDays(7);
+    setProposalPaymentTerms("Mensalidade com vencimento a combinar. Valores sujeitos a ajuste apos avaliacao inicial e definicao final do plano.");
+    setProposalExtraNotes(opportunity.notes ?? "");
+    setProposalDialogOpen(true);
+  };
 
+  const toggleProposalItem = (itemId: string, checked: boolean) => {
+    setProposalPreset("custom");
+    setSelectedProposalItemIds((current) => {
+      if (checked) {
+        return current.includes(itemId) ? current : [...current, itemId];
+      }
+      return current.filter((id) => id !== itemId);
+    });
+  };
+
+  const printProposalDocument = (
+    opportunity: CrmOpportunity,
+    config?: {
+      offerItems?: ProposalOfferItem[];
+      validityDays?: number;
+      paymentTerms?: string;
+      extraNotes?: string;
+    },
+  ) => {
     const generatedAt = new Date().toLocaleString("pt-BR");
     const expectedClose = opportunity.expectedCloseDate
       ? formatDateKeyPtBr(opportunity.expectedCloseDate)
       : "-";
-    printWindow.document.write(`
+    const offerItems = config?.offerItems?.length
+      ? config.offerItems
+      : PROPOSAL_OFFER_ITEMS.filter((item) => PROPOSAL_PRESETS.ilpi.itemIds.includes(item.id));
+    const offerItemsHtml = offerItems.map((item) => `
+      <li>
+        <strong>${escapeHtml(item.title)}</strong>
+        <span>${escapeHtml(item.description)}</span>
+      </li>
+    `).join("");
+    const commercialNotes = (config?.extraNotes ?? opportunity.notes ?? "").trim();
+    const paymentTerms = (config?.paymentTerms ?? "").trim();
+    const validityDays = Math.max(1, Math.min(90, Number(config?.validityDays ?? 7) || 7));
+    const printed = printHtmlDocument(`
       <!doctype html>
       <html lang="pt-BR">
         <head>
@@ -1089,6 +1241,14 @@ export default function CrmPage() {
             .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 18px; margin-bottom: 18px; font-size: 12px; }
             .box { border: 1px solid #d1d5db; border-radius: 8px; padding: 12px; margin: 14px 0; }
             .value { font-size: 18px; font-weight: 700; }
+            .hero { background: #f8fafc; border: 1px solid #dbe4ef; border-radius: 10px; padding: 14px; margin: 14px 0 18px; }
+            ul { margin: 8px 0 0; padding-left: 18px; }
+            li { margin-bottom: 10px; font-size: 12px; }
+            li strong { display: block; color: #111827; }
+            li span { color: #4b5563; }
+            table { width: 100%; border-collapse: collapse; margin: 10px 0 16px; font-size: 12px; }
+            th { background: #f3f4f6; color: #374151; text-align: left; }
+            th, td { border: 1px solid #d1d5db; padding: 8px; vertical-align: top; }
             .signature { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 48px; margin-top: 56px; font-size: 12px; }
             .line { border-top: 1px solid #111827; padding-top: 8px; text-align: center; }
             @media print { body { margin: 18mm; } }
@@ -1100,6 +1260,11 @@ export default function CrmPage() {
             <p class="muted">${escapeHtml(user?.organizationName ?? "EasyCare")} - gerada em ${escapeHtml(generatedAt)}</p>
           </header>
 
+          <section class="hero">
+            <h2>Resumo da proposta</h2>
+            <p>Esta proposta apresenta uma solucao assistencial configurada conforme as necessidades informadas pelo cliente e os itens selecionados no CRM.</p>
+          </section>
+
           <h2>Cliente / oportunidade</h2>
           <div class="grid">
             <div><strong>Titulo:</strong> ${escapeHtml(opportunity.title)}</div>
@@ -1108,8 +1273,8 @@ export default function CrmPage() {
             <div><strong>Telefone:</strong> ${escapeHtml(opportunity.contactPhone || "-")}</div>
             <div><strong>E-mail:</strong> ${escapeHtml(opportunity.contactEmail || "-")}</div>
             <div><strong>Origem:</strong> ${escapeHtml(opportunity.source || "-")}</div>
-            <div><strong>Responsavel:</strong> ${escapeHtml(opportunity.ownerStaffName || opportunity.ownerName || "-")}</div>
-            <div><strong>Previsao:</strong> ${escapeHtml(expectedClose)}</div>
+            <div><strong>Responsável:</strong> ${escapeHtml(opportunity.ownerStaffName || opportunity.ownerName || "-")}</div>
+            <div><strong>Previsão:</strong> ${escapeHtml(expectedClose)}</div>
           </div>
 
           <div class="box">
@@ -1117,10 +1282,40 @@ export default function CrmPage() {
             <p class="value">${escapeHtml(formatCurrencyBRL(opportunity.amount))}</p>
           </div>
 
-          <h2>Escopo proposto</h2>
+          <h2>Itens inclusos</h2>
           <div class="box">
-            <p>${escapeHtml(opportunity.notes || "Proposta de servicos assistenciais conforme necessidades alinhadas com o cliente.")}</p>
+            <ul>${offerItemsHtml}</ul>
+          </div>
+
+          <h2>Condicoes comerciais</h2>
+          <table>
+            <tbody>
+              <tr>
+                <th>Investimento estimado</th>
+                <td>${escapeHtml(formatCurrencyBRL(opportunity.amount))}</td>
+              </tr>
+              <tr>
+                <th>Validade da proposta</th>
+                <td>${escapeHtml(String(validityDays))} dia(s)</td>
+              </tr>
+              <tr>
+                <th>Forma de pagamento</th>
+                <td>${escapeHtml(paymentTerms || "A combinar.")}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h2>Observações e alinhamentos</h2>
+          <div class="box">
+            <p>${escapeHtml(commercialNotes || "Proposta de servicos assistenciais conforme necessidades alinhadas com o cliente.")}</p>
             <p>Os detalhes finais de plano, vigencia, equipe, rotina e condicoes comerciais devem ser confirmados antes da assinatura do contrato.</p>
+          </div>
+
+          <h2>Próximos passos</h2>
+          <div class="box">
+            <p>1. Validacao da proposta pelo cliente.</p>
+            <p>2. Confirmacao dos dados do residente/paciente e responsaveis.</p>
+            <p>3. Definição da data de início e formalização contratual.</p>
           </div>
 
           <h2>Assinaturas</h2>
@@ -1129,13 +1324,28 @@ export default function CrmPage() {
             <div class="line">Representante comercial</div>
           </div>
 
-          <script>
-            window.onload = function () { setTimeout(function () { window.print(); }, 250); };
-          </script>
         </body>
       </html>
     `);
-    printWindow.document.close();
+    if (!printed) {
+      toast({ variant: "destructive", title: "Não foi possível gerar a proposta." });
+    }
+  };
+
+  const generateSelectedProposal = () => {
+    if (!proposalOpportunity) return;
+    const offerItems = PROPOSAL_OFFER_ITEMS.filter((item) => selectedProposalItemIds.includes(item.id));
+    if (offerItems.length === 0) {
+      toast({ variant: "destructive", title: "Selecione ao menos um item da proposta." });
+      return;
+    }
+    printProposalDocument(proposalOpportunity, {
+      offerItems,
+      validityDays: proposalValidityDays,
+      paymentTerms: proposalPaymentTerms,
+      extraNotes: proposalExtraNotes,
+    });
+    setProposalDialogOpen(false);
   };
 
   const handleAddFollowUpTask = () => {
@@ -1229,7 +1439,7 @@ export default function CrmPage() {
                         <p className="truncate text-sm font-semibold text-foreground">{opportunity.title}</p>
                         <p className="truncate text-xs text-muted-foreground">{opportunity.contactName || "Sem contato"}</p>
                         <p className="mt-1 text-xs text-muted-foreground">{opportunity.source || "Sem origem"}</p>
-                        <p className="text-xs text-muted-foreground">{opportunity.ownerStaffName || opportunity.ownerName || "Sem responsavel"}</p>
+                        <p className="text-xs text-muted-foreground">{opportunity.ownerStaffName || opportunity.ownerName || "Sem responsável"}</p>
                       </div>
                       <p className="shrink-0 text-sm font-semibold text-foreground">{formatCurrencyBRL(opportunity.amount)}</p>
                     </div>
@@ -1283,7 +1493,7 @@ export default function CrmPage() {
                     </div>
 
                     <div className="mt-3 flex flex-wrap justify-end gap-2 border-t border-border pt-3">
-                      <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => printProposalDocument(opportunity)}>
+                      <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => openProposalDialog(opportunity)}>
                         <FileText className="mr-1 h-3.5 w-3.5" />
                         Proposta
                       </Button>
@@ -1313,12 +1523,12 @@ export default function CrmPage() {
                   <TableRow>
                     <TableHead>Oportunidade</TableHead>
                     <TableHead>Origem</TableHead>
-                    <TableHead>Responsavel</TableHead>
+                    <TableHead>Responsável</TableHead>
                     <TableHead>Etapa</TableHead>
                     <TableHead>Follow-up</TableHead>
                     <TableHead className="text-right">Valor</TableHead>
-                    <TableHead>Previsao</TableHead>
-                    <TableHead className="text-right">Acoes</TableHead>
+                    <TableHead>Previsão</TableHead>
+                    <TableHead className="text-right">Ações</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1389,7 +1599,7 @@ export default function CrmPage() {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-1">
-                            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => printProposalDocument(opportunity)}>
+                            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => openProposalDialog(opportunity)}>
                               <FileText className="mr-1 h-3.5 w-3.5" />
                               Proposta
                             </Button>
@@ -1590,13 +1800,13 @@ export default function CrmPage() {
         <CardContent className="space-y-3">
           {user?.isSuperAdmin ? (
             <div className="space-y-1">
-              <Label>Organizacao</Label>
+              <Label>Organização</Label>
               <Select
                 value={selectedOrganizationId ? String(selectedOrganizationId) : undefined}
                 onValueChange={(value) => setSelectedOrganizationId(Number(value))}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="Selecione a organizacao" />
+                  <SelectValue placeholder="Selecione a organização" />
                 </SelectTrigger>
                 <SelectContent>
                   {(organizationsQuery.data ?? []).map((organization) => (
@@ -1658,7 +1868,7 @@ export default function CrmPage() {
               </Select>
             </div>
             <div className="space-y-1">
-              <Label>Responsavel da equipe</Label>
+              <Label>Responsável da equipe</Label>
               <Select value={ownerFilter} onValueChange={setOwnerFilter}>
                 <SelectTrigger>
                   <SelectValue />
@@ -1683,13 +1893,13 @@ export default function CrmPage() {
                   <SelectItem value="all">Todos</SelectItem>
                   <SelectItem value="overdue">Atrasados</SelectItem>
                   <SelectItem value="today">Vencem hoje</SelectItem>
-                  <SelectItem value="pending">Com pendencia</SelectItem>
-                  <SelectItem value="none">Sem pendencia</SelectItem>
+                  <SelectItem value="pending">Com pendência</SelectItem>
+                  <SelectItem value="none">Sem pendência</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-1">
-              <Label>Previsao de</Label>
+              <Label>Previsão de</Label>
               <Input
                 type="date"
                 value={expectedCloseFrom}
@@ -1697,7 +1907,7 @@ export default function CrmPage() {
               />
             </div>
             <div className="space-y-1">
-              <Label>Previsao ate</Label>
+              <Label>Previsão ate</Label>
               <Input
                 type="date"
                 value={expectedCloseTo}
@@ -1708,13 +1918,13 @@ export default function CrmPage() {
 
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <Label>Visualizacao</Label>
+              <Label>Visualização</Label>
               <p className="text-xs text-muted-foreground">
                 Use lista para volume e Kanban para acompanhar o funil.
               </p>
             </div>
             <ToggleGroup
-              aria-label="Visualizacao do CRM"
+              aria-label="Visualização do CRM"
               type="single"
               value={viewMode}
               onValueChange={(value) => {
@@ -1837,7 +2047,7 @@ export default function CrmPage() {
       {!scopedOrganizationId ? (
         <Card>
           <CardContent className="py-8 text-sm text-muted-foreground">
-            Selecione uma organizacao para carregar o CRM.
+            Selecione uma organização para carregar o CRM.
           </CardContent>
         </Card>
       ) : stagesQuery.isLoading ? (
@@ -1983,7 +2193,7 @@ export default function CrmPage() {
                           </div>
 
                           <div className="grid grid-cols-2 gap-1.5">
-                            <Button size="sm" variant="outline" className="h-8 min-w-0 px-2 text-xs" onClick={() => printProposalDocument(opportunity)}>
+                            <Button size="sm" variant="outline" className="h-8 min-w-0 px-2 text-xs" onClick={() => openProposalDialog(opportunity)}>
                               <FileText className="mr-1 h-3.5 w-3.5" />
                               Proposta
                             </Button>
@@ -2035,7 +2245,7 @@ export default function CrmPage() {
 
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">
-              Edite nomes, cores, arraste para reordenar e crie novas colunas para o funil desta organizacao.
+              Edite nomes, cores, arraste para reordenar e crie novas colunas para o funil desta organização.
             </p>
 
             <div className="space-y-2">
@@ -2155,6 +2365,125 @@ export default function CrmPage() {
                 }}
               >
                 Salvar etapas
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={proposalDialogOpen} onOpenChange={setProposalDialogOpen}>
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Montar proposta comercial</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            {proposalOpportunity ? (
+              <div className="rounded-lg border border-border bg-muted/30 p-3">
+                <p className="text-sm font-semibold text-foreground">{proposalOpportunity.title}</p>
+                <p className="text-xs text-muted-foreground">
+                  {[proposalOpportunity.contactName, proposalOpportunity.contactPhone, proposalOpportunity.contactEmail]
+                    .filter(Boolean)
+                    .join(" | ") || "Sem contato informado"}
+                </p>
+                <p className="mt-1 text-sm font-semibold text-foreground">{formatCurrencyBRL(proposalOpportunity.amount)}</p>
+              </div>
+            ) : null}
+
+            <div className="grid gap-4 md:grid-cols-[220px_minmax(0,1fr)]">
+              <div className="space-y-2">
+                <Label>Modelo</Label>
+                <Select
+                  value={proposalPreset}
+                  onValueChange={(value) => {
+                    const presetKey = value as ProposalPresetKey;
+                    setProposalPreset(presetKey);
+                    if (presetKey !== "custom") {
+                      setSelectedProposalItemIds(PROPOSAL_PRESETS[presetKey].itemIds);
+                    }
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(PROPOSAL_PRESETS).map(([key, preset]) => (
+                      <SelectItem key={key} value={key}>
+                        {preset.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Use um modelo pronto e ajuste os itens antes de gerar o PDF.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Itens inclusos na proposta</Label>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {PROPOSAL_OFFER_ITEMS.map((item) => {
+                    const checked = selectedProposalItemIds.includes(item.id);
+                    return (
+                      <label
+                        key={item.id}
+                        className="flex cursor-pointer gap-3 rounded-lg border border-border bg-background p-3 text-sm transition hover:bg-muted/40"
+                      >
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(value) => toggleProposalItem(item.id, value === true)}
+                          className="mt-0.5"
+                        />
+                        <span className="min-w-0">
+                          <span className="block font-medium text-foreground">{item.title}</span>
+                          <span className="mt-1 block text-xs text-muted-foreground">{item.description}</span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-[160px_minmax(0,1fr)]">
+              <div className="space-y-2">
+                <Label>Validade</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={90}
+                  value={proposalValidityDays}
+                  onChange={(event) => setProposalValidityDays(Number(event.target.value || 7))}
+                />
+                <p className="text-xs text-muted-foreground">Dias.</p>
+              </div>
+              <div className="space-y-2">
+                <Label>Condicoes de pagamento</Label>
+                <Textarea
+                  rows={3}
+                  value={proposalPaymentTerms}
+                  onChange={(event) => setProposalPaymentTerms(event.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Observações comerciais</Label>
+              <Textarea
+                rows={4}
+                value={proposalExtraNotes}
+                onChange={(event) => setProposalExtraNotes(event.target.value)}
+                placeholder="Use este campo para observações da negociacao, condicoes especiais ou detalhes do atendimento."
+              />
+            </div>
+
+            <div className="flex flex-col-reverse gap-2 border-t border-border pt-4 sm:flex-row sm:justify-end">
+              <Button type="button" variant="outline" onClick={() => setProposalDialogOpen(false)}>
+                Cancelar
+              </Button>
+              <Button type="button" className="gap-2" onClick={generateSelectedProposal}>
+                <FileText className="h-4 w-4" />
+                Gerar proposta
               </Button>
             </div>
           </div>
@@ -2316,18 +2645,18 @@ export default function CrmPage() {
                   name="ownerStaffId"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Responsavel da equipe</FormLabel>
+                      <FormLabel>Responsável da equipe</FormLabel>
                       <Select
                         value={field.value ? String(field.value) : "none"}
                         onValueChange={(value) => field.onChange(value === "none" ? null : Number(value))}
                       >
                         <FormControl>
                           <SelectTrigger>
-                            <SelectValue placeholder="Sem responsavel" />
+                            <SelectValue placeholder="Sem responsável" />
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
-                          <SelectItem value="none">Sem responsavel</SelectItem>
+                          <SelectItem value="none">Sem responsável</SelectItem>
                           {(crmResponsiblesQuery.data ?? []).map((item) => (
                             <SelectItem key={item.id} value={String(item.id)}>
                               {item.name}{item.role ? ` - ${item.role}` : ""}
@@ -2364,9 +2693,9 @@ export default function CrmPage() {
                   name="notes"
                   render={({ field }) => (
                     <FormItem className="md:col-span-2">
-                      <FormLabel>Observacoes</FormLabel>
+                      <FormLabel>Observações</FormLabel>
                       <FormControl>
-                        <Textarea rows={4} {...field} value={field.value ?? ""} placeholder="Anotacoes da negociacao..." />
+                        <Textarea rows={4} {...field} value={field.value ?? ""} placeholder="Anotações da negociação..." />
                       </FormControl>
                       <FormMessage />
                     </FormItem>

@@ -25,8 +25,8 @@ app.use(
   }),
 );
 
-app.use(express.json({ limit: "15mb" }));
-app.use(express.urlencoded({ extended: false, limit: "15mb" }));
+app.use(express.json({ limit: "25mb" }));
+app.use(express.urlencoded({ extended: false, limit: "25mb" }));
 
 app.use("/api", (_req, res, next) => {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
@@ -73,7 +73,7 @@ app.use((req, res, next) => {
 
   // Keep API failures in JSON (avoid Vite HTML fallback on unknown API routes in development).
   app.use("/api/*", (req, res) => {
-    res.status(404).json({ message: `Rota API nao encontrada: ${req.method} ${req.originalUrl}` });
+    res.status(404).json({ message: `Rota API não encontrada: ${req.method} ${req.originalUrl}` });
   });
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {

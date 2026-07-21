@@ -333,10 +333,10 @@ function describeShiftProfileRule(rule: ShiftProfileRule): string {
   }
   const parts: string[] = [];
   if (rule.exactShiftHours) {
-    parts.push(`plantao de ${rule.exactShiftHours}h`);
+    parts.push(`plantão de ${rule.exactShiftHours}h`);
   }
   if (rule.minRestHours) {
-    parts.push(`descanso minimo de ${rule.minRestHours}h`);
+    parts.push(`descanso mínimo de ${rule.minRestHours}h`);
   }
   if (rule.allowedShiftTypes.length > 0) {
     parts.push(`tipos permitidos: ${rule.allowedShiftTypes.join(", ")}`);
@@ -384,21 +384,21 @@ function getWorkScheduleSummary(raw?: string | null): string {
   const blockedCount = schedule.blockedDates.length;
   const total = weeklyCount + oddCount + evenCount;
   if (total === 0 && blockedCount === 0) return "Sem agenda recorrente";
-  if (blockedCount === 0) return `${total} faixa(s) de horario`;
-  return `${total} faixa(s) de horario - ${blockedCount} excecao(oes)`;
+  if (blockedCount === 0) return `${total} faixa(s) de horário`;
+  return `${total} faixa(s) de horário - ${blockedCount} exceção(ões)`;
 }
 
 async function fetchAddressByCep(cep: string): Promise<{ cep: string; address: string }> {
   const normalizedCep = digitsOnly(cep);
   if (normalizedCep.length !== 8) {
-    throw new Error("Informe um CEP valido com 8 digitos.");
+    throw new Error("Informe um CEP válido com 8 dígitos.");
   }
 
   const response = await fetch(`https://viacep.com.br/ws/${normalizedCep}/json/`);
-  if (!response.ok) throw new Error("Nao foi possivel consultar o ViaCEP.");
+  if (!response.ok) throw new Error("Não foi possível consultar o ViaCEP.");
 
   const data: ViaCepPayload = await response.json();
-  if (data.erro) throw new Error("CEP nao encontrado.");
+  if (data.erro) throw new Error("CEP não encontrado.");
 
   const cityAndUf = [data.localidade, data.uf].filter(Boolean).join("/");
   const addressParts = [data.logradouro, data.bairro, cityAndUf].filter(Boolean);
@@ -469,7 +469,7 @@ export default function Staff() {
               <TableHead>Regime</TableHead>
               <TableHead>Documento</TableHead>
               <TableHead>Status</TableHead>
-              <TableHead className="text-right">Acoes</TableHead>
+              <TableHead className="text-right">Ações</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -816,7 +816,7 @@ function StaffDialog({
   async function handleLookupCep() {
     const currentCep = form.getValues("cep");
     if (digitsOnly(currentCep || "").length !== 8) {
-      form.setError("cep", { type: "manual", message: "Informe um CEP valido." });
+      form.setError("cep", { type: "manual", message: "Informe um CEP válido." });
       return;
     }
 
@@ -825,11 +825,11 @@ function StaffDialog({
       const address = await fetchAddressByCep(currentCep || "");
       form.setValue("cep", address.cep, { shouldDirty: true, shouldValidate: true });
       form.setValue("address", address.address, { shouldDirty: true, shouldValidate: true });
-      toast({ title: "Endereco preenchido pelo CEP." });
+      toast({ title: "Endereço preenchido pelo CEP." });
     } catch (error) {
       toast({
         variant: "destructive",
-        title: error instanceof Error ? error.message : "Nao foi possivel buscar o CEP.",
+        title: error instanceof Error ? error.message : "Não foi possível buscar o CEP.",
       });
     } finally {
       setIsLookingUpCep(false);
@@ -894,27 +894,27 @@ function StaffDialog({
     const cepDigits = digitsOnly(data.cep || "");
 
     if (selectedEmploymentType === "clt" && cpfDigits.length !== 11) {
-      form.setError("cpf", { type: "manual", message: "CPF invalido para colaborador CLT." });
+      form.setError("cpf", { type: "manual", message: "CPF inválido para colaborador CLT." });
       return;
     }
     if (selectedEmploymentType === "pj" && cnpjDigits.length !== 14) {
-      form.setError("cnpj", { type: "manual", message: "CNPJ invalido para colaborador PJ." });
+      form.setError("cnpj", { type: "manual", message: "CNPJ inválido para colaborador PJ." });
       return;
     }
     if (cepDigits && cepDigits.length !== 8) {
-      form.setError("cep", { type: "manual", message: "CEP deve ter 8 digitos." });
+      form.setError("cep", { type: "manual", message: "CEP deve ter 8 dígitos." });
       return;
     }
     if (!selectedRoleKey) {
-      form.setError("role", { type: "manual", message: "Selecione um cargo valido." });
+      form.setError("role", { type: "manual", message: "Selecione um cargo válido." });
       return;
     }
     if (!Number.isFinite(shiftValueNumber) || shiftValueNumber < 0) {
-      form.setError("shiftValue", { type: "manual", message: "Valor do plantao invalido." });
+      form.setError("shiftValue", { type: "manual", message: "Valor do plantão inválido." });
       return;
     }
     if (!Number.isFinite(bonusValueNumber) || bonusValueNumber < 0) {
-      form.setError("bonusValue", { type: "manual", message: "Valor de bonificacao invalido." });
+      form.setError("bonusValue", { type: "manual", message: "Valor de bonificação inválido." });
       return;
     }
 
@@ -925,7 +925,7 @@ function StaffDialog({
       if (weeklyRuleInvalid || oddRuleInvalid || evenRuleInvalid) {
         toast({
           variant: "destructive",
-          title: "Agenda invalida. Revise horarios com inicio/fim corretos.",
+          title: "Agenda inválida. Revise horários com início/fim corretos.",
         });
         return;
       }
@@ -1027,7 +1027,7 @@ function StaffDialog({
                   <div className="text-left">
                     <p className="text-sm font-semibold text-foreground">Dados basicos do colaborador</p>
                     <p className="text-xs text-muted-foreground">
-                      Foto, contato, endereco e perfil de jornada.
+                      Foto, contato, endereço e perfil de jornada.
                     </p>
                   </div>
                 </AccordionTrigger>
@@ -1133,7 +1133,7 @@ function StaffDialog({
                 name="address"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Endereco</FormLabel>
+                    <FormLabel>Endereço</FormLabel>
                     <FormControl>
                       <Input {...field} value={field.value ?? ""} />
                     </FormControl>
@@ -1208,7 +1208,7 @@ function StaffDialog({
               <div className="rounded-xl border border-border p-4">
                 <p className="text-sm font-medium text-foreground">Inicio do ciclo no gerador mensal</p>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Define se a primeira escala gerada no mes comeca em plantao diurno ou noturno.
+                  Define se a primeira escala gerada no mês começa em plantão diurno ou noturno.
                 </p>
                 <div className="mt-3">
                   <Select
@@ -1223,8 +1223,8 @@ function StaffDialog({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="12h_manha">Inicia no plantao diurno</SelectItem>
-                      <SelectItem value="12h_noite">Inicia no plantao noturno</SelectItem>
+                      <SelectItem value="12h_manha">Inicia no plantão diurno</SelectItem>
+                      <SelectItem value="12h_noite">Inicia no plantão noturno</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1239,11 +1239,11 @@ function StaffDialog({
                   <div className="text-left">
                     <p className="text-sm font-semibold text-foreground">Agenda recorrente de trabalho</p>
                     <p className="text-xs text-muted-foreground">
-                      Configure horarios por dia da semana e regras de dias pares/impares.
+                      Configure horários por dia da semana e regras de dias pares/impares.
                     </p>
                     {selectedShiftDurationHours ? (
                       <p className="mt-1 text-xs text-muted-foreground">
-                        Ao alterar inicio ou fim, o outro horario sera recalculado para {selectedShiftDurationHours}h.
+                        Ao alterar início ou fim, o outro horário será recalculado para {selectedShiftDurationHours}h.
                       </p>
                     ) : null}
                   </div>
@@ -1471,7 +1471,7 @@ function StaffDialog({
                   <div className="text-left">
                     <p className="text-sm font-semibold text-foreground">Dados contratuais</p>
                     <p className="text-xs text-muted-foreground">
-                      Regime, documentos, valor do plantao, e-mail e status do colaborador.
+                      Regime, documentos, valor do plantão, e-mail e status do colaborador.
                     </p>
                   </div>
                 </AccordionTrigger>
@@ -1488,7 +1488,7 @@ function StaffDialog({
                                 <div>
                                   <FormLabel className="m-0 text-sm font-medium">Colaborador ativo</FormLabel>
                                   <p className="mt-1 text-xs text-muted-foreground">
-                                    Colaboradores inativos nao aparecem para novos plantoes.
+                                    Colaboradores inativos não aparecem para novos plantões.
                                   </p>
                                 </div>
                                 <FormControl>
@@ -1581,7 +1581,7 @@ function StaffDialog({
                         name="shiftValue"
                         render={({ field }) => (
                           <FormItem>
-                            <FormLabel>Valor do plantao (R$)</FormLabel>
+                            <FormLabel>Valor do plantão (R$)</FormLabel>
                             <FormControl>
                               <Input
                                 type="number"
@@ -1706,9 +1706,9 @@ function StaffDialog({
                         name="bonusNotes"
                         render={({ field }) => (
                           <FormItem>
-                            <FormLabel>Observacao da bonificacao</FormLabel>
+                            <FormLabel>Observação da bonificação</FormLabel>
                             <FormControl>
-                              <Input {...field} value={field.value ?? ""} placeholder="Ex: adicional fixo, meta, plantao especial" />
+                              <Input {...field} value={field.value ?? ""} placeholder="Ex: adicional fixo, meta, plantão especial" />
                             </FormControl>
                             <FormMessage />
                           </FormItem>
@@ -1757,7 +1757,7 @@ function StaffDialog({
                           name="portalUsername"
                           render={({ field }) => (
                             <FormItem>
-                              <FormLabel>Usuario de acesso *</FormLabel>
+                              <FormLabel>Usuário de acesso *</FormLabel>
                               <FormControl>
                                 <Input
                                   {...field}
@@ -1802,7 +1802,7 @@ function StaffDialog({
                       </div>
                     ) : (
                       <div className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">
-                        Portal desativado. Ative para criar o usuario e senha de acesso deste colaborador.
+                        Portal desativado. Ative para criar o usuário e senha de acesso deste colaborador.
                       </div>
                     )}
                   </div>

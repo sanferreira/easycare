@@ -30,7 +30,7 @@ interface Organization {
   name: string;
   address?: string;
   phone?: string;
-  cnpj?: string;
+  cnpj: string;
   capacity?: number;
   status?: OrgStatus;
   environmentSettings?: string | null;
@@ -532,6 +532,9 @@ function OrgCard({ org }: { org: Organization }) {
                       ))}
                     </SelectContent>
                   </Select>
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    Ao criar o acesso, o colaborador correspondente tambem sera vinculado na Equipe desta empresa.
+                  </p>
                 </div>
                 <div className="flex gap-3 pt-1">
                   <Button variant="outline" className="flex-1" onClick={() => setShowAddUser(false)}>Cancelar</Button>

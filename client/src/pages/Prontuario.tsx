@@ -28,17 +28,25 @@ import {
   Activity, Thermometer, Wind, Smile, Lock, Eye, EyeOff, Globe, Trash2, Pencil, Pill, AlertTriangle, Check, ChevronsUpDown, Printer, MapPin
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import type { MedicalRecord, Comorbidity, FamilyMember } from "@shared/schema";
+import type { MedicalRecord, Comorbidity, FamilyMember, Medication, MedicationAdministration, Occurrence } from "@shared/schema";
 import { maskCpf, maskPhoneBR } from "@/lib/masks";
 import { canAccessRoute, canEditRoute } from "@/lib/permissions";
 import { toDateInputValue } from "@/lib/date";
+import { printHtmlDocument } from "@/lib/print";
 import { ResidentMedicationSection } from "@/components/prontuario/ResidentMedicationSection";
 import { ResidentOccurrenceSection } from "@/components/prontuario/ResidentOccurrenceSection";
 import { cn } from "@/lib/utils";
 
 type ProntuarioTab = "evolution" | "diagnoses" | "medications" | "occurrences" | "family";
-type MedicationSectionTab = "medicacoes" | "agenda" | "historico";
+type MedicationSectionTab = "medicações" | "agenda" | "historico";
 type MedicalRecordWithStaff = MedicalRecord & { staffName?: string | null };
+type MedicationWithResident = Medication & { residentName?: string | null };
+type MedicationAdministrationWithDetails = MedicationAdministration & {
+  medicationName?: string | null;
+  residentName?: string | null;
+  administeredByName?: string | null;
+};
+type OccurrenceWithResident = Occurrence & { residentName?: string | null };
 
 const evolutionSchema = z.object({
   date: z.string().min(1, "Data obrigatória"),
@@ -100,6 +108,31 @@ const TYPE_MAP = {
   note: { label: "Anotação", color: "#8B5CF6" },
   anamnese: { label: "Anamnese", color: "#22D3EE" },
   prescription: { label: "Prescrição", color: "#22C55E" },
+};
+
+const MEDICATION_STATUS_LABELS: Record<string, string> = {
+  active: "Ativo",
+  suspended: "Suspenso",
+};
+
+const MEDICATION_ADMINISTRATION_STATUS_LABELS: Record<string, string> = {
+  given: "Administrado",
+  skipped: "Não administrado",
+  refused: "Recusado",
+  late: "Atrasado",
+};
+
+const OCCURRENCE_SEVERITY_LABELS: Record<string, string> = {
+  low: "Leve",
+  medium: "Moderada",
+  high: "Grave",
+  critical: "Critica",
+};
+
+const OCCURRENCE_STATUS_LABELS: Record<string, string> = {
+  open: "Aberta",
+  in_progress: "Em andamento",
+  resolved: "Resolvida",
 };
 
 const MOOD_MAP: Record<string, string> = {
@@ -249,9 +282,30 @@ function formatRecordDate(value?: string | Date | null): string {
   return parsed.toLocaleDateString("pt-BR");
 }
 
+function formatReportDateTime(value?: string | Date | null): string {
+  if (!value) return "-";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "-";
+  return parsed.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function formatOptionalValue(value: unknown, suffix = ""): string {
   if (value === null || value === undefined || value === "") return "-";
   return `${value}${suffix}`;
+}
+
+async function fetchReportArray<T>(url: string, fallbackMessage: string): Promise<T[]> {
+  const res = await fetch(url, { credentials: "include" });
+  if (res.status === 403) return [];
+  if (!res.ok) throw new Error(fallbackMessage);
+  const data = await res.json();
+  return Array.isArray(data) ? data as T[] : [];
 }
 
 export default function Prontuario() {
@@ -335,7 +389,7 @@ export default function Prontuario() {
     setFocusedMedicationId(Number.isInteger(requestedMedicationId) && requestedMedicationId > 0 ? requestedMedicationId : null);
     setFocusedMedicationScheduledFor(requestedScheduledFor || null);
     setMedicationInitialTab(
-      requestedMedicationTab === "medicacoes"
+      requestedMedicationTab === "medicações"
       || requestedMedicationTab === "agenda"
       || requestedMedicationTab === "historico"
         ? requestedMedicationTab
@@ -389,6 +443,36 @@ export default function Prontuario() {
       const res = await fetch(`/api/residents/${selectedResident}/family`, { credentials: "include" });
       return res.json();
     },
+    enabled: !!selectedResident,
+  });
+
+  const { data: medications = [] } = useQuery<MedicationWithResident[]>({
+    queryKey: ["/api/medications", "prontuario-report", selectedResident],
+    queryFn: () =>
+      fetchReportArray<MedicationWithResident>(
+        `/api/medications?residentId=${selectedResident}`,
+        "Erro ao carregar medicações.",
+      ),
+    enabled: !!selectedResident,
+  });
+
+  const { data: medicationAdministrations = [] } = useQuery<MedicationAdministrationWithDetails[]>({
+    queryKey: ["/api/medication-administrations", "prontuario-report", selectedResident],
+    queryFn: () =>
+      fetchReportArray<MedicationAdministrationWithDetails>(
+        `/api/medication-administrations?residentId=${selectedResident}`,
+        "Erro ao carregar historico de medicações.",
+      ),
+    enabled: !!selectedResident,
+  });
+
+  const { data: occurrences = [] } = useQuery<OccurrenceWithResident[]>({
+    queryKey: ["/api/occurrences", "prontuario-report", selectedResident],
+    queryFn: () =>
+      fetchReportArray<OccurrenceWithResident>(
+        `/api/occurrences?residentId=${selectedResident}`,
+        "Erro ao carregar ocorrências.",
+      ),
     enabled: !!selectedResident,
   });
 
@@ -564,16 +648,6 @@ export default function Prontuario() {
     }
 
     const reportRecords = records.filter((record) => record.type === "evolution" || record.type === "note");
-    if (reportRecords.length === 0) {
-      toast({ variant: "destructive", title: "Nao ha evolucoes para exportar." });
-      return;
-    }
-
-    const printWindow = window.open("", "_blank", "noopener,noreferrer,width=1200,height=900");
-    if (!printWindow) {
-      toast({ variant: "destructive", title: "Permita pop-ups para gerar o PDF." });
-      return;
-    }
 
     const residentAddress = [
       (resident as any).address,
@@ -584,6 +658,162 @@ export default function Prontuario() {
       (resident as any).state,
     ].filter(Boolean).join(", ");
     const generatedAt = format(new Date(), "dd/MM/yyyy HH:mm", { locale: ptBR });
+    const emptyHtml = (text: string) => `<p class="empty">${escapeHtml(text)}</p>`;
+
+    const diagnosesHtml = comorbidities.length > 0
+      ? `
+        <table>
+          <thead>
+            <tr>
+              <th>Diagnostico</th>
+              <th>CID-10</th>
+              <th>Gravidade</th>
+              <th>Data</th>
+              <th>Observações</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${comorbidities.map((item) => `
+              <tr>
+                <td>${escapeHtml(item.name)}</td>
+                <td>${escapeHtml(item.icd10 || "-")}</td>
+                <td>${escapeHtml(SEVERITY_MAP[item.severity as keyof typeof SEVERITY_MAP]?.label ?? item.severity ?? "-")}</td>
+                <td>${escapeHtml(formatRecordDate(item.diagnosedAt))}</td>
+                <td>${escapeHtml(item.notes || "-")}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `
+      : emptyHtml("Nenhum diagnostico/comorbidade registrado.");
+
+    const medicationsHtml = medications.length > 0
+      ? `
+        <table>
+          <thead>
+            <tr>
+              <th>Medicação</th>
+              <th>Dose</th>
+              <th>Frequencia</th>
+              <th>Horario</th>
+              <th>Via</th>
+              <th>Status</th>
+              <th>Prescritor</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${medications.map((item) => `
+              <tr>
+                <td>${escapeHtml(item.name)}</td>
+                <td>${escapeHtml(item.dosage)}</td>
+                <td>${escapeHtml(item.frequency)}</td>
+                <td>${escapeHtml(item.scheduleTime || "-")}</td>
+                <td>${escapeHtml(item.route || "-")}</td>
+                <td>${escapeHtml(MEDICATION_STATUS_LABELS[item.status] ?? item.status ?? "-")}</td>
+                <td>${escapeHtml(item.prescribedBy || "-")}</td>
+              </tr>
+              ${item.notes ? `<tr><td colspan="7" class="notes"><strong>Obs.:</strong> ${escapeHtml(item.notes)}</td></tr>` : ""}
+            `).join("")}
+          </tbody>
+        </table>
+      `
+      : emptyHtml("Nenhuma medicação registrada.");
+
+    const recentMedicationAdministrations = [...medicationAdministrations]
+      .sort((left, right) => {
+        const leftTime = new Date(left.administeredAt ?? left.scheduledFor ?? 0).getTime();
+        const rightTime = new Date(right.administeredAt ?? right.scheduledFor ?? 0).getTime();
+        return rightTime - leftTime;
+      })
+      .slice(0, 30);
+    const medicationAdministrationsHtml = recentMedicationAdministrations.length > 0
+      ? `
+        <table>
+          <thead>
+            <tr>
+              <th>Medicação</th>
+              <th>Previsto</th>
+              <th>Registrado</th>
+              <th>Status</th>
+              <th>Profissional</th>
+              <th>Observações</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${recentMedicationAdministrations.map((item) => `
+              <tr>
+                <td>${escapeHtml(item.medicationName || "-")}</td>
+                <td>${escapeHtml(formatReportDateTime(item.scheduledFor))}</td>
+                <td>${escapeHtml(formatReportDateTime(item.administeredAt))}</td>
+                <td>${escapeHtml(MEDICATION_ADMINISTRATION_STATUS_LABELS[item.status] ?? item.status ?? "-")}</td>
+                <td>${escapeHtml(item.administeredByName || "-")}</td>
+                <td>${escapeHtml(item.notes || "-")}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `
+      : emptyHtml("Nenhuma administração de medicação registrada.");
+
+    const recentOccurrences = [...occurrences]
+      .sort((left, right) => new Date(right.createdAt ?? 0).getTime() - new Date(left.createdAt ?? 0).getTime())
+      .slice(0, 30);
+    const occurrencesHtml = recentOccurrences.length > 0
+      ? `
+        <table>
+          <thead>
+            <tr>
+              <th>Data</th>
+              <th>Tipo</th>
+              <th>Gravidade</th>
+              <th>Status</th>
+              <th>Descricao</th>
+              <th>Resolucao</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${recentOccurrences.map((item) => `
+              <tr>
+                <td>${escapeHtml(formatReportDateTime(item.createdAt))}</td>
+                <td>${escapeHtml(item.type)}</td>
+                <td>${escapeHtml(OCCURRENCE_SEVERITY_LABELS[item.severity] ?? item.severity ?? "-")}</td>
+                <td>${escapeHtml(OCCURRENCE_STATUS_LABELS[item.status] ?? item.status ?? "-")}</td>
+                <td>${escapeHtml(item.description)}</td>
+                <td>${escapeHtml(item.resolution || "-")}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `
+      : emptyHtml("Nenhuma ocorrência registrada.");
+
+    const familyHtml = family.length > 0
+      ? `
+        <table>
+          <thead>
+            <tr>
+              <th>Nome</th>
+              <th>Parentesco</th>
+              <th>Telefone</th>
+              <th>E-mail</th>
+              <th>Principal</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${family.map((item) => `
+              <tr>
+                <td>${escapeHtml(item.name)}</td>
+                <td>${escapeHtml(item.relationship)}</td>
+                <td>${escapeHtml(item.phone || "-")}</td>
+                <td>${escapeHtml(item.email || "-")}</td>
+                <td>${escapeHtml(item.isPrimary ? "Sim" : "Não")}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `
+      : emptyHtml("Nenhum familiar cadastrado.");
+
     const rowsHtml = reportRecords.map((record) => {
       const typeInfo = TYPE_MAP[record.type as keyof typeof TYPE_MAP] ?? { label: record.type, color: "#64748B" };
       const checklist = parseDailyChecklist(record.dailyChecklist);
@@ -627,12 +857,12 @@ export default function Prontuario() {
       `;
     }).join("");
 
-    printWindow.document.write(`
+    const printed = printHtmlDocument(`
       <!doctype html>
       <html lang="pt-BR">
         <head>
           <meta charset="utf-8" />
-          <title>Relatorio de Evolucao - ${escapeHtml(resident.name)}</title>
+          <title>Relatório Clínico - ${escapeHtml(resident.name)}</title>
           <style>
             body { margin: 28px; color: #111827; font-family: Arial, sans-serif; }
             header { border-bottom: 2px solid #111827; padding-bottom: 14px; margin-bottom: 18px; }
@@ -649,13 +879,18 @@ export default function Prontuario() {
             .vitals span { border: 1px solid #dbeafe; background: #eff6ff; border-radius: 999px; padding: 4px 7px; font-size: 11px; }
             .checklist { margin-bottom: 8px; color: #065f46; font-size: 12px; }
             .content { white-space: pre-wrap; line-height: 1.5; font-size: 12px; }
+            table { width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 11px; }
+            th { background: #f3f4f6; color: #374151; text-align: left; }
+            th, td { border: 1px solid #d1d5db; padding: 7px; vertical-align: top; }
+            .notes { background: #f9fafb; color: #4b5563; }
+            .empty { border: 1px dashed #d1d5db; border-radius: 8px; color: #6b7280; padding: 10px; font-size: 12px; margin-bottom: 12px; }
             footer { margin-top: 16px; color: #6b7280; font-size: 11px; }
             @media print { body { margin: 18mm; } }
           </style>
         </head>
         <body>
           <header>
-            <h1>Relatorio de Evolucao do Paciente</h1>
+            <h1>Relatório Clínico do Paciente</h1>
             <p class="muted">EasyCare - gerado em ${escapeHtml(generatedAt)}</p>
           </header>
 
@@ -665,25 +900,39 @@ export default function Prontuario() {
             <div><strong>Idade:</strong> ${escapeHtml(residentAge !== null ? `${residentAge} anos` : "-")}</div>
             <div><strong>Quarto/Leito:</strong> ${escapeHtml(resident.roomNumber || "-")}</div>
             <div><strong>Tipo sanguineo:</strong> ${escapeHtml(resident.bloodType || "-")}</div>
-            <div><strong>Responsavel:</strong> ${escapeHtml(resident.contactName || "-")}</div>
+            <div><strong>Responsável:</strong> ${escapeHtml(resident.contactName || "-")}</div>
             <div><strong>Telefone:</strong> ${escapeHtml(resident.contactPhone || "-")}</div>
             <div><strong>Atendimento:</strong> ${escapeHtml((resident as any).careType === "home_care" ? "Home Care" : "Instituicao")}</div>
-            <div><strong>Endereco:</strong> ${escapeHtml(residentAddress || "-")}</div>
+            <div><strong>Endereço:</strong> ${escapeHtml(residentAddress || "-")}</div>
             <div><strong>Alergias:</strong> ${escapeHtml(resident.allergies || "-")}</div>
             <div><strong>Restricoes alimentares:</strong> ${escapeHtml(formatOptionalValue((resident as any).dietaryRestrictions))}</div>
           </div>
 
-          <h2>Evolucoes e Anotacoes</h2>
-          ${rowsHtml}
+          <h2>Diagnosticos e Comorbidades</h2>
+          ${diagnosesHtml}
 
-          <footer>Na impressao, selecione "Salvar como PDF" para exportar o relatorio.</footer>
-          <script>
-            window.onload = function () { setTimeout(function () { window.print(); }, 250); };
-          </script>
+          <h2>Medicações</h2>
+          ${medicationsHtml}
+
+          <h2>Administrações de Medicação - ultimos 30 registros</h2>
+          ${medicationAdministrationsHtml}
+
+          <h2>Ocorrências - ultimos 30 registros</h2>
+          ${occurrencesHtml}
+
+          <h2>Evoluções e Anotações</h2>
+          ${rowsHtml || emptyHtml("Nenhuma evolução/anotação registrada.")}
+
+          <h2>Familiares e Contatos</h2>
+          ${familyHtml}
+
+          <footer>Na impressão, selecione "Salvar como PDF" para exportar o relatório.</footer>
         </body>
       </html>
     `);
-    printWindow.document.close();
+    if (!printed) {
+      toast({ variant: "destructive", title: "Não foi possível gerar o PDF." });
+    }
   };
 
   return (
@@ -880,7 +1129,7 @@ export default function Prontuario() {
 
           {!canViewProntuario ? (
             <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
-              Sem permissao para visualizar o prontuario.
+              Sem permissão para visualizar o prontuario.
             </div>
           ) : (
           <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ProntuarioTab)}>
@@ -893,10 +1142,10 @@ export default function Prontuario() {
                   <Stethoscope className="h-3.5 w-3.5 mr-1.5" />Diagnósticos
                 </TabsTrigger>
                 <TabsTrigger value="medications" data-testid="tab-medications">
-                  <Pill className="h-3.5 w-3.5 mr-1.5" />Medicacoes
+                  <Pill className="h-3.5 w-3.5 mr-1.5" />Medicações
                 </TabsTrigger>
                 <TabsTrigger value="occurrences" data-testid="tab-occurrences">
-                  <AlertTriangle className="h-3.5 w-3.5 mr-1.5" />Ocorrencias
+                  <AlertTriangle className="h-3.5 w-3.5 mr-1.5" />Ocorrências
                 </TabsTrigger>
                 <TabsTrigger value="family" data-testid="tab-family">
                   <Users2 className="h-3.5 w-3.5 mr-1.5" />Familiares
@@ -909,11 +1158,11 @@ export default function Prontuario() {
                   variant="outline"
                   className="w-full sm:w-auto gap-2"
                   onClick={printEvolutionReport}
-                  disabled={!resident || records.length === 0}
+                  disabled={!resident}
                   data-testid="button-print-evolution-report"
                 >
                   <Printer className="h-4 w-4" />
-                  Relatorio
+                  Relatório
                 </Button>
                 {/* Nueva evolución */}
                 <Dialog open={evolutionOpen} onOpenChange={setEvolutionOpen}>
@@ -959,7 +1208,7 @@ export default function Prontuario() {
 
                         <FormField control={evolutionForm.control} name="staffId" render={({ field }) => (
                           <FormItem>
-                            <FormLabel>Profissional responsavel</FormLabel>
+                            <FormLabel>Profissional responsável</FormLabel>
                             <Select
                               value={field.value ? String(field.value) : "none"}
                               onValueChange={(value) => field.onChange(value === "none" ? undefined : Number(value))}
@@ -970,7 +1219,7 @@ export default function Prontuario() {
                                 </SelectTrigger>
                               </FormControl>
                               <SelectContent>
-                                <SelectItem value="none">Nao informado</SelectItem>
+                                <SelectItem value="none">Não informado</SelectItem>
                                 {activeStaffMembers.map((member: any) => (
                                   <SelectItem key={member.id} value={String(member.id)}>
                                     {member.name}

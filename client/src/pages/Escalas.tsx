@@ -192,7 +192,7 @@ function subtractHoursFromDateTimeInput(value: string, hours: number): string | 
   return formatDateTimeInput(new Date(parsed.getTime() - (hours * 60 * 60 * 1000)));
 }
 
-// Sugere horarios iniciais, mas inicio/fim continuam editaveis.
+// Sugere horários iniciais, mas início/fim continuam editáveis.
 function getDefaultTimes(type: ShiftType, date: string, rule?: ShiftProfileRule): { startTime: string; endTime: string } {
   if (!date) return { startTime: "", endTime: "" };
 
@@ -219,7 +219,7 @@ function getDefaultTimes(type: ShiftType, date: string, rule?: ShiftProfileRule)
 
 function getShiftTimesForSubmit(form: { startTime: string; endTime: string }) {
   if (!form.startTime || !form.endTime) {
-    throw new Error("Informe horario de inicio e fim do plantao.");
+    throw new Error("Informe horário de início e fim do plantão.");
   }
   return {
     startTime: form.startTime,
@@ -234,8 +234,8 @@ function isAutoMonthShift(shift: ShiftWithDetails): boolean {
 function buildShiftRuleHint(rule: ReturnType<typeof getShiftProfileRule>): string | null {
   if (!rule.enabled) return null;
   const parts: string[] = [];
-  if (rule.exactShiftHours) parts.push(`somente plantoes de ${rule.exactShiftHours}h`);
-  if (rule.minRestHours) parts.push(`descanso minimo de ${rule.minRestHours}h entre escalas`);
+  if (rule.exactShiftHours) parts.push(`somente plantões de ${rule.exactShiftHours}h`);
+  if (rule.minRestHours) parts.push(`descanso mínimo de ${rule.minRestHours}h entre escalas`);
   if (rule.allowedShiftTypes.length > 0) {
     parts.push(`tipos permitidos: ${rule.allowedShiftTypes.join(", ")}`);
   }
@@ -263,6 +263,7 @@ export default function Escalas() {
   const [openDialog, setOpenDialog] = useState(false);
   const [editingShiftId, setEditingShiftId] = useState<number | null>(null);
   const [shiftToExclude, setShiftToExclude] = useState<ShiftWithDetails | null>(null);
+  const [regenerateMonthOpen, setRegenerateMonthOpen] = useState(false);
   const [filterStaff, setFilterStaff] = useState<string>("all");
   const [form, setForm] = useState({
     staffId: "",
@@ -298,8 +299,8 @@ export default function Escalas() {
     queryKey: ["/api/shift-assignments", selectedMonth],
     queryFn: async () => {
       const queryParams = new URLSearchParams({
-        start: monthRange.start.toISOString(),
-        end: monthRange.end.toISOString(),
+        start: formatDateTimeInput(monthRange.start),
+        end: formatDateTimeInput(monthRange.end),
       });
       const res = await fetch(`/api/shift-assignments?${queryParams.toString()}`);
       if (!res.ok) throw new Error("Erro ao carregar escalas");
@@ -441,7 +442,7 @@ export default function Escalas() {
       const times = getShiftTimesForSubmit(form);
       const parsedPayableAmount = parsePayableAmountInput(form.payableAmount);
       if (form.payableAmount.trim() && parsedPayableAmount === null) {
-        throw new Error("Valor do plantao invalido. Use apenas numeros (ex.: 300 ou 300,50).");
+        throw new Error("Valor do plantão inválido. Use apenas numeros (ex.: 300 ou 300,50).");
       }
 
       const res = await fetch("/api/shift-assignments", {
@@ -451,8 +452,8 @@ export default function Escalas() {
           staffId: Number(form.staffId),
           residentId: form.residentId === "none" ? null : Number(form.residentId),
           shiftType: form.shiftType,
-          startTime: new Date(times.startTime),
-          endTime: new Date(times.endTime),
+          startTime: times.startTime,
+          endTime: times.endTime,
           notes: form.notes || null,
           payableAmount: parsedPayableAmount,
           promoteToStaffDefault: form.applyPayableAsDefault,
@@ -492,7 +493,7 @@ export default function Escalas() {
       const times = getShiftTimesForSubmit(form);
       const parsedPayableAmount = parsePayableAmountInput(form.payableAmount);
       if (form.payableAmount.trim() && parsedPayableAmount === null) {
-        throw new Error("Valor do plantao invalido. Use apenas numeros (ex.: 300 ou 300,50).");
+        throw new Error("Valor do plantão inválido. Use apenas numeros (ex.: 300 ou 300,50).");
       }
 
       const res = await fetch(`/api/shift-assignments/${id}`, {
@@ -502,8 +503,8 @@ export default function Escalas() {
           staffId: Number(form.staffId),
           residentId: form.residentId === "none" ? null : Number(form.residentId),
           shiftType: form.shiftType,
-          startTime: new Date(times.startTime),
-          endTime: new Date(times.endTime),
+          startTime: times.startTime,
+          endTime: times.endTime,
           notes: form.notes || null,
           ...(form.payableAmount.trim() !== "" && parsedPayableAmount !== null
             ? {
@@ -532,7 +533,7 @@ export default function Escalas() {
           const syncData = await syncRes.json().catch(() => ({}));
           throw new Error(
             (typeof syncData.message === "string" && syncData.message)
-              || "Escala salva, mas nao foi possivel atualizar o contas a pagar deste plantao.",
+              || "Escala salva, mas não foi possível atualizar o contas a pagar deste plantão.",
           );
         }
       }
@@ -600,18 +601,18 @@ export default function Escalas() {
     },
   });
   const generateMonthMutation = useMutation({
-    mutationFn: async (): Promise<GenerateMonthResponse> => {
+    mutationFn: async (options?: { clearGenerated?: boolean }): Promise<GenerateMonthResponse> => {
       const res = await fetch("/api/shift-assignments/generate-month", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           month: selectedMonth,
-          clearGenerated: false,
+          clearGenerated: options?.clearGenerated === true,
         }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.message || "Erro ao gerar agenda do mes");
+        throw new Error(data.message || "Erro ao gerar agenda do mês");
       }
       return res.json();
     },
@@ -626,10 +627,12 @@ export default function Escalas() {
         );
       }
       if ((result.payablesSkippedLocked ?? 0) > 0) {
-        parts.push(`${result.payablesSkippedLocked} bloqueada(s) por pagamento ja registrado`);
+        parts.push(`${result.payablesSkippedLocked} bloqueada(s) por pagamento já registrado`);
       }
       toast({
-        title: `Agenda de ${result.month} atualizada`,
+        title: result.clearedGenerated
+          ? `Agenda de ${result.month} regenerada`
+          : `Agenda de ${result.month} atualizada`,
         description: parts.join(" - "),
       });
       queryClient.invalidateQueries({ queryKey: ["/api/shift-assignments"] });
@@ -792,7 +795,7 @@ export default function Escalas() {
 
   function notifyNoEditPermission() {
     toast({
-      title: "Sem permissao de edicao",
+      title: "Sem permissão de edição",
       description: "Seu perfil pode apenas visualizar as escalas.",
       variant: "destructive",
     });
@@ -850,18 +853,28 @@ export default function Escalas() {
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground font-display">Escalas</h1>
-          <p className="text-muted-foreground mt-1">Plantoes e escalas de trabalho da equipe</p>
+          <p className="text-muted-foreground mt-1">Plantões e escalas de trabalho da equipe</p>
         </div>
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
           <Button
             variant="outline"
-            onClick={() => generateMonthMutation.mutate()}
+            onClick={() => generateMonthMutation.mutate({ clearGenerated: false })}
             disabled={!canEditEscalas || generateMonthMutation.isPending}
             data-testid="button-generate-month"
             className="w-full sm:w-auto gap-2"
           >
             <RotateCw className={`h-4 w-4 ${generateMonthMutation.isPending ? "animate-spin" : ""}`} />
             {generateMonthMutation.isPending ? "Gerando..." : "Gerar Agenda do Mês"}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => setRegenerateMonthOpen(true)}
+            disabled={!canEditEscalas || generateMonthMutation.isPending}
+            data-testid="button-regenerate-month"
+            className="w-full sm:w-auto gap-2"
+          >
+            <RotateCw className={`h-4 w-4 ${generateMonthMutation.isPending ? "animate-spin" : ""}`} />
+            Regenerar mês
           </Button>
           <Button onClick={() => openCreate()} data-testid="button-add-shift" className="w-full sm:w-auto gap-2 shrink-0" disabled={!canEditEscalas}>
             <Plus className="h-4 w-4" />
@@ -873,7 +886,7 @@ export default function Escalas() {
       {/* Stats row */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         <div className="rounded-xl border border-border bg-card px-4 py-3">
-          <p className="text-xs text-muted-foreground">Plantoes este mes</p>
+          <p className="text-xs text-muted-foreground">Plantões este mês</p>
           <p className="text-2xl font-bold text-foreground mt-0.5">{monthShiftCount}</p>
         </div>
         <div className={`rounded-xl border px-4 py-3 ${activeCount > 0 ? "border-green-300 bg-green-50 dark:bg-green-950/20" : "border-border bg-card"}`}>
@@ -1061,17 +1074,17 @@ export default function Escalas() {
               {selectedDayShifts.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-10 gap-3 text-center">
                   <AlertCircle className="h-8 w-8 text-muted-foreground/30" />
-                  <p className="text-sm text-muted-foreground">Nenhum plantao neste dia</p>
+                  <p className="text-sm text-muted-foreground">Nenhum plantão neste dia</p>
                   <Button variant="outline" size="sm" className="w-full sm:w-auto gap-1 text-xs"
                     onClick={() => openCreate(selectedDay)} disabled={!canEditEscalas}>
                     <Plus className="h-3 w-3" />
-                    Adicionar plantao
+                    Adicionar plantão
                   </Button>
                 </div>
               ) : (
                 <div className="space-y-3">
                   <p className="text-xs text-muted-foreground">
-                    {selectedDayShifts.length} plantao{selectedDayShifts.length > 1 ? "oes" : ""} agendado{selectedDayShifts.length > 1 ? "s" : ""}
+                    {selectedDayShifts.length} plantão{selectedDayShifts.length > 1 ? "oes" : ""} agendado{selectedDayShifts.length > 1 ? "s" : ""}
                   </p>
                   {selectedDayShifts.map((shift, i) => {
                     const colorIdx = staffColorMap[shift.staffId] ?? 0;
@@ -1090,7 +1103,7 @@ export default function Escalas() {
                                   onClick={() => openEdit(shift)}
                                   className="text-muted-foreground hover:text-primary transition-colors p-0.5"
                                   data-testid={`button-edit-shift-${shift.id}`}
-                                  title="Editar plantao"
+                                  title="Editar plantão"
                                 >
                                   <Pencil className="h-3.5 w-3.5" />
                                 </button>
@@ -1110,7 +1123,7 @@ export default function Escalas() {
                                   onClick={() => deleteShiftMutation.mutate(shift.id)}
                                   className="text-muted-foreground hover:text-destructive transition-colors p-0.5"
                                   data-testid={`button-delete-shift-${shift.id}`}
-                                  title="Remover plantao"
+                                  title="Remover plantão"
                                 >
                                   <X className="h-3.5 w-3.5" />
                                 </button>
@@ -1197,7 +1210,7 @@ export default function Escalas() {
           <div className="space-y-4 pt-1">
             {/* Staff */}
             <div>
-              <Label className="text-sm font-medium">Cuidador / Funcionario *</Label>
+              <Label className="text-sm font-medium">Cuidador / Funcionário *</Label>
               <Select
                 value={form.staffId}
                 onValueChange={(v) =>
@@ -1233,7 +1246,7 @@ export default function Escalas() {
                 disabled={isCaregiver}
               >
                 <SelectTrigger className="mt-1.5" data-testid="select-staff">
-                  <SelectValue placeholder="Selecione o funcionario" />
+                  <SelectValue placeholder="Selecione o funcionário" />
                 </SelectTrigger>
                 <SelectContent>
                   {selectableStaff.map((s: any) => (
@@ -1272,7 +1285,7 @@ export default function Escalas() {
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground mt-1.5">
-                Vincule quando o plantao for dedicado a um assistido especifico.
+                Vincule quando o plantão for dedicado a um assistido especifico.
               </p>
             </div>
 
@@ -1308,7 +1321,7 @@ export default function Escalas() {
                       <div>
                         <p className="leading-none">{meta.label}</p>
                         <p className="text-[10px] opacity-70 mt-0.5">
-                          {key === "avulso" ? "horario livre" : "horarios editaveis"}
+                          {key === "avulso" ? "horário livre" : "horários editáveis"}
                         </p>
                       </div>
                     </button>
@@ -1386,22 +1399,22 @@ export default function Escalas() {
               <p className="text-xs text-muted-foreground">
                 {getShiftDurationHours(form.shiftType, selectedStaffRule)
                   ? `Inicio e fim sao editaveis; ao alterar um deles, o outro e recalculado para ${getShiftDurationHours(form.shiftType, selectedStaffRule)}h.`
-                  : "A data preenche uma sugestao pelo tipo selecionado, mas inicio e fim podem ser ajustados manualmente."}
+                  : "A data preenche uma sugestão pelo tipo selecionado, mas início e fim podem ser ajustados manualmente."}
               </p>
             </div>
 
             {/* Notes */}
             <div>
-              <Label className="text-sm font-medium">Observacoes</Label>
+              <Label className="text-sm font-medium">Observações</Label>
               <Textarea className="mt-1.5 resize-none" rows={2}
-                placeholder="Anotacoes sobre este plantao..."
+                placeholder="Anotações sobre este plantão..."
                 value={form.notes}
                 onChange={(e) => setForm({ ...form, notes: e.target.value })}
                 data-testid="textarea-notes" />
             </div>
 
             <div>
-              <Label className="text-sm font-medium">Valor do plantao (R$)</Label>
+              <Label className="text-sm font-medium">Valor do plantão (R$)</Label>
               <Input
                 type="text"
                 inputMode="decimal"
@@ -1412,15 +1425,15 @@ export default function Escalas() {
               />
               <p className="text-xs text-muted-foreground mt-1.5">
                 {editingShiftId
-                  ? "No modo edicao, informe um valor para atualizar o contas a pagar deste plantao (use 0 para remover)."
-                  : "Ao criar o plantao, este valor sera lancado automaticamente em contas a pagar."}
+                  ? "No modo edição, informe um valor para atualizar o contas a pagar deste plantão (use 0 para remover)."
+                  : "Ao criar o plantão, este valor será lançado automaticamente em contas a pagar."}
               </p>
               <div className="mt-3 rounded-md border border-border bg-muted/20 px-3 py-2">
                 <div className="flex items-center justify-between gap-3">
                   <div className="space-y-0.5">
                     <p className="text-xs font-medium text-foreground">Aplicar como valor padrao do colaborador</p>
                     <p className="text-[11px] text-muted-foreground">
-                      Quando ligado, esse valor vira base para as proximas geracoes de agenda do mes.
+                      Quando ligado, esse valor vira base para as próximas gerações de agenda do mês.
                     </p>
                   </div>
                   <Switch
@@ -1455,6 +1468,39 @@ export default function Escalas() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog
+        open={regenerateMonthOpen}
+        onOpenChange={(open) => {
+          if (!open && !generateMonthMutation.isPending) {
+            setRegenerateMonthOpen(false);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Regenerar agenda do mês?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Os plantões automáticos de {selectedMonth} serão removidos e criados novamente com os horários atuais.
+              Plantões manuais, dias dispensados e contas já pagas continuam preservados.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={generateMonthMutation.isPending}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                setRegenerateMonthOpen(false);
+                generateMonthMutation.mutate({ clearGenerated: true });
+              }}
+              disabled={generateMonthMutation.isPending}
+              data-testid="button-confirm-regenerate-month"
+            >
+              {generateMonthMutation.isPending ? "Regenerando..." : "Regenerar mês"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog
         open={!!shiftToExclude}

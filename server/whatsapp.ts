@@ -153,7 +153,7 @@ async function dispatchDueWhatsappNotifications(config: WhatsappConfig) {
         config.defaultCountryCode,
       );
       if (!phone) {
-        await storage.markNotificationWhatsappSkipped(notification.id, "Usuario sem telefone valido para WhatsApp.");
+        await storage.markNotificationWhatsappSkipped(notification.id, "Usuário sem telefone válido para WhatsApp.");
         continue;
       }
 
@@ -166,7 +166,7 @@ async function dispatchDueWhatsappNotifications(config: WhatsappConfig) {
       }
     }
   } catch (error) {
-    console.error("[whatsapp] erro no worker de notificacoes", error);
+    console.error("[whatsapp] erro no worker de notificações", error);
   } finally {
     running = false;
   }
@@ -177,7 +177,7 @@ export function startWhatsappNotificationWorker() {
   started = true;
   const config = loadWhatsappConfig();
   if (!config.enabled) {
-    console.log("[whatsapp] notificacoes desabilitadas");
+    console.log("[whatsapp] notificações desabilitadas");
     return;
   }
   if (!config.token || !config.phoneNumberId) {
@@ -185,7 +185,7 @@ export function startWhatsappNotificationWorker() {
     return;
   }
 
-  console.log(`[whatsapp] notificacoes habilitadas | modo=${config.messageMode} | intervalo=${config.intervalSeconds}s`);
+  console.log(`[whatsapp] notificações habilitadas | modo=${config.messageMode} | intervalo=${config.intervalSeconds}s`);
   void dispatchDueWhatsappNotifications(config);
   timer = setInterval(() => {
     void dispatchDueWhatsappNotifications(config);

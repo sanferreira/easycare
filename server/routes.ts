@@ -199,6 +199,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (allowedRoles.includes("staff")) return "staff";
     return allowedRoles[0] ?? "staff";
   };
+  const getDefaultStaffShiftForSettings = (settings: EnvironmentSettings): string => {
+    const availableProfiles = settings.shiftProfiles.available;
+    if (availableProfiles.includes("flexivel")) return "flexivel";
+    if (availableProfiles.includes("comercial")) return "comercial";
+    return availableProfiles[0] ?? "flexivel";
+  };
   const normalizeStaffShiftProfile = (value: unknown): string => {
     if (typeof value !== "string") return "";
     return normalizeShiftProfileKey(value);
@@ -213,12 +219,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       .replace(/[^a-z0-9]+/g, "_")
       .replace(/^_+|_+$/g, "");
   };
+  const normalizeLinkableText = (value: unknown): string =>
+    String(value ?? "")
+      .trim()
+      .toLocaleLowerCase("pt-BR")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "");
   const assertShiftProfileAllowedForSettings = (
     settings: EnvironmentSettings,
     shiftProfile: string,
   ) => {
     if (!shiftProfile || !settings.shiftProfiles.available.includes(shiftProfile)) {
-      throw new Error("Perfil de jornada invalido para esta organizacao.");
+      throw new Error("Perfil de jornada inválido para esta organização.");
     }
   };
   const getBlockedOrganizationMessage = (status: OrgStatus): string =>
@@ -268,7 +280,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         )
       ) {
         const deniedMessage = permissionAction === "edit"
-          ? "Acesso negado para edicao neste modulo."
+          ? "Acesso negado para edição neste modulo."
           : "Acesso negado para visualizacao neste modulo.";
         return res.status(403).json({ message: deniedMessage });
       }
@@ -301,9 +313,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         environmentSettings.roleEditRoutes,
       );
       if (!allowedByModulePermission) {
-        const actionLabel = permissionAction === "edit" ? "edicao" : "visualizacao";
+        const actionLabel = permissionAction === "edit" ? "edição" : "visualizacao";
         return res.status(403).json({
-          message: `Acesso negado. Papel '${user.role}' nao tem permissao de ${actionLabel} para esta acao.`,
+          message: `Acesso negado. Papel '${user.role}' não tem permissão de ${actionLabel} para esta ação.`,
         });
       }
     }
@@ -314,8 +326,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return next();
     }
 
-    const actionLabel = permissionAction === "edit" ? "edicao" : "visualizacao";
-    return res.status(403).json({ message: `Acesso negado. Papel '${user.role}' nao tem permissao de ${actionLabel} para esta acao.` });
+    const actionLabel = permissionAction === "edit" ? "edição" : "visualizacao";
+    return res.status(403).json({ message: `Acesso negado. Papel '${user.role}' não tem permissão de ${actionLabel} para esta ação.` });
   };
 
   // Papéis com acesso clínico
@@ -353,7 +365,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     organizationIdCandidate?: unknown,
   ): Promise<number> => {
     const sessionUser = req.session.user;
-    if (!sessionUser) throw new Error("Nao autorizado.");
+    if (!sessionUser) throw new Error("Não autorizado.");
 
     if (!sessionUser.isSuperAdmin) {
       return getOrgId(req);
@@ -361,14 +373,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     const parsedOrgId = Number(organizationIdCandidate);
     if (!Number.isInteger(parsedOrgId) || parsedOrgId <= 0) {
-      const error = new Error("Superadmin deve informar organizationId valido.");
+      const error = new Error("Superadmin deve informar organizationId válido.");
       (error as Error & { status?: number }).status = 400;
       throw error;
     }
 
     const organization = await storage.getOrganization(parsedOrgId);
     if (!organization) {
-      const error = new Error("Organizacao nao encontrada.");
+      const error = new Error("Organização não encontrada.");
       (error as Error & { status?: number }).status = 404;
       throw error;
     }
@@ -451,10 +463,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const created = await storage.createNotifications(items);
       void sendWebPushNotifications(created).catch((error) => {
-        console.error("[web-push] erro ao enviar notificacoes recem-criadas", error);
+        console.error("[web-push] erro ao enviar notificações recem-criadas", error);
       });
     } catch (error) {
-      console.error("[notifications] erro ao criar notificacoes internas", error);
+      console.error("[notifications] erro ao criar notificações internas", error);
     }
   };
   const notifyUsers = async (
@@ -529,7 +541,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     residentId?: number | null;
     medicationId?: number | null;
     scheduledFor?: Date | string | null;
-    medicationTab?: "medicacoes" | "agenda" | "historico";
+    medicationTab?: "medicações" | "agenda" | "historico";
   }) => {
     const params = new URLSearchParams({ tab: "medications" });
     params.set("medicationTab", input.medicationTab ?? "agenda");
@@ -594,7 +606,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     const linkedStaff = await resolveLinkedStaffForSessionUser(orgId, user);
     if (!linkedStaff) {
-      throw new Error("Seu usuario de cuidador nao esta vinculado a um colaborador da equipe.");
+      throw new Error("Seu usuário de cuidador não está vinculado a um colaborador da equipe.");
     }
 
     if (requestedStaffId && requestedStaffId !== linkedStaff.id) {
@@ -715,7 +727,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json({ notifications: items, unreadCount });
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0]?.message || "Filtro invalido." });
+        return res.status(400).json({ message: error.errors[0]?.message || "Filtro inválido." });
       }
       next(error);
     }
@@ -738,14 +750,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const sessionUser = req.session.user;
       if (!sessionUser?.id || sessionUser.isSuperAdmin || !sessionUser.organizationId) {
-        return res.status(404).json({ message: "Notificacao nao encontrada." });
+        return res.status(404).json({ message: "Notificação não encontrada." });
       }
       const id = Number(req.params.id);
       if (!Number.isInteger(id) || id <= 0) {
-        return res.status(400).json({ message: "Notificacao invalida." });
+        return res.status(400).json({ message: "Notificação inválida." });
       }
       const updated = await storage.markNotificationRead(sessionUser.organizationId, sessionUser.id, id);
-      if (!updated) return res.status(404).json({ message: "Notificacao nao encontrada." });
+      if (!updated) return res.status(404).json({ message: "Notificação não encontrada." });
       res.json(updated);
     } catch (error) {
       next(error);
@@ -770,10 +782,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const sessionUser = req.session.user;
       if (!sessionUser?.id || sessionUser.isSuperAdmin || !sessionUser.organizationId) {
-        return res.status(403).json({ message: "Usuario sem organizacao para notificacoes." });
+        return res.status(403).json({ message: "Usuário sem organização para notificações." });
       }
       if (!isWebPushConfigured()) {
-        return res.status(503).json({ message: "Web Push nao configurado no servidor." });
+        return res.status(503).json({ message: "Web Push não configurado no servidor." });
       }
 
       const subscription = browserPushSubscriptionSchema.parse(req.body?.subscription ?? req.body);
@@ -794,7 +806,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0]?.message || "Inscricao push invalida." });
+        return res.status(400).json({ message: error.errors[0]?.message || "Inscricao push inválida." });
       }
       next(error);
     }
@@ -804,15 +816,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const sessionUser = req.session.user;
       if (!sessionUser?.id || sessionUser.isSuperAdmin || !sessionUser.organizationId) {
-        return res.status(403).json({ message: "Usuario sem organizacao para notificacoes." });
+        return res.status(403).json({ message: "Usuário sem organização para notificações." });
       }
       if (!isWebPushConfigured()) {
-        return res.status(503).json({ message: "Web Push nao configurado no servidor." });
+        return res.status(503).json({ message: "Web Push não configurado no servidor." });
       }
 
       const subscriptions = await storage.getActivePushSubscriptions(sessionUser.organizationId, sessionUser.id);
       if (subscriptions.length === 0) {
-        return res.status(400).json({ message: "Nenhuma inscricao Push ativa para este usuario neste dispositivo." });
+        return res.status(400).json({ message: "Nenhuma inscrição Push ativa para este usuário neste dispositivo." });
       }
 
       const created = await storage.createNotification(buildInternalNotification(sessionUser.organizationId, {
@@ -820,9 +832,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         type: "push_test",
         severity: "info",
         sourceModule: "notifications",
-        title: "Teste de notificacao EasyCare",
+        title: "Teste de notificação EasyCare",
         message: "Se esta mensagem apareceu no celular, o Push deste dispositivo esta funcionando.",
-        actionUrl: "/notificacoes",
+        actionUrl: "/notificações",
       }));
 
       await sendWebPushNotifications([created]);
@@ -852,7 +864,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json({ updated });
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0]?.message || "Inscricao push invalida." });
+        return res.status(400).json({ message: error.errors[0]?.message || "Inscricao push inválida." });
       }
       next(error);
     }
@@ -1081,6 +1093,76 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const users = await storage.getUsersByOrganization(Number(req.params.id));
     res.json(users.map(sanitizeUser));
   });
+
+  const findStaffForOrganizationUser = async (orgId: number, user: { id: number; username: string; name: string }) => {
+    const staffMembers = await storage.getStaff(orgId);
+    const normalizedUsername = normalizePortalUsername(user.username);
+    const normalizedName = normalizeLinkableText(user.name);
+
+    const linkedByUserId = staffMembers.find((member) => member.portalUserId === user.id);
+    if (linkedByUserId) return linkedByUserId;
+
+    const linkedByUsername = staffMembers.find(
+      (member) => normalizePortalUsername(member.portalUsername ?? "") === normalizedUsername,
+    );
+    if (linkedByUsername) return linkedByUsername;
+
+    const nameMatches = staffMembers.filter(
+      (member) => !member.portalUserId && normalizeLinkableText(member.name) === normalizedName,
+    );
+    return nameMatches.length === 1 ? nameMatches[0] : undefined;
+  };
+
+  const ensureStaffForOrganizationUser = async (
+    orgId: number,
+    user: { id: number; username: string; name: string; role: string; active?: boolean | null },
+    settings: EnvironmentSettings,
+  ) => {
+    const normalizedUsername = normalizePortalUsername(user.username);
+    const roleValue = getAllowedRolesForSettings(settings).includes(normalizeStaffRoleValue(user.role))
+      ? normalizeStaffRoleValue(user.role)
+      : getDefaultRoleForSettings(settings);
+    const defaultShift = getDefaultStaffShiftForSettings(settings);
+    const existingStaff = await findStaffForOrganizationUser(orgId, user);
+    const staffPayload = {
+      name: user.name.trim(),
+      role: roleValue,
+      active: user.active !== false,
+      portalAccess: true,
+      portalUsername: normalizedUsername,
+      portalUserId: user.id,
+    };
+
+    if (existingStaff) {
+      return await storage.updateStaff(orgId, existingStaff.id, {
+        ...staffPayload,
+        shift: existingStaff.shift || defaultShift,
+      } as any);
+    }
+
+    return await storage.createStaff({
+      organizationId: orgId,
+      ...staffPayload,
+      shift: defaultShift,
+    } as any);
+  };
+
+  const detachStaffFromOrganizationUser = async (user: { id: number; organizationId?: number | null; username: string }) => {
+    if (!user.organizationId) return;
+    const staffMembers = await storage.getStaff(user.organizationId);
+    const normalizedUsername = normalizePortalUsername(user.username);
+    const linkedStaff = staffMembers.find((member) =>
+      member.portalUserId === user.id || normalizePortalUsername(member.portalUsername ?? "") === normalizedUsername,
+    );
+    if (!linkedStaff) return;
+
+    await storage.updateStaff(user.organizationId, linkedStaff.id, {
+      portalAccess: false,
+      portalUsername: null,
+      portalUserId: null,
+    } as any);
+  };
+
   app.post("/api/organizations/:id/users", requireAuth, requireSuperAdmin, async (req, res) => {
     try {
       const orgId = Number(req.params.id);
@@ -1091,9 +1173,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const { username, password, name, role } = req.body;
       if (!username || !password || !name) return res.status(400).json({ message: "Campos obrigatórios faltando" });
+      const usernameValue = normalizePortalUsername(String(username));
+      const nameValue = String(name).trim();
+      if (!usernameValue || usernameValue.length < 3) {
+        return res.status(400).json({ message: "Informe um usuário com pelo menos 3 caracteres." });
+      }
+      if (!nameValue) {
+        return res.status(400).json({ message: "Nome obrigatório." });
+      }
+      const existingUsers = await storage.getUsersByOrganization(orgId);
+      if (existingUsers.some((item) => normalizePortalUsername(item.username) === usernameValue)) {
+        return res.status(400).json({ message: "Nome de usuário já existe nesta organização" });
+      }
       const allowedRoles = getAllowedRolesForSettings(settingsResult.settings);
       const roleValue = typeof role === "string" && role.trim()
-        ? role.trim()
+        ? normalizeStaffRoleValue(role)
         : getDefaultRoleForSettings(settingsResult.settings);
       if (!allowedRoles.includes(roleValue)) {
         return res.status(400).json({ message: "Papel inválido para esta organização." });
@@ -1101,16 +1195,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const user = await storage.createUser({
         organizationId: orgId,
-        username,
+        username: usernameValue,
         password,
-        name,
+        name: nameValue,
         role: roleValue,
         isSuperAdmin: false,
       });
+      try {
+        await ensureStaffForOrganizationUser(orgId, user, settingsResult.settings);
+      } catch (error) {
+        await storage.deleteUser(user.id);
+        throw error;
+      }
       res.status(201).json(sanitizeUser(user));
     } catch (err: any) {
       if (err.code === "23505") return res.status(400).json({ message: "Nome de usuário já existe nesta organização" });
-      res.status(500).json({ message: "Erro ao criar usuário" });
+      res.status(400).json({ message: err?.message || "Erro ao criar usuário" });
     }
   });
   app.patch("/api/users/:id", requireAuth, requireSuperAdmin, async (req, res) => {
@@ -1126,8 +1226,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       const updates: any = {};
-      if (name !== undefined) updates.name = name;
-      if (username !== undefined) updates.username = username;
+      if (name !== undefined) {
+        const nameValue = String(name).trim();
+        if (!nameValue) return res.status(400).json({ message: "Nome obrigatório." });
+        updates.name = nameValue;
+      }
+      if (username !== undefined) {
+        const usernameValue = normalizePortalUsername(String(username));
+        if (!usernameValue || usernameValue.length < 3) {
+          return res.status(400).json({ message: "Informe um usuário com pelo menos 3 caracteres." });
+        }
+        const existingUsers = await storage.getUsersByOrganization(currentUser.organizationId);
+        if (existingUsers.some((item) => item.id !== userId && normalizePortalUsername(item.username) === usernameValue)) {
+          return res.status(400).json({ message: "Nome de usuário já existe nesta organização" });
+        }
+        updates.username = usernameValue;
+      }
       if (role !== undefined) {
         if (typeof role !== "string" || !role.trim()) {
           return res.status(400).json({ message: "Papel inválido." });
@@ -1137,7 +1251,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           return res.status(404).json({ message: "Organização não encontrada" });
         }
         const allowedRoles = getAllowedRolesForSettings(settingsResult.settings);
-        const roleValue = role.trim();
+        const roleValue = normalizeStaffRoleValue(role);
         if (!allowedRoles.includes(roleValue)) {
           return res.status(400).json({ message: "Papel inválido para esta organização." });
         }
@@ -1145,12 +1259,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       if (password && password.trim() !== "") updates.password = password;
       const updated = await storage.updateUser(userId, updates);
+      const settingsResult = await getOrganizationEnvironmentSettings(currentUser.organizationId);
+      if (settingsResult) {
+        await ensureStaffForOrganizationUser(currentUser.organizationId, updated, settingsResult.settings);
+      }
       res.json(sanitizeUser(updated));
     } catch (err: any) {
       res.status(400).json({ message: err.message || "Erro ao atualizar usuário" });
     }
   });
   app.delete("/api/users/:id", requireAuth, requireSuperAdmin, async (req, res) => {
+    const user = await storage.getUserById(Number(req.params.id));
+    if (user) {
+      await detachStaffFromOrganizationUser(user);
+    }
     await storage.deleteUser(Number(req.params.id));
     res.status(204).send();
   });
@@ -1243,15 +1365,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     category: z.string().trim().max(60).optional().nullable(),
     fileName: z.string().trim().min(1, "Arquivo obrigatorio.").max(255),
     fileType: z.string().trim().max(120).optional().nullable(),
-    fileSize: z.coerce.number().int().min(1).max(8 * 1024 * 1024).optional().nullable(),
-    fileData: z.string().max(12_000_000).refine((value) => value.startsWith("data:"), "Arquivo invalido."),
+    fileSize: z.coerce.number().int().min(1).max(15 * 1024 * 1024, "Arquivo maior que 15MB.").optional().nullable(),
+    fileData: z.string().max(22_000_000, "Arquivo maior que 15MB.").refine((value) => value.startsWith("data:"), "Arquivo inválido."),
   });
 
   app.get("/api/residents/:residentId/documents", requireAuth, requireRole(...CLINICAL_ROLES), async (req, res) => {
     const orgId = getOrgId(req);
     const residentId = Number(req.params.residentId);
     const resident = await storage.getResident(orgId, residentId);
-    if (!resident) return res.status(404).json({ message: "Residente nao encontrado." });
+    if (!resident) return res.status(404).json({ message: "Residente não encontrado." });
     res.json(await storage.getPatientDocuments(orgId, residentId));
   });
 
@@ -1260,7 +1382,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const orgId = getOrgId(req);
       const residentId = Number(req.params.residentId);
       const resident = await storage.getResident(orgId, residentId);
-      if (!resident) return res.status(404).json({ message: "Residente nao encontrado." });
+      if (!resident) return res.status(404).json({ message: "Residente não encontrado." });
 
       const input = patientDocumentInputSchema.parse(req.body);
       const document = await storage.createPatientDocument({
@@ -1278,7 +1400,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.status(201).json(document);
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0]?.message || "Documento invalido." });
+        return res.status(400).json({ message: error.errors[0]?.message || "Documento inválido." });
       }
       res.status(400).json({
         message: error instanceof Error ? error.message : "Erro ao salvar documento.",
@@ -1324,11 +1446,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ? null
       : Number(rawStaffId);
     if (staffId !== null && (!Number.isInteger(staffId) || staffId <= 0)) {
-      return res.status(400).json({ message: "Profissional invalido." });
+      return res.status(400).json({ message: "Profissional inválido." });
     }
     if (staffId !== null) {
       const staffMember = await storage.getStaffMember(orgId, staffId);
-      if (!staffMember) return res.status(400).json({ message: "Profissional invalido." });
+      if (!staffMember) return res.status(400).json({ message: "Profissional inválido." });
     }
     res.status(201).json(await storage.createMedicalRecord({
       ...req.body,
@@ -1359,7 +1481,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const payload = buildMedicationPayload(req.body);
       res.status(201).json(await storage.createMedication({ ...payload, organizationId: orgId }));
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Dados de medicacao invalidos.";
+      const message = error instanceof Error ? error.message : "Dados de medicação inválidos.";
       res.status(400).json({ message });
     }
   });
@@ -1369,7 +1491,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const payload = buildMedicationPayload(req.body);
       res.json(await storage.updateMedication(orgId, Number(req.params.id), payload));
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Dados de medicacao invalidos.";
+      const message = error instanceof Error ? error.message : "Dados de medicação inválidos.";
       res.status(400).json({ message });
     }
   });
@@ -1479,7 +1601,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   const buildMedicationPayload = (body: any) => {
     const residentId = Number(body?.residentId);
     if (!Number.isInteger(residentId) || residentId <= 0) {
-      throw new Error("Residente invalido.");
+      throw new Error("Residente inválido.");
     }
 
     const name = String(body?.name ?? "").trim();
@@ -1504,17 +1626,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const endDate = endDateRaw.length > 0 ? endDateRaw : null;
 
     if (startDate && !MEDICATION_DATE_REGEX.test(startDate)) {
-      throw new Error("Data de inicio invalida. Use yyyy-mm-dd.");
+      throw new Error("Data de início inválida. Use yyyy-mm-dd.");
     }
     if (endDate && !MEDICATION_DATE_REGEX.test(endDate)) {
-      throw new Error("Data de fim invalida. Use yyyy-mm-dd.");
+      throw new Error("Data de fim inválida. Use yyyy-mm-dd.");
     }
 
     if (startDate && endDate) {
       const start = parseDateOnly(startDate);
       const end = parseDateOnly(endDate, true);
       if (!start || !end || end.getTime() < start.getTime()) {
-        throw new Error("Data de fim deve ser maior ou igual a data de inicio.");
+        throw new Error("Data de fim deve ser maior ou igual a data de início.");
       }
     }
 
@@ -1545,7 +1667,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return { title: "Dose recusada", label: "recusada", severity: "error" };
     }
     if (status === "skipped") {
-      return { title: "Dose nao administrada", label: "nao administrada", severity: "warning" };
+      return { title: "Dose não administrada", label: "não administrada", severity: "warning" };
     }
     if (status === "late") {
       return { title: "Dose administrada com atraso", label: "marcada como atrasada", severity: "warning" };
@@ -1595,22 +1717,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const residentId = Number(req.params.residentId);
       if (!Number.isInteger(residentId) || residentId <= 0) {
-        return res.status(400).json({ message: "Residente invalido." });
+        return res.status(400).json({ message: "Residente inválido." });
       }
 
       const orgId = getOrgId(req);
       const resident = await storage.getResident(orgId, residentId);
       if (!resident) {
-        return res.status(404).json({ message: "Residente nao encontrado." });
+        return res.status(404).json({ message: "Residente não encontrado." });
       }
 
       const fromParam = typeof req.query.from === "string" ? req.query.from.trim() : "";
       const toParam = typeof req.query.to === "string" ? req.query.to.trim() : "";
       if (fromParam && !MEDICATION_DATE_REGEX.test(fromParam)) {
-        return res.status(400).json({ message: "Parametro 'from' invalido. Use yyyy-mm-dd." });
+        return res.status(400).json({ message: "Parametro 'from' inválido. Use yyyy-mm-dd." });
       }
       if (toParam && !MEDICATION_DATE_REGEX.test(toParam)) {
-        return res.status(400).json({ message: "Parametro 'to' invalido. Use yyyy-mm-dd." });
+        return res.status(400).json({ message: "Parametro 'to' inválido. Use yyyy-mm-dd." });
       }
 
       const today = new Date();
@@ -1620,7 +1742,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const toDate = toParam ? parseDateOnly(toParam, true) : defaultTo;
 
       if (!fromDate || !toDate) {
-        return res.status(400).json({ message: "Periodo invalido." });
+        return res.status(400).json({ message: "Periodo inválido." });
       }
       if (toDate.getTime() < fromDate.getTime()) {
         return res.status(400).json({ message: "Data final deve ser maior ou igual a data inicial." });
@@ -1839,7 +1961,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ===== MEDICATION ADMINISTRATIONS =====
   const medicationAdministrationInputSchema = z.object({
-    medicationId: z.coerce.number().int().positive("Medicamento invalido."),
+    medicationId: z.coerce.number().int().positive("Medicamento inválido."),
     staffId: z.coerce.number().int().positive().optional().nullable(),
     status: z.enum(["given", "skipped", "refused", "late"]).default("given"),
     notes: z.string().optional().nullable(),
@@ -1847,7 +1969,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     administeredAt: z.coerce.date().optional().nullable(),
   });
   const medicationDoseRecordInputSchema = z.object({
-    medicationId: z.coerce.number().int().positive("Medicamento invalido."),
+    medicationId: z.coerce.number().int().positive("Medicamento inválido."),
     scheduledFor: z.coerce.date(),
     staffId: z.coerce.number().int().positive().optional().nullable(),
     status: z.enum(["given", "skipped", "refused", "late"]).default("given"),
@@ -1872,14 +1994,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const orgId = getOrgId(req);
       const sessionUser = req.session.user;
       if (!sessionUser) {
-        return res.status(401).json({ message: "Nao autorizado." });
+        return res.status(401).json({ message: "Não autorizado." });
       }
 
       const input = medicationAdministrationInputSchema.parse(req.body);
       const meds = await storage.getMedications(orgId);
       const medication = meds.find((item) => item.id === input.medicationId);
       if (!medication) {
-        return res.status(404).json({ message: "Medicamento nao encontrado." });
+        return res.status(404).json({ message: "Medicamento não encontrado." });
       }
 
       const linkedStaff = await resolveLinkedStaffForSessionUser(orgId, sessionUser);
@@ -1889,7 +2011,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (effectiveStaffId) {
           const selectedStaff = await storage.getStaffMember(orgId, effectiveStaffId);
           if (!selectedStaff || selectedStaff.active === false) {
-            return res.status(400).json({ message: "Profissional selecionado nao esta disponivel." });
+            return res.status(400).json({ message: "Profissional selecionado não está disponível." });
           }
         } else if (linkedStaff && linkedStaff.active !== false) {
           effectiveStaffId = linkedStaff.id;
@@ -1897,7 +2019,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       if (!effectiveStaffId) {
-        return res.status(400).json({ message: "Selecione quem administrou a medicacao." });
+        return res.status(400).json({ message: "Selecione quem administrou a medicação." });
       }
 
       const created = await storage.createMedicationAdministration({
@@ -1921,7 +2043,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.status(201).json(created);
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados inválidos." });
       }
       if (error instanceof Error) {
         return res.status(400).json({ message: error.message });
@@ -1934,19 +2056,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const orgId = getOrgId(req);
       const residentId = Number(req.params.residentId);
       if (!Number.isInteger(residentId) || residentId <= 0) {
-        return res.status(400).json({ message: "Residente invalido." });
+        return res.status(400).json({ message: "Residente inválido." });
       }
 
       const sessionUser = req.session.user;
       if (!sessionUser) {
-        return res.status(401).json({ message: "Nao autorizado." });
+        return res.status(401).json({ message: "Não autorizado." });
       }
 
       const input = medicationDoseRecordInputSchema.parse(req.body);
       const medications = await storage.getMedications(orgId, residentId);
       const medication = medications.find((item) => item.id === input.medicationId);
       if (!medication) {
-        return res.status(404).json({ message: "Medicamento nao encontrado para este residente." });
+        return res.status(404).json({ message: "Medicamento não encontrado para este residente." });
       }
 
       const linkedStaff = await resolveLinkedStaffForSessionUser(orgId, sessionUser);
@@ -1956,14 +2078,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (effectiveStaffId) {
           const selectedStaff = await storage.getStaffMember(orgId, effectiveStaffId);
           if (!selectedStaff || selectedStaff.active === false) {
-            return res.status(400).json({ message: "Profissional selecionado nao esta disponivel." });
+            return res.status(400).json({ message: "Profissional selecionado não está disponível." });
           }
         } else if (linkedStaff && linkedStaff.active !== false) {
           effectiveStaffId = linkedStaff.id;
         }
       }
       if (!effectiveStaffId) {
-        return res.status(400).json({ message: "Selecione quem administrou a medicacao." });
+        return res.status(400).json({ message: "Selecione quem administrou a medicação." });
       }
 
       const saved = await storage.upsertMedicationAdministrationForDose({
@@ -1987,7 +2109,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(200).json(saved);
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados inválidos." });
       }
       if (error instanceof Error) {
         return res.status(400).json({ message: error.message });
@@ -2036,12 +2158,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     if (!input.portalUsername || input.portalUsername.length < 3) {
-      throw new Error("Informe um usuario de acesso com pelo menos 3 caracteres.");
+      throw new Error("Informe um usuário de acesso com pelo menos 3 caracteres.");
     }
 
     const usernameOwner = await storage.getUserByUsernameAndOrganization(input.portalUsername, input.orgId);
     if (usernameOwner && (!linkedUser || usernameOwner.id !== linkedUser.id)) {
-      throw new Error("Usuario de acesso ja existe na organizacao.");
+      throw new Error("Usuário de acesso já existe na organização.");
     }
 
     if (linkedUser) {
@@ -2106,10 +2228,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       payload.shift = shiftProfile;
       const roleValue = normalizeStaffRoleValue(payload.role);
       if (!roleValue) {
-        return res.status(400).json({ message: "Cargo invalido para o colaborador." });
+        return res.status(400).json({ message: "Cargo inválido para o colaborador." });
       }
       if (!getAllowedRolesForSettings(environmentSettings).includes(roleValue)) {
-        return res.status(400).json({ message: "Cargo invalido para esta organizacao." });
+        return res.status(400).json({ message: "Cargo inválido para esta organização." });
       }
       payload.role = roleValue;
 
@@ -2168,7 +2290,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const payload = { ...req.body } as Record<string, unknown>;
       const currentStaff = await storage.getStaffMember(orgId, Number(req.params.id));
       if (!currentStaff) {
-        return res.status(404).json({ message: "Colaborador nao encontrado." });
+        return res.status(404).json({ message: "Colaborador não encontrado." });
       }
       const environmentSettings =
         (res.locals.environmentSettings as EnvironmentSettings | undefined)
@@ -2183,7 +2305,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const requestedRole = normalizeStaffRoleValue(payload.role);
       const nextRole = requestedRole || normalizeStaffRoleValue(currentStaff.role);
       if (!getAllowedRolesForSettings(environmentSettings).includes(nextRole)) {
-        return res.status(400).json({ message: "Cargo invalido para esta organizacao." });
+        return res.status(400).json({ message: "Cargo inválido para esta organização." });
       }
       payload.role = nextRole;
 
@@ -2269,13 +2391,56 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.status(204).send();
   });
 
+  const LOCAL_DATE_TIME_REGEX = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/;
+  const parseLocalDateTimeInput = (value: unknown): Date => {
+    if (value instanceof Date) return new Date(value);
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      const match = trimmed.match(LOCAL_DATE_TIME_REGEX);
+      if (match) {
+        const year = Number(match[1]);
+        const month = Number(match[2]);
+        const day = Number(match[3]);
+        const hour = Number(match[4]);
+        const minute = Number(match[5]);
+        const second = Number(match[6] ?? 0);
+        const parsed = new Date(year, month - 1, day, hour, minute, second, 0);
+        const isSameLocalDateTime =
+          parsed.getFullYear() === year
+          && parsed.getMonth() === month - 1
+          && parsed.getDate() === day
+          && parsed.getHours() === hour
+          && parsed.getMinutes() === minute
+          && parsed.getSeconds() === second;
+        return isSameLocalDateTime ? parsed : new Date(NaN);
+      }
+      return new Date(trimmed);
+    }
+    return new Date(value as any);
+  };
+  const formatLocalDateTimeForJson = (value: string | Date): string => {
+    const date = value instanceof Date ? value : new Date(value);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    const hour = String(date.getHours()).padStart(2, "0");
+    const minute = String(date.getMinutes()).padStart(2, "0");
+    const second = String(date.getSeconds()).padStart(2, "0");
+    return `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+  };
+  const serializeShiftAssignment = <T extends { startTime: string | Date; endTime: string | Date }>(shift: T) => ({
+    ...shift,
+    startTime: formatLocalDateTimeForJson(shift.startTime),
+    endTime: formatLocalDateTimeForJson(shift.endTime),
+  });
+
   // ===== SHIFT ASSIGNMENTS =====
   const shiftInputSchema = z.object({
     staffId: z.number(),
     residentId: z.number().optional().nullable(),
     shiftType: z.enum(["12h_manha", "12h_noite", "24h", "avulso"]).default("avulso"),
-    startTime: z.coerce.date(),
-    endTime: z.coerce.date(),
+    startTime: z.preprocess(parseLocalDateTimeInput, z.date()),
+    endTime: z.preprocess(parseLocalDateTimeInput, z.date()),
     notes: z.string().optional().nullable(),
     payableAmount: z.coerce.number().min(0).optional().nullable(),
     promoteToStaffDefault: z.boolean().optional(),
@@ -2285,7 +2450,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     promoteToStaffDefault: z.boolean().optional(),
   });
   const generateMonthInputSchema = z.object({
-    month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Mes invalido. Use YYYY-MM."),
+    month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Mês inválido. Use YYYY-MM."),
     staffId: z.number().optional(),
     clearGenerated: z.boolean().optional().default(false),
   });
@@ -2815,7 +2980,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       if (dailySchedule.hasRestrictions) {
         if (dailySchedule.windows.length === 0) {
-          throw new ShiftValidationError("Dia/horario fora da jornada configurada do colaborador.");
+          throw new ShiftValidationError("Dia/horário fora da jornada configurada do colaborador.");
         }
         if (!isShiftWithinWindows(input.startTime, input.endTime, dailySchedule.windows)) {
           throw new ShiftValidationError("Horario fora da jornada configurada do colaborador.");
@@ -2841,12 +3006,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const expectedDurationMs = shiftRule.exactShiftHours * HOUR_MS;
       if (Math.abs(durationMs - expectedDurationMs) > FIVE_MINUTES_MS) {
         throw new ShiftValidationError(
-          `Perfil ${staffMember.shift} exige plantao de ${shiftRule.exactShiftHours}h.`,
+          `Perfil ${staffMember.shift} exige plantão de ${shiftRule.exactShiftHours}h.`,
         );
       }
     }
 
-    // Plantao avulso tambem ignora descanso minimo entre escalas do perfil.
+    // Plantão avulso também ignora descanso mínimo entre escalas do perfil.
     if (!isAvulsoShift && shiftRule.minRestHours) {
       const minimumRestMs = shiftRule.minRestHours * HOUR_MS;
       const violatesRest = otherShifts.some((shift) => {
@@ -2866,7 +3031,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       if (violatesRest) {
         throw new ShiftValidationError(
-          `Perfil ${staffMember.shift} exige descanso minimo de ${shiftRule.minRestHours}h entre plantoes.`,
+          `Perfil ${staffMember.shift} exige descanso mínimo de ${shiftRule.minRestHours}h entre plantões.`,
         );
       }
     }
@@ -2875,24 +3040,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/shift-assignments", requireAuth, async (req, res) => {
     const orgId = getOrgId(req);
     const { residentId, staffId, start, end } = req.query;
-    res.json(await storage.getShiftAssignments(orgId, {
+    const shifts = await storage.getShiftAssignments(orgId, {
       residentId: residentId ? Number(residentId) : undefined,
       staffId: staffId ? Number(staffId) : undefined,
-      start: start ? new Date(start as string) : undefined,
-      end: end ? new Date(end as string) : undefined,
-    }));
+      start: start ? parseLocalDateTimeInput(start) : undefined,
+      end: end ? parseLocalDateTimeInput(end) : undefined,
+    });
+    res.json(shifts.map(serializeShiftAssignment));
   });
   app.get("/api/shift-assignments/:id/payable", requireAuth, async (req, res) => {
     const orgId = getOrgId(req);
     const shiftId = Number(req.params.id);
     if (!Number.isInteger(shiftId) || shiftId <= 0) {
-      return res.status(400).json({ message: "ID de escala invalido." });
+      return res.status(400).json({ message: "ID de escala inválido." });
     }
 
     const shifts = await storage.getShiftAssignments(orgId);
     const targetShift = shifts.find((shift) => shift.id === shiftId);
     if (!targetShift) {
-      return res.status(404).json({ message: "Escala nao encontrada." });
+      return res.status(404).json({ message: "Escala não encontrada." });
     }
 
     await enforceCaregiverOwnStaffId(orgId, req.session.user, targetShift.staffId);
@@ -2905,14 +3071,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const orgId = getOrgId(req);
       const shiftId = Number(req.params.id);
       if (!Number.isInteger(shiftId) || shiftId <= 0) {
-        return res.status(400).json({ message: "ID de escala invalido." });
+        return res.status(400).json({ message: "ID de escala inválido." });
       }
       const input = shiftPayableInputSchema.parse(req.body ?? {});
 
       const shifts = await storage.getShiftAssignments(orgId);
       const targetShift = shifts.find((shift) => shift.id === shiftId);
       if (!targetShift) {
-        return res.status(404).json({ message: "Escala nao encontrada." });
+        return res.status(404).json({ message: "Escala não encontrada." });
       }
 
       await enforceCaregiverOwnStaffId(orgId, req.session.user, targetShift.staffId);
@@ -2951,7 +3117,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         : allStaff;
 
       if ((input.staffId || enforcedStaffId) && targetStaff.length === 0) {
-        return res.status(404).json({ message: "Funcionario nao encontrado." });
+        return res.status(404).json({ message: "Funcionário não encontrado." });
       }
 
       const targetStaffIds = new Set<number>(targetStaff.map((member) => member.id));
@@ -3002,7 +3168,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
         if (generatedShiftsToPreserve.length > 0) {
           console.log(
-            `[generate-month] preservados ${generatedShiftsToPreserve.length} plantao(oes) com valor manual em ${input.month}`,
+            `[generate-month] preservados ${generatedShiftsToPreserve.length} plantão(oes) com valor manual em ${input.month}`,
           );
         }
       }
@@ -3038,8 +3204,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const hasRecurringSchedule = hasWeeklyRule || hasOddRule || hasEvenRule;
 
         const shiftRule = getShiftProfileRule(member.shift, environmentSettings.shiftProfiles);
-        // Sem agenda recorrente configurada, nao inferimos mais 07:00/19:00 pelo perfil.
-        // O perfil valida duracao/descanso; os horarios reais precisam vir do colaborador ou da escala manual.
+        // Sem agenda recorrente configurada, não inferimos mais 07:00/19:00 pelo perfil.
+        // O perfil valida duração/descanso; os horários reais precisam vir do colaborador ou da escala manual.
         const canGenerateFromProfileRule = false;
         const preferredProfileShiftType =
           schedule.profileCycleStart
@@ -3258,7 +3424,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const basePayablePayload = {
           organizationId: orgId,
           staffId: member.id,
-          title: `Plantoes ${input.month} - ${member.name}`,
+          title: `Plantões ${input.month} - ${member.name}`,
           category: "staff",
           referenceMonth: input.month,
           dueDate: monthDueDate,
@@ -3312,18 +3478,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const orgId = getOrgId(req);
       const shiftId = Number(req.params.id);
       if (!Number.isInteger(shiftId) || shiftId <= 0) {
-        return res.status(400).json({ message: "ID de escala invalido." });
+        return res.status(400).json({ message: "ID de escala inválido." });
       }
 
       const shifts = await storage.getShiftAssignments(orgId);
       const targetShift = shifts.find((shift) => shift.id === shiftId);
       if (!targetShift) {
-        return res.status(404).json({ message: "Escala nao encontrada." });
+        return res.status(404).json({ message: "Escala não encontrada." });
       }
 
       const staffMember = await storage.getStaffMember(orgId, targetShift.staffId);
       if (!staffMember) {
-        return res.status(404).json({ message: "Funcionario nao encontrado." });
+        return res.status(404).json({ message: "Funcionário não encontrado." });
       }
 
       const blockedDate = toDateKey(new Date(targetShift.startTime));
@@ -3362,7 +3528,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const input = shiftInputSchema.parse(req.body);
       const enforcedStaffId = await enforceCaregiverOwnStaffId(orgId, req.session.user, input.staffId);
       if (!enforcedStaffId) {
-        return res.status(400).json({ message: "Profissional da escala nao informado." });
+        return res.status(400).json({ message: "Profissional da escala não informado." });
       }
       const normalizedInput = { ...input, staffId: enforcedStaffId };
       await assertShiftAssignmentAllowed({
@@ -3382,7 +3548,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         promoteToStaffDefault: promoteToStaffDefault !== false,
       });
 
-      res.status(201).json(createdShift);
+      res.status(201).json(serializeShiftAssignment(createdShift));
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       if (err instanceof ShiftValidationError) return res.status(400).json({ message: err.message });
@@ -3409,7 +3575,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const requestedStaffId = shiftUpdates.staffId ?? currentShift.staffId;
       const enforcedStaffId = await enforceCaregiverOwnStaffId(orgId, req.session.user, requestedStaffId);
       if (!enforcedStaffId) {
-        return res.status(400).json({ message: "Profissional da escala nao informado." });
+        return res.status(400).json({ message: "Profissional da escala não informado." });
       }
       const nextStaffId = enforcedStaffId;
       const nextShiftType = (shiftUpdates.shiftType ?? currentShift.shiftType ?? "avulso") as "12h_manha" | "12h_noite" | "24h" | "avulso";
@@ -3437,7 +3603,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         promoteToStaffDefault: promoteToStaffDefault !== false,
       });
 
-      res.json(updatedShift);
+      res.json(serializeShiftAssignment(updatedShift));
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       if (err instanceof ShiftValidationError) return res.status(400).json({ message: err.message });
@@ -3449,13 +3615,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const orgId = getOrgId(req);
     const shiftId = Number(req.params.id);
     if (!Number.isInteger(shiftId) || shiftId <= 0) {
-      return res.status(400).json({ message: "ID de escala invalido." });
+      return res.status(400).json({ message: "ID de escala inválido." });
     }
 
     const shifts = await storage.getShiftAssignments(orgId);
     const targetShift = shifts.find((shift) => shift.id === shiftId);
     if (!targetShift) {
-      return res.status(404).json({ message: "Escala nao encontrada." });
+      return res.status(404).json({ message: "Escala não encontrada." });
     }
 
     await enforceCaregiverOwnStaffId(orgId, req.session.user, targetShift.staffId);
@@ -3480,7 +3646,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     clock_in: "Entrada",
     break_start: "Pausa",
     break_end: "Retorno",
-    clock_out: "Saida",
+    clock_out: "Saída",
   };
   const BREAK_NOTIFICATION_TYPES = ["time_clock_break_reminder", "time_clock_break_overdue"] as const;
   const CLOCK_OUT_NOTIFICATION_TYPES = ["time_clock_clock_out_missing"] as const;
@@ -3521,7 +3687,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     settings?: TimeClockSettings | null;
   }) => {
     const eventTimeLabel = formatNotificationTime(input.eventTime);
-    const approvalSuffix = input.requiresApproval ? " Esta batida foi enviada para aprovacao do gestor." : "";
+    const approvalSuffix = input.requiresApproval ? " Esta batida foi enviada para aprovação do gestor." : "";
 
     if (input.eventType === "break_start" && input.settings) {
       const durationMinutes = Math.max(0, Math.round(input.settings.breakDurationMinutes));
@@ -3538,7 +3704,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     if (input.eventType === "clock_out") {
-      return `Saida registrada as ${eventTimeLabel}. Jornada finalizada.${approvalSuffix}`;
+      return `Saída registrada às ${eventTimeLabel}. Jornada finalizada.${approvalSuffix}`;
     }
 
     return `Entrada registrada as ${eventTimeLabel}.${approvalSuffix}`;
@@ -3624,8 +3790,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       type: "time_clock_break_overdue",
       severity: "error",
       sourceModule: "time_clock",
-      title: "Pausa passou do horario",
-      message: `A pausa de ${input.staffName} passou do horario previsto de retorno (${formatNotificationDateTime(expectedEnd)}).`,
+      title: "Pausa passou do horário",
+      message: `A pausa de ${input.staffName} passou do horário previsto de retorno (${formatNotificationDateTime(expectedEnd)}).`,
       actionUrl: buildTimeClockActionUrl({
         entryId: input.breakEntryId,
         staffId: input.staffId,
@@ -3651,8 +3817,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       staffId: input.staffId,
       type: "time_clock_break_overdue",
       severity: "error",
-      title: "Pausa passou do horario",
-      message: `${input.staffName} nao registrou retorno da pausa ate ${formatNotificationDateTime(expectedEnd)}.`,
+      title: "Pausa passou do horário",
+      message: `${input.staffName} não registrou retorno da pausa até ${formatNotificationDateTime(expectedEnd)}.`,
       actionUrl: buildTimeClockActionUrl({
         entryId: input.breakEntryId,
         staffId: input.staffId,
@@ -3728,8 +3894,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       type: "time_clock_clock_out_missing",
       severity: "warning",
       sourceModule: "time_clock",
-      title: "Saida pendente",
-      message: `Sua escala terminou as ${formatNotificationDateTime(targetShift.end)}. Registre a saida se a jornada foi finalizada.`,
+      title: "Saída pendente",
+      message: `Sua escala terminou as ${formatNotificationDateTime(targetShift.end)}. Registre a saída se a jornada foi finalizada.`,
       actionUrl: buildTimeClockActionUrl({
         entryId: input.triggerEntryId,
         staffId: input.staffId,
@@ -3748,7 +3914,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       staffId: input.staffId,
       type: "time_clock_clock_out_missing",
       severity: "warning",
-      title: "Saida nao registrada",
+      title: "Saída não registrada",
       message: `${input.staffName} esta com jornada aberta apos o fim previsto da escala (${formatNotificationDateTime(targetShift.end)}).`,
       actionUrl: buildTimeClockActionUrl({
         entryId: input.triggerEntryId,
@@ -3773,7 +3939,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     notes: z.string().optional().nullable(),
   });
   const timeClockLocationInputSchema = z.object({
-    name: z.string().trim().min(2, "Nome obrigatorio."),
+    name: z.string().trim().min(2, "Nome obrigatório."),
     address: z.string().trim().optional().nullable(),
     latitude: z.coerce.number().min(-90).max(90),
     longitude: z.coerce.number().min(-180).max(180),
@@ -3789,7 +3955,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     cep: z.string().trim().optional().nullable(),
     number: z.string().trim().optional().nullable(),
   }).refine((value) => Boolean(value.address?.trim() || value.cep?.trim()), {
-    message: "Informe um endereco ou CEP.",
+    message: "Informe um endereço ou CEP.",
   });
   const timeClockAdjustmentInputSchema = z.object({
     staffId: z.coerce.number().int().positive().optional().nullable(),
@@ -3808,11 +3974,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     reviewerNotes: z.string().trim().optional().nullable(),
   });
   const timeClockClosureInputSchema = z.object({
-    month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Mes invalido. Use YYYY-MM."),
+    month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Mês inválido. Use YYYY-MM."),
     action: z.enum(["close", "reopen"]),
     notes: z.string().trim().optional().nullable(),
   });
-  const timeClockMonthSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Mes invalido. Use YYYY-MM.");
+  const timeClockMonthSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Mês inválido. Use YYYY-MM.");
 
   const getTimeClockMonthRange = (month: string) => {
     const [year, monthNumber] = month.split("-").map(Number);
@@ -4116,13 +4282,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return { dailySummaries, monthSummary };
   };
   const resolveTimeClockStaffId = async (orgId: number, sessionUser: SessionUser | undefined, requestedStaffId?: number | null) => {
-    if (!sessionUser) throw new Error("Nao autorizado.");
+    if (!sessionUser) throw new Error("Não autorizado.");
     if (sessionUser.role === "admin" || sessionUser.role === "administrativo") {
       return requestedStaffId ?? null;
     }
     const linkedStaff = await resolveLinkedStaffForSessionUser(orgId, sessionUser);
     if (!linkedStaff || linkedStaff.active === false) {
-      throw new Error("Seu usuario nao esta vinculado a um colaborador ativo.");
+      throw new Error("Seu usuário não está vinculado a um colaborador ativo.");
     }
     if (requestedStaffId && requestedStaffId !== linkedStaff.id) {
       throw new Error("Voce so pode consultar o proprio ponto.");
@@ -4142,7 +4308,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   const ensureTimeClockMonthOpen = async (orgId: number, month: string) => {
     const { closed } = await getTimeClockClosureStatus(orgId, month);
     if (closed) {
-      throw new Error("Competencia de ponto ja fechada. Reabra o mes para alterar registros.");
+      throw new Error("Competência de ponto já fechada. Reabra o mês para alterar registros.");
     }
   };
   const createTimeClockAuditLog = async (input: {
@@ -4318,12 +4484,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       q: query,
     });
     const results = await fetchJsonWithTimeout<Array<{
-      lat?: string;
+      lat: string;
       lon?: string;
       name?: string;
       display_name?: string;
       address?: Record<string, string | undefined>;
-    }>>(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
+    }>>(`https://nominatim.openstreetmap.org/search${params.toString()}`, {
       headers: {
         Accept: "application/json",
         "User-Agent": "EasyCare/1.0 address-geocoding",
@@ -4370,7 +4536,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const cep = String(req.query.cep || "");
       const number = typeof req.query.number === "string" ? req.query.number : "";
       const result = await lookupCepAddress(cep);
-      if (!result) return res.status(404).json({ message: "CEP nao encontrado." });
+      if (!result) return res.status(404).json({ message: "CEP não encontrado." });
       res.json({
         cep: result.cep ?? cep.replace(/\D/g, ""),
         street: result.logradouro || null,
@@ -4387,17 +4553,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/time-clock/geocode-address", requireAuth, requireRole("admin"), async (req, res, next) => {
     try {
       if (!req.session.user?.isSuperAdmin && req.session.user?.role !== "admin") {
-        return res.status(403).json({ message: "Apenas admin pode buscar endereco de local." });
+        return res.status(403).json({ message: "Apenas admin pode buscar endereço de local." });
       }
       const input = timeClockAddressInputSchema.parse(req.query);
       const result = await geocodeTimeClockAddress(input);
       if (!result) {
-        return res.status(404).json({ message: "Nao foi possivel localizar este endereco." });
+        return res.status(404).json({ message: "Não foi possível localizar este endereço." });
       }
       res.json(result);
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0]?.message || "Endereco invalido." });
+        return res.status(400).json({ message: error.errors[0]?.message || "Endereço inválido." });
       }
       next(error);
     }
@@ -4419,7 +4585,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0]?.message || "Coordenada invalida." });
+        return res.status(400).json({ message: error.errors[0]?.message || "Coordenada inválida." });
       }
       next(error);
     }
@@ -4449,7 +4615,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.status(201).json(created);
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados inválidos." });
       }
       next(error);
     }
@@ -4462,17 +4628,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       const orgId = getOrgId(req);
       const id = Number(req.params.id);
-      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Local invalido." });
+      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Local inválido." });
       const input = timeClockLocationInputSchema.partial().parse(req.body);
       const updated = await storage.updateTimeClockLocation(orgId, id, {
         ...input,
         ...(input.address !== undefined ? { address: input.address?.trim() || null } : {}),
       });
-      if (!updated) return res.status(404).json({ message: "Local nao encontrado." });
+      if (!updated) return res.status(404).json({ message: "Local não encontrado." });
       res.json(updated);
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados inválidos." });
       }
       next(error);
     }
@@ -4519,7 +4685,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const month = timeClockMonthSchema.parse(String(req.query.month || toDateOnly(new Date()).slice(0, 7)));
       const staffId = req.query.staffId ? Number(req.query.staffId) : null;
       if (staffId !== null && (!Number.isInteger(staffId) || staffId <= 0)) {
-        return res.status(400).json({ message: "Colaborador invalido." });
+        return res.status(400).json({ message: "Colaborador inválido." });
       }
       const effectiveStaffId = await resolveTimeClockStaffId(orgId, req.session.user, staffId);
       const environmentSettings = (res.locals.environmentSettings as EnvironmentSettings | undefined)
@@ -4535,7 +4701,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json({ month, entries, closure: closure ?? null, settings: environmentSettings.timeClock, ...summary });
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados inválidos." });
       }
       if (error instanceof Error) {
         return res.status(400).json({ message: error.message });
@@ -4551,12 +4717,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       const orgId = getOrgId(req);
       const id = Number(req.params.id);
-      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Batida invalida." });
+      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Batida inválida." });
       const input = timeClockEntryReviewSchema.parse(req.body);
       const current = await storage.getTimeClockEntry(orgId, id);
-      if (!current) return res.status(404).json({ message: "Batida nao encontrada." });
+      if (!current) return res.status(404).json({ message: "Batida não encontrada." });
       if (current.status !== "pending_approval") {
-        return res.status(400).json({ message: "Batida nao esta pendente de aprovacao." });
+        return res.status(400).json({ message: "Batida não está pendente de aprovação." });
       }
       await ensureTimeClockMonthOpen(orgId, getTimeClockReferenceMonth(new Date(current.eventTime)));
       const reviewNote = input.reviewerNotes?.trim() || null;
@@ -4607,7 +4773,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json(updated);
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados inválidos." });
       }
       if (error instanceof Error) return res.status(400).json({ message: error.message });
       next(error);
@@ -4620,7 +4786,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const month = timeClockMonthSchema.parse(String(req.query.month || toDateOnly(new Date()).slice(0, 7)));
       const requestedStaffId = req.query.staffId ? Number(req.query.staffId) : null;
       if (requestedStaffId !== null && (!Number.isInteger(requestedStaffId) || requestedStaffId <= 0)) {
-        return res.status(400).json({ message: "Colaborador invalido." });
+        return res.status(400).json({ message: "Colaborador inválido." });
       }
       const effectiveStaffId = await resolveTimeClockStaffId(orgId, req.session.user, requestedStaffId);
       const range = getTimeClockMonthRange(month);
@@ -4634,7 +4800,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json(adjustments);
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados inválidos." });
       }
       if (error instanceof Error) return res.status(400).json({ message: error.message });
       next(error);
@@ -4696,7 +4862,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.status(201).json(created);
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados inválidos." });
       }
       if (error instanceof Error) return res.status(400).json({ message: error.message });
       next(error);
@@ -4710,18 +4876,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       const orgId = getOrgId(req);
       const id = Number(req.params.id);
-      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Solicitacao invalida." });
+      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Solicitação inválida." });
       const input = timeClockAdjustmentReviewSchema.parse(req.body);
       const current = await storage.getTimeClockAdjustmentRequest(orgId, id);
-      if (!current) return res.status(404).json({ message: "Solicitacao nao encontrada." });
-      if (current.status !== "pending") return res.status(400).json({ message: "Solicitacao ja revisada." });
+      if (!current) return res.status(404).json({ message: "Solicitação não encontrada." });
+      if (current.status !== "pending") return res.status(400).json({ message: "Solicitação já revisada." });
       await ensureTimeClockMonthOpen(orgId, getTimeClockReferenceMonth(new Date(current.requestedEventTime)));
 
       const sourceEntry = current.entryId
         ? await storage.getTimeClockEntry(orgId, current.entryId)
         : null;
       if (current.entryId && !sourceEntry) {
-        return res.status(404).json({ message: "Batida original da correcao nao encontrada." });
+        return res.status(404).json({ message: "Batida original da correção não encontrada." });
       }
       if (sourceEntry && sourceEntry.staffId !== current.staffId) {
         return res.status(400).json({ message: "Batida original pertence a outro colaborador." });
@@ -4731,8 +4897,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (input.status === "approved") {
         if (sourceEntry) {
           const replacedSourceEntry = await storage.updateTimeClockEntry(orgId, sourceEntry.id, {
-            status: "rejected",
-            notes: `${sourceEntry.notes ? `${sourceEntry.notes}\n` : ""}Substituida pelo ajuste aprovado #${current.id}.`,
+            status: "corrected",
+            notes: `${sourceEntry.notes ? `${sourceEntry.notes}\n` : ""}Corrigida pelo ajuste aprovado #${current.id}.`,
           });
           await createTimeClockAuditLog({
             orgId,
@@ -4751,16 +4917,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           organizationId: orgId,
           staffId: current.staffId,
           userId: req.session.user?.id ?? null,
-          locationId: null,
+          locationId: sourceEntry?.locationId ?? null,
           eventType: current.eventType,
           eventTime: new Date(current.requestedEventTime),
-          latitude: null,
-          longitude: null,
-          accuracy: null,
-          distanceMeters: null,
-          geofenceRadiusMeters: null,
+          latitude: sourceEntry?.latitude ?? null,
+          longitude: sourceEntry?.longitude ?? null,
+          accuracy: sourceEntry?.accuracy ?? null,
+          distanceMeters: sourceEntry?.distanceMeters ?? null,
+          geofenceRadiusMeters: sourceEntry?.geofenceRadiusMeters ?? null,
           status: "manual_adjusted",
-          notes: `Ajuste aprovado: ${current.reason}${current.notes ? ` | ${current.notes}` : ""}`,
+          notes: [
+            `Ajuste aprovado #${current.id}: ${current.reason}`,
+            current.notes,
+            sourceEntry
+              ? `Substitui batida #${sourceEntry.id} (${TIME_CLOCK_EVENT_LABELS[sourceEntry.eventType as TimeClockEventType] ?? sourceEntry.eventType} - ${formatNotificationDateTime(new Date(sourceEntry.eventTime))}).`
+              : null,
+          ].filter(Boolean).join(" | "),
           ipAddress: req.ip,
           userAgent: req.get("user-agent") ?? null,
         });
@@ -4824,7 +4996,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json(updated);
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados inválidos." });
       }
       if (error instanceof Error) return res.status(400).json({ message: error.message });
       next(error);
@@ -4840,7 +5012,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const month = timeClockMonthSchema.parse(String(req.query.month || toDateOnly(new Date()).slice(0, 7)));
       const staffId = req.query.staffId ? Number(req.query.staffId) : null;
       if (staffId !== null && (!Number.isInteger(staffId) || staffId <= 0)) {
-        return res.status(400).json({ message: "Colaborador invalido." });
+        return res.status(400).json({ message: "Colaborador inválido." });
       }
       const range = getTimeClockMonthRange(month);
       const logs = await storage.getTimeClockAuditLogs(orgId, {
@@ -4851,7 +5023,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json(logs);
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados inválidos." });
       }
       next(error);
     }
@@ -4865,7 +5037,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json({ month, closure: closure ?? null, closed: closure?.status === "closed" });
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0]?.message || "Mes invalido." });
+        return res.status(400).json({ message: error.errors[0]?.message || "Mês inválido." });
       }
       next(error);
     }
@@ -4899,17 +5071,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const outOfRangeAttempts = auditLogs.filter((log: any) => log.action === "out_of_range_attempt").length;
         const pendingApprovalEntries = entries.filter((entry: any) => entry.status === "pending_approval").length;
         const closureBlockers: string[] = [];
-        if (summary.dailySummaries.length === 0) closureBlockers.push("Nao ha dados de ponto no mes.");
+        if (summary.dailySummaries.length === 0) closureBlockers.push("Não há dados de ponto no mês.");
         if (pendingAdjustments.length > 0) closureBlockers.push("Resolva os ajustes pendentes antes de fechar.");
-        if (pendingApprovalEntries > 0) closureBlockers.push("Existem batidas sem escala aguardando aprovacao.");
+        if (pendingApprovalEntries > 0) closureBlockers.push("Existem batidas sem escala aguardando aprovação.");
         if (environmentSettings.timeClock.blockCloseWithIncompleteDays && summary.monthSummary.incompleteDays > 0) {
           closureBlockers.push("Existem jornadas incompletas.");
         }
         if (environmentSettings.timeClock.blockCloseWithAbsences && summary.monthSummary.absences > 0) {
-          closureBlockers.push("Existem faltas no periodo.");
+          closureBlockers.push("Existem faltas no período.");
         }
         if (environmentSettings.timeClock.blockCloseWithOutOfRangeAttempts && outOfRangeAttempts > 0) {
-          closureBlockers.push("Existem tentativas fora do raio no periodo.");
+          closureBlockers.push("Existem tentativas fora do raio no período.");
         }
         if (closureBlockers.length > 0) {
           return res.status(400).json({ message: closureBlockers.join(" ") });
@@ -4934,7 +5106,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             reopenedAt: null,
           });
       } else {
-        if (!current) return res.status(404).json({ message: "Competencia ainda nao foi fechada." });
+        if (!current) return res.status(404).json({ message: "Competência ainda não foi fechada." });
         closure = await storage.updateTimeClockClosure(orgId, current.id, {
           status: "reopened",
           notes: input.notes?.trim() || current.notes,
@@ -4955,7 +5127,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json(closure);
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados inválidos." });
       }
       next(error);
     }
@@ -4967,7 +5139,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const sessionUser = req.session.user;
       const linkedStaff = await resolveLinkedStaffForSessionUser(orgId, sessionUser);
       if (!linkedStaff || linkedStaff.active === false) {
-        return res.status(400).json({ message: "Seu usuario nao esta vinculado a um colaborador ativo." });
+        return res.status(400).json({ message: "Seu usuário não está vinculado a um colaborador ativo." });
       }
 
       const input = timeClockPunchInputSchema.parse(req.body);
@@ -4997,7 +5169,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const current = getTimeClockState(stateEntries, todayShifts);
       if (!current.nextActions.includes(input.eventType)) {
         return res.status(400).json({
-          message: current.message || "Acao de ponto invalida para o estado atual da jornada.",
+          message: current.message || "Acao de ponto inválida para o estado atual da jornada.",
         });
       }
       const previousStateEntry = getLastTimeClockStateEntry(stateEntries);
@@ -5029,7 +5201,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         geofenceRadiusMeters: nearest.location.radiusMeters,
         status: requiresApproval ? "pending_approval" : "valid",
         notes: [
-          requiresApproval ? "Pendente de aprovacao: batida registrada sem escala prevista." : null,
+          requiresApproval ? "Pendente de aprovação: batida registrada sem escala prevista." : null,
           input.notes?.trim() || null,
         ].filter(Boolean).join(" | ") || null,
         ipAddress: req.ip,
@@ -5057,7 +5229,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           reason: "Tentativa fora do raio permitido.",
         });
         return res.status(403).json({
-          message: `Fora do raio permitido (${roundedDistance}m de distancia).`,
+          message: `Fora do raio permitido (${roundedDistance}m de distância).`,
           location: nearest.location,
           distanceMeters: roundedDistance,
         });
@@ -5171,7 +5343,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados inválidos." });
       }
       if (error instanceof Error) {
         return res.status(400).json({ message: error.message });
@@ -5216,7 +5388,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     skippedInvalidDueDate: number;
   };
   const generateMonthlyFeesInputSchema = z.object({
-    month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Mes invalido. Use YYYY-MM."),
+    month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Mês inválido. Use YYYY-MM."),
   });
   const clampDayInMonth = (year: number, monthNumber: number, day: number) => {
     const maxDay = new Date(year, monthNumber, 0).getDate();
@@ -5376,12 +5548,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const orgId = getOrgId(req);
     const payableId = Number(req.params.id);
     if (!Number.isInteger(payableId) || payableId <= 0) {
-      return res.status(400).json({ message: "ID invalido." });
+      return res.status(400).json({ message: "ID inválido." });
     }
 
     const payable = await storage.getAccountPayable(orgId, payableId);
     if (!payable) {
-      return res.status(404).json({ message: "Conta a pagar nao encontrada." });
+      return res.status(404).json({ message: "Conta a pagar não encontrada." });
     }
 
     const noteText = typeof payable.notes === "string" ? payable.notes : "";
@@ -5569,7 +5741,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   const CRM_STAGE_COLOR_REGEX = /^#[0-9a-fA-F]{6}$/;
   const crmStageSchema = z.preprocess(
     normalizeLegacyCrmStage,
-    z.string().regex(CRM_STAGE_KEY_REGEX, "Etapa invalida."),
+    z.string().regex(CRM_STAGE_KEY_REGEX, "Etapa inválida."),
   );
   const stageUsesLostReason = (stage?: string | null) => stage === "no_interest";
   const getCrmStageValuesFromSettings = (settings: EnvironmentSettings): string[] =>
@@ -5577,7 +5749,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   const loadEnvironmentSettingsForOrg = async (orgId: number) => {
     const settingsResult = await getOrganizationEnvironmentSettings(orgId);
     if (!settingsResult) {
-      const error = new Error("Organizacao nao encontrada.");
+      const error = new Error("Organização não encontrada.");
       (error as Error & { status?: number }).status = 404;
       throw error;
     }
@@ -5588,7 +5760,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   const crmFollowUpTaskSchema = z.object({
     id: z.string().trim().min(1).max(80).optional(),
     title: z.string().trim().min(1, "Titulo da tarefa obrigatorio").max(140),
-    dueDate: z.string().regex(CRM_FOLLOW_UP_DATE_REGEX, "Data da tarefa invalida. Use YYYY-MM-DD."),
+    dueDate: z.string().regex(CRM_FOLLOW_UP_DATE_REGEX, "Data da tarefa inválida. Use YYYY-MM-DD."),
     done: z.boolean().optional().default(false),
     notes: z.string().trim().optional().nullable(),
     assigneeName: z.string().trim().optional().nullable(),
@@ -5653,7 +5825,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   const crmKanbanStageSchema = z.object({
     value: crmStageSchema,
     label: z.string().trim().min(1).max(80),
-    color: z.string().trim().regex(CRM_STAGE_COLOR_REGEX, "Cor invalida. Use #RRGGBB."),
+    color: z.string().trim().regex(CRM_STAGE_COLOR_REGEX, "Cor inválida. Use #RRGGBB."),
   });
   const crmStagesUpdateSchema = z.object({
     organizationId: z.coerce.number().int().positive().optional(),
@@ -5677,7 +5849,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     organizationId: z.coerce.number().int().positive().optional(),
     followUpTasks: z.array(crmFollowUpTaskSchema).max(100),
   });
-  const crmDateKeySchema = z.string().regex(CRM_FOLLOW_UP_DATE_REGEX, "Data invalida. Use YYYY-MM-DD.");
+  const crmDateKeySchema = z.string().regex(CRM_FOLLOW_UP_DATE_REGEX, "Data inválida. Use YYYY-MM-DD.");
   const optionalCrmQueryText = (max = 120) =>
     z.preprocess(
       (value) => {
@@ -5711,7 +5883,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!ownerStaffId) return;
     const member = await storage.getStaffMember(orgId, ownerStaffId);
     if (!member || member.active === false) {
-      const error = new Error("Responsavel da equipe invalido.");
+      const error = new Error("Responsável da equipe inválido.");
       (error as Error & { status?: number }).status = 400;
       throw error;
     }
@@ -5792,7 +5964,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const settingsResult = await loadEnvironmentSettingsForOrg(orgId);
       const allowedStages = getCrmStageValuesFromSettings(settingsResult.settings);
       if (parsedQuery.stage && !allowedStages.includes(parsedQuery.stage)) {
-        return res.status(400).json({ message: "Etapa invalida para esta organizacao." });
+        return res.status(400).json({ message: "Etapa inválida para esta organização." });
       }
       const filters = {
         stage: parsedQuery.stage,
@@ -5825,11 +5997,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const orgId = await resolveOrgIdForCrm(req, req.query.organizationId);
       const opportunityId = Number(req.params.id);
       if (!Number.isInteger(opportunityId) || opportunityId <= 0) {
-        return res.status(400).json({ message: "ID invalido." });
+        return res.status(400).json({ message: "ID inválido." });
       }
       const opportunity = await storage.getCrmOpportunity(orgId, opportunityId);
       if (!opportunity) {
-        return res.status(404).json({ message: "Oportunidade nao encontrada." });
+        return res.status(404).json({ message: "Oportunidade não encontrada." });
       }
       res.json(opportunity);
     } catch (error) {
@@ -5845,7 +6017,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const allowedStages = getCrmStageValuesFromSettings(settingsResult.settings);
       const resolvedStage = parsed.stage ?? allowedStages[0];
       if (!resolvedStage || !allowedStages.includes(resolvedStage)) {
-        return res.status(400).json({ message: "Etapa invalida para esta organizacao." });
+        return res.status(400).json({ message: "Etapa inválida para esta organização." });
       }
       await assertCrmOwnerStaff(orgId, parsed.ownerStaffId);
       const created = await storage.createCrmOpportunity({
@@ -5875,7 +6047,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const opportunityId = Number(req.params.id);
       if (!Number.isInteger(opportunityId) || opportunityId <= 0) {
-        return res.status(400).json({ message: "ID invalido." });
+        return res.status(400).json({ message: "ID inválido." });
       }
 
       const parsed = crmUpdateSchema.parse(req.body);
@@ -5883,7 +6055,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const settingsResult = await loadEnvironmentSettingsForOrg(orgId);
       const allowedStages = getCrmStageValuesFromSettings(settingsResult.settings);
       if (parsed.stage && !allowedStages.includes(parsed.stage)) {
-        return res.status(400).json({ message: "Etapa invalida para esta organizacao." });
+        return res.status(400).json({ message: "Etapa inválida para esta organização." });
       }
       await assertCrmOwnerStaff(orgId, parsed.ownerStaffId);
       const updated = await storage.updateCrmOpportunity(orgId, opportunityId, {
@@ -5913,14 +6085,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const opportunityId = Number(req.params.id);
       if (!Number.isInteger(opportunityId) || opportunityId <= 0) {
-        return res.status(400).json({ message: "ID invalido." });
+        return res.status(400).json({ message: "ID inválido." });
       }
       const parsed = crmMoveSchema.parse(req.body);
       const orgId = await resolveOrgIdForCrm(req, req.body?.organizationId ?? req.query.organizationId);
       const settingsResult = await loadEnvironmentSettingsForOrg(orgId);
       const allowedStages = getCrmStageValuesFromSettings(settingsResult.settings);
       if (!allowedStages.includes(parsed.stage)) {
-        return res.status(400).json({ message: "Etapa invalida para esta organizacao." });
+        return res.status(400).json({ message: "Etapa inválida para esta organização." });
       }
       const updated = await storage.updateCrmOpportunity(orgId, opportunityId, {
         stage: parsed.stage,
@@ -5937,7 +6109,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const opportunityId = Number(req.params.id);
       if (!Number.isInteger(opportunityId) || opportunityId <= 0) {
-        return res.status(400).json({ message: "ID invalido." });
+        return res.status(400).json({ message: "ID inválido." });
       }
       const parsed = crmFollowUpsUpdateSchema.parse(req.body);
       const orgId = await resolveOrgIdForCrm(req, parsed.organizationId ?? req.query.organizationId);
@@ -5954,7 +6126,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const opportunityId = Number(req.params.id);
       if (!Number.isInteger(opportunityId) || opportunityId <= 0) {
-        return res.status(400).json({ message: "ID invalido." });
+        return res.status(400).json({ message: "ID inválido." });
       }
       const orgId = await resolveOrgIdForCrm(req, req.query.organizationId);
       await storage.deleteCrmOpportunity(orgId, opportunityId);

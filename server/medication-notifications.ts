@@ -509,7 +509,7 @@ async function dispatchMedicationNotifications(config: MedicationNotificationCon
     }
 
     if (createdTotal > 0) {
-      console.log(`[medication-notifications] notificacoes criadas=${createdTotal}`);
+      console.log(`[medication-notifications] notificações criadas=${createdTotal}`);
     }
   } catch (error) {
     console.error("[medication-notifications] erro no worker", error);

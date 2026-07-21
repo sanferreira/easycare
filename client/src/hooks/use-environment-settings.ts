@@ -17,7 +17,7 @@ export function useEnvironmentSettings(options?: { enabled?: boolean }) {
         credentials: "include",
         cache: "no-store",
       });
-      if (!res.ok) throw new Error("Falha ao carregar configuracoes do ambiente");
+      if (!res.ok) throw new Error("Falha ao carregar configurações do ambiente");
       return normalizeEnvironmentSettings(await res.json());
     },
   });
@@ -37,7 +37,7 @@ export function useUpdateEnvironmentSettings() {
         credentials: "include",
       });
       if (!res.ok) {
-        const fallbackMessage = "Falha ao salvar configuracoes do ambiente";
+        const fallbackMessage = "Falha ao salvar configurações do ambiente";
         let message = fallbackMessage;
         try {
           const data = await res.json();

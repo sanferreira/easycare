@@ -79,7 +79,7 @@ function buildPushPayload(notification: AppNotification) {
     icon: "/favicon.png",
     badge: "/favicon.png",
     tag: `easycare-notification-${notification.id}`,
-    url: notification.actionUrl || "/notificacoes",
+    url: notification.actionUrl || "/notificações",
     sourceModule: notification.sourceModule,
     severity: notification.severity,
     timestamp: Date.now(),
@@ -101,7 +101,7 @@ async function sendNotificationToSubscriptions(
   subscriptions: PushSubscriptionRecord[],
 ) {
   if (subscriptions.length === 0) {
-    await storage.markNotificationPushSkipped(notification.id, "Usuario sem inscricao Web Push ativa.");
+    await storage.markNotificationPushSkipped(notification.id, "Usuário sem inscrição Web Push ativa.");
     return;
   }
 
@@ -128,7 +128,7 @@ async function sendNotificationToSubscriptions(
     return;
   }
 
-  await storage.markNotificationPushFailed(notification.id, errors.join(" | ") || "Nenhuma inscricao recebeu o push.");
+  await storage.markNotificationPushFailed(notification.id, errors.join(" | ") || "Nenhuma inscrição recebeu o push.");
 }
 
 export async function sendWebPushNotifications(notifications: AppNotification[]) {
@@ -161,7 +161,7 @@ async function dispatchDueWebPushNotifications(config: WebPushConfig) {
     });
     await sendWebPushNotifications(notifications);
   } catch (error) {
-    console.error("[web-push] erro no worker de notificacoes", error);
+    console.error("[web-push] erro no worker de notificações", error);
   } finally {
     running = false;
   }
@@ -172,7 +172,7 @@ export function startWebPushNotificationWorker() {
   started = true;
   const config = loadWebPushConfig();
   if (!config.enabled) {
-    console.log("[web-push] notificacoes desabilitadas");
+    console.log("[web-push] notificações desabilitadas");
     return;
   }
   if (!config.publicKey || !config.privateKey) {
@@ -180,7 +180,7 @@ export function startWebPushNotificationWorker() {
     return;
   }
 
-  console.log(`[web-push] notificacoes habilitadas | intervalo=${config.intervalSeconds}s`);
+  console.log(`[web-push] notificações habilitadas | intervalo=${config.intervalSeconds}s`);
   void dispatchDueWebPushNotifications(config);
   timer = setInterval(() => {
     void dispatchDueWebPushNotifications(config);

@@ -114,8 +114,8 @@ export default function Medications() {
     });
 
     downloadCsv(
-      "historico-medicacoes-administradas.csv",
-      ["Residente", "Medicacao", "Dose", "Profissional", "Data/Hora", "Status", "Observacoes"],
+      "historico-medicações-administradas.csv",
+      ["Residente", "Medicação", "Dose", "Profissional", "Data/Hora", "Status", "Observações"],
       rows,
     );
   };
@@ -285,7 +285,7 @@ export default function Medications() {
                           </div>
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground">
-                          {adm.administeredByName || "Nao informado"}
+                          {adm.administeredByName || "Não informado"}
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground">
                           {adm.administeredAt
@@ -559,7 +559,7 @@ function AdminDialog({ open, onOpenChange, medications, currentUserName, current
       });
       if (!res.ok) {
         const payload = await res.json().catch(() => null);
-        throw new Error(payload?.message || "Erro ao registrar administracao");
+        throw new Error(payload?.message || "Erro ao registrar administração");
       }
       return res.json();
     },
@@ -569,7 +569,7 @@ function AdminDialog({ open, onOpenChange, medications, currentUserName, current
       form.reset({ medicationId: undefined, staffId: undefined, status: "given", notes: "" });
       onOpenChange(false);
     },
-    onError: (error: Error) => toast({ variant: "destructive", title: error.message || "Erro ao registrar administracao" }),
+    onError: (error: Error) => toast({ variant: "destructive", title: error.message || "Erro ao registrar administração" }),
   });
 
   const watchedMedId = form.watch("medicationId");
@@ -629,7 +629,7 @@ function AdminDialog({ open, onOpenChange, medications, currentUserName, current
 
             {isCaregiver ? (
               <div className="rounded-lg border border-border bg-muted/30 px-3 py-2">
-                <p className="text-xs text-muted-foreground">Profissional responsavel</p>
+                <p className="text-xs text-muted-foreground">Profissional responsável</p>
                 <p className="text-sm font-medium text-foreground">
                   {currentUserName || "Cuidador logado"}
                 </p>

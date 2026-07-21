@@ -134,7 +134,7 @@ function Router() {
       <Route path="/environment">
         <PrivateRoute component={EnvironmentSettings} route="/environment" />
       </Route>
-      <Route path="/notificacoes">
+      <Route path="/notificações">
         <PrivateRoute component={Notificacoes} />
       </Route>
       <Route path="/admin">

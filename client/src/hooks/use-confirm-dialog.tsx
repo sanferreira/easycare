@@ -67,7 +67,7 @@ export function useConfirmDialog() {
     >
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>{options?.title ?? "Confirmar acao"}</AlertDialogTitle>
+          <AlertDialogTitle>{options?.title ?? "Confirmar ação"}</AlertDialogTitle>
           {options?.description ? (
             <AlertDialogDescription>{options.description}</AlertDialogDescription>
           ) : null}

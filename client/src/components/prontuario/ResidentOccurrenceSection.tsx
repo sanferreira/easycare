@@ -71,7 +71,7 @@ export function ResidentOccurrenceSection({ residentId, canEdit }: Props) {
     queryKey: ["/api/occurrences", "prontuario", residentId],
     enabled: residentId > 0,
     queryFn: () =>
-      fetchJsonOrThrow(`/api/occurrences?residentId=${residentId}`, "Erro ao carregar ocorrencias."),
+      fetchJsonOrThrow(`/api/occurrences?residentId=${residentId}`, "Erro ao carregar ocorrências."),
   });
 
   const invalidateOccurrenceQueries = () => {
@@ -82,7 +82,7 @@ export function ResidentOccurrenceSection({ residentId, canEdit }: Props) {
 
   const createOccurrence = useMutation({
     mutationFn: (data: z.infer<typeof occurrenceSchema>) =>
-      fetchJsonOrThrow("/api/occurrences", "Erro ao registrar ocorrencia.", {
+      fetchJsonOrThrow("/api/occurrences", "Erro ao registrar ocorrência.", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -99,14 +99,14 @@ export function ResidentOccurrenceSection({ residentId, canEdit }: Props) {
       setIsDialogOpen(false);
       setEditingOccurrence(null);
       occurrenceForm.reset();
-      toast({ title: "Ocorrencia registrada com sucesso" });
+      toast({ title: "Ocorrência registrada com sucesso" });
     },
     onError: (error: Error) => toast({ variant: "destructive", title: error.message }),
   });
 
   const updateOccurrence = useMutation({
     mutationFn: ({ id, data }: { id: number; data: z.infer<typeof occurrenceSchema> }) =>
-      fetchJsonOrThrow(`/api/occurrences/${id}`, "Erro ao atualizar ocorrencia.", {
+      fetchJsonOrThrow(`/api/occurrences/${id}`, "Erro ao atualizar ocorrência.", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -123,17 +123,17 @@ export function ResidentOccurrenceSection({ residentId, canEdit }: Props) {
       invalidateOccurrenceQueries();
       setIsDialogOpen(false);
       setEditingOccurrence(null);
-      toast({ title: "Ocorrencia atualizada com sucesso" });
+      toast({ title: "Ocorrência atualizada com sucesso" });
     },
     onError: (error: Error) => toast({ variant: "destructive", title: error.message }),
   });
 
   const deleteOccurrence = useMutation({
     mutationFn: (id: number) =>
-      fetchJsonOrThrow(`/api/occurrences/${id}`, "Erro ao excluir ocorrencia.", { method: "DELETE" }),
+      fetchJsonOrThrow(`/api/occurrences/${id}`, "Erro ao excluir ocorrência.", { method: "DELETE" }),
     onSuccess: () => {
       invalidateOccurrenceQueries();
-      toast({ title: "Ocorrencia removida" });
+      toast({ title: "Ocorrência removida" });
     },
     onError: (error: Error) => toast({ variant: "destructive", title: error.message }),
   });
@@ -174,24 +174,24 @@ export function ResidentOccurrenceSection({ residentId, canEdit }: Props) {
         <div className="flex justify-end">
           <Button size="sm" variant="destructive" onClick={openCreateDialog}>
             <Plus className="h-4 w-4 mr-1" />
-            Nova Ocorrencia
+            Nova Ocorrência
           </Button>
         </div>
       ) : null}
 
       {occurrencesQuery.isLoading ? (
         <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
-          Carregando ocorrencias...
+          Carregando ocorrências...
         </div>
       ) : occurrencesQuery.error ? (
         <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-6 text-sm text-destructive">
           {occurrencesQuery.error instanceof Error
             ? occurrencesQuery.error.message
-            : "Erro ao carregar ocorrencias."}
+            : "Erro ao carregar ocorrências."}
         </div>
       ) : (occurrencesQuery.data?.length ?? 0) === 0 ? (
         <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
-          Nenhuma ocorrencia registrada para este residente.
+          Nenhuma ocorrência registrada para este residente.
         </div>
       ) : (
         <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
@@ -203,7 +203,7 @@ export function ResidentOccurrenceSection({ residentId, canEdit }: Props) {
                 <TableHead>Status</TableHead>
                 <TableHead>Data</TableHead>
                 <TableHead>Descricao</TableHead>
-                <TableHead className="text-right">Acoes</TableHead>
+                <TableHead className="text-right">Ações</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -233,8 +233,8 @@ export function ResidentOccurrenceSection({ residentId, canEdit }: Props) {
                           className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                           onClick={() => {
                             confirm({
-                              title: "Excluir ocorrencia",
-                              description: "Excluir esta ocorrencia?",
+                              title: "Excluir ocorrência",
+                              description: "Excluir esta ocorrência?",
                               confirmText: "Excluir",
                               pendingText: "Excluindo...",
                               variant: "destructive",
@@ -259,7 +259,7 @@ export function ResidentOccurrenceSection({ residentId, canEdit }: Props) {
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
         <DialogContent className="max-w-xl">
           <DialogHeader>
-            <DialogTitle>{editingOccurrence ? "Editar Ocorrencia" : "Nova Ocorrencia"}</DialogTitle>
+            <DialogTitle>{editingOccurrence ? "Editar Ocorrência" : "Nova Ocorrência"}</DialogTitle>
           </DialogHeader>
           <Form {...occurrenceForm}>
             <form

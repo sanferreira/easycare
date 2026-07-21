@@ -257,7 +257,7 @@ export const staff = pgTable("staff", {
   employmentType: text("employment_type").default("clt"), // clt | pj
   cpf: text("cpf"),
   cnpj: text("cnpj"),
-  shiftValue: real("shift_value").default(0), // valor base por plantao
+  shiftValue: real("shift_value").default(0), // valor base por plantão
   bonusValue: real("bonus_value").default(0),
   bonusNotes: text("bonus_notes"),
   bankName: text("bank_name"),
@@ -336,7 +336,7 @@ export const timeClockEntries = pgTable("time_clock_entries", {
   accuracy: real("accuracy"),
   distanceMeters: real("distance_meters"),
   geofenceRadiusMeters: integer("geofence_radius_meters"),
-  status: text("status").notNull().default("valid"), // valid | pending_approval | rejected | out_of_range | manual_adjusted
+  status: text("status").notNull().default("valid"), // valid | pending_approval | rejected | out_of_range | manual_adjusted | corrected
   notes: text("notes"),
   ipAddress: text("ip_address"),
   userAgent: text("user_agent"),
