@@ -283,9 +283,9 @@ export default function Dashboard() {
             data-testid="button-active-shifts-header"
           >
             <div className={`h-2 w-2 rounded-full shrink-0 ${activeShifts.length > 0 ? "bg-green-500 animate-pulse" : "bg-muted-foreground/40"}`} />
-            <p className="text-sm font-medium text-foreground">
+           <p className="text-sm font-medium text-foreground">
               {activeShifts.length > 0
-                ? `${activeShifts.length} plantão${activeShifts.length > 1 ? "ões" : ""} em andamento`
+                ? `${activeShifts.length} ${activeShifts.length > 1 ? "plantões" : "plantão"} em andamento`
                 : "Nenhum plantão ativo agora"}
             </p>
             <ChevronRight className="h-3.5 w-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity -ml-1" />
