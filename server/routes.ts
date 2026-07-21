@@ -964,7 +964,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/family-portal/resident", requireFamilyAuth, async (req, res) => {
     const { residentId, organizationId } = req.session.familyMember!;
     const resident = await storage.getResident(organizationId, residentId);
-    if (!resident) return res.status(404).json({ message: "Residente não encontrado" });
+    if (!resident) return res.status(404).json({ message: "Paciente não encontrado" });
     // Return safe subset of resident data for family
     res.json({
       id: resident.id,
@@ -1285,7 +1285,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/residents/:id", requireAuth, async (req, res) => {
     const orgId = getOrgId(req);
     const resident = await storage.getResident(orgId, Number(req.params.id));
-    if (!resident) return res.status(404).json({ message: "Residente não encontrado" });
+    if (!resident) return res.status(404).json({ message: "Paciente não encontrado" });
     res.json(resident);
   });
   app.post("/api/residents", requireAuth, async (req, res) => {
@@ -1373,7 +1373,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const orgId = getOrgId(req);
     const residentId = Number(req.params.residentId);
     const resident = await storage.getResident(orgId, residentId);
-    if (!resident) return res.status(404).json({ message: "Residente não encontrado." });
+    if (!resident) return res.status(404).json({ message: "Paciente não encontrado." });
     res.json(await storage.getPatientDocuments(orgId, residentId));
   });
 
@@ -1382,7 +1382,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const orgId = getOrgId(req);
       const residentId = Number(req.params.residentId);
       const resident = await storage.getResident(orgId, residentId);
-      if (!resident) return res.status(404).json({ message: "Residente não encontrado." });
+      if (!resident) return res.status(404).json({ message: "Paciente não encontrado." });
 
       const input = patientDocumentInputSchema.parse(req.body);
       const document = await storage.createPatientDocument({
@@ -1601,7 +1601,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   const buildMedicationPayload = (body: any) => {
     const residentId = Number(body?.residentId);
     if (!Number.isInteger(residentId) || residentId <= 0) {
-      throw new Error("Residente inválido.");
+      throw new Error("Paciente inválido.");
     }
 
     const name = String(body?.name ?? "").trim();
@@ -1686,7 +1686,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const scheduledLabel = input.scheduledFor
       ? ` prevista para ${formatAppNotificationDateTime(input.scheduledFor)}`
       : "";
-    const residentLabel = input.medication.residentName || "Residente";
+    const residentLabel = input.medication.residentName || "Paciente";
     await notifyMedicationRoles(input.orgId, {
       staffId: null,
       type: NOTIFICATION_TYPES.medicationDoseAttention,
@@ -1717,13 +1717,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const residentId = Number(req.params.residentId);
       if (!Number.isInteger(residentId) || residentId <= 0) {
-        return res.status(400).json({ message: "Residente inválido." });
+        return res.status(400).json({ message: "Paciente inválido." });
       }
 
       const orgId = getOrgId(req);
       const resident = await storage.getResident(orgId, residentId);
       if (!resident) {
-        return res.status(404).json({ message: "Residente não encontrado." });
+        return res.status(404).json({ message: "Paciente não encontrado." });
       }
 
       const fromParam = typeof req.query.from === "string" ? req.query.from.trim() : "";
@@ -2056,7 +2056,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const orgId = getOrgId(req);
       const residentId = Number(req.params.residentId);
       if (!Number.isInteger(residentId) || residentId <= 0) {
-        return res.status(400).json({ message: "Residente inválido." });
+        return res.status(400).json({ message: "Paciente inválido." });
       }
 
       const sessionUser = req.session.user;
@@ -2068,7 +2068,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const medications = await storage.getMedications(orgId, residentId);
       const medication = medications.find((item) => item.id === input.medicationId);
       if (!medication) {
-        return res.status(404).json({ message: "Medicamento não encontrado para este residente." });
+        return res.status(404).json({ message: "Medicamento não encontrado para este paciente." });
       }
 
       const linkedStaff = await resolveLinkedStaffForSessionUser(orgId, sessionUser);

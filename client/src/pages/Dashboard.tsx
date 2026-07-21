@@ -207,7 +207,7 @@ export default function Dashboard() {
     rows.push([]);
 
     rows.push(["=== MENSALIDADES ===", "", "", "", ""]);
-    rows.push(["Residente", "Mês Referência", "Valor (R$)", "Status", "Pago em"]);
+    rows.push(["Paciente", "Mês Referência", "Valor (R$)", "Status", "Pago em"]);
     fees.forEach((f: any) => {
       const statusLabel = f.status === "paid" ? "Pago" : f.status === "pending" ? "Pendente" : "Vencido";
       rows.push([f.residentName ?? "—", f.referenceMonth ?? "—", String(f.amount ?? 0), statusLabel, f.paidAt ? format(new Date(f.paidAt), "dd/MM/yyyy") : "—"]);
@@ -215,14 +215,14 @@ export default function Dashboard() {
     rows.push([]);
 
     rows.push(["=== MEDICAÇÕES ATIVAS ===", "", "", "", ""]);
-    rows.push(["Residente", "Medicamento", "Dosagem", "Frequência", "Status"]);
+    rows.push(["Paciente", "Medicamento", "Dosagem", "Frequência", "Status"]);
     medications.filter((m: any) => m.status === "active").forEach((m: any) => {
       rows.push([m.residentName ?? "—", m.name, m.dosage, m.frequency, "Ativo"]);
     });
     rows.push([]);
 
     rows.push(["=== OCORRÊNCIAS ABERTAS ===", "", "", "", ""]);
-    rows.push(["Residente", "Tipo", "Descrição", "Severidade", "Data"]);
+    rows.push(["Paciente", "Tipo", "Descrição", "Severidade", "Data"]);
     occurrences.filter((o: any) => o.status === "open").forEach((o: any) => {
       const sev = o.severity === "low" ? "Baixa" : o.severity === "medium" ? "Média" : "Alta";
       rows.push([o.residentName ?? "—", o.type, o.description, sev, format(new Date(o.createdAt), "dd/MM/yyyy")]);
@@ -295,7 +295,7 @@ export default function Dashboard() {
 
       {/* KPI Cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-        <KpiCard title="Residentes Ativos" value={stats.totalResidents} desc="Cadastrados no sistema" icon={Users} color={BRAND.blue} gradient={BRAND.cyan} to="/residents" />
+        <KpiCard title="Pacientes Ativos" value={stats.totalResidents} desc="Cadastrados no sistema" icon={Users} color={BRAND.blue} gradient={BRAND.cyan} to="/residents" />
         <KpiCard title="Taxa de Ocupação" value={`${stats.occupancyRate}%`} desc={`${stats.totalResidents} de ${stats.capacity} vagas ocupadas`} icon={BedDouble} color={BRAND.cyan} gradient={BRAND.blue} to="/residents" />
         <KpiCard title="Medicações Ativas" value={stats.activeMedications} desc="Prescrições vigentes" icon={Pill} color={BRAND.green} gradient={BRAND.cyan} to="/residents" />
         <KpiCard title="Doses em Atraso" value={stats.overdueMedicationDoses} desc="Pendentes até agora" icon={AlertCircle} color={BRAND.red} gradient={BRAND.yellow} to="/prontuario" />
@@ -409,7 +409,7 @@ export default function Dashboard() {
         <Card className="lg:col-span-2 shadow-sm">
           <CardHeader className="pb-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <CardTitle className="text-base">Residentes</CardTitle>
+              <CardTitle className="text-base">Pacientes</CardTitle>
               <button onClick={() => navigate("/residents")} className="flex items-center gap-1 text-xs text-primary hover:text-primary/80 font-medium transition-colors" data-testid="button-view-all-residents">
                 Ver todos <ArrowRight className="h-3 w-3" />
               </button>
@@ -417,7 +417,7 @@ export default function Dashboard() {
           </CardHeader>
           <CardContent>
             {residents.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-6">Nenhum residente cadastrado</p>
+              <p className="text-sm text-muted-foreground text-center py-6">Nenhum paciente cadastrado</p>
             ) : (
               <div className="divide-y divide-border/60">
                 {residents.slice(0, 5).map((r: any) => (
@@ -443,7 +443,7 @@ export default function Dashboard() {
                 ))}
                 {residents.length > 5 && (
                   <button onClick={() => navigate("/residents")} className="text-xs text-primary hover:text-primary/80 font-medium text-center pt-3 w-full transition-colors">
-                    +{residents.length - 5} residente{residents.length - 5 > 1 ? "s" : ""} — Ver todos
+                    +{residents.length - 5} paciente{residents.length - 5 > 1 ? "s" : ""} — Ver todos
                   </button>
                 )}
               </div>
@@ -496,7 +496,7 @@ export default function Dashboard() {
               </div>
               <div className="space-y-3">
                 {[
-                  { label: "Residentes", val: `${stats.totalResidents} / ${stats.capacity}`, color: BRAND.blue, to: "/residents" },
+                  { label: "Pacientes", val: `${stats.totalResidents} / ${stats.capacity}`, color: BRAND.blue, to: "/residents" },
                   { label: "Medicações", val: stats.activeMedications, color: BRAND.green, to: "/residents" },
                   { label: "Doses atrasadas", val: stats.overdueMedicationDoses, color: BRAND.red, to: "/prontuario" },
                   { label: "Plantões ativos", val: activeShifts.length, color: BRAND.cyan, to: "/escalas" },

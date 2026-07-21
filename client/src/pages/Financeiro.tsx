@@ -114,7 +114,7 @@ const STATUS_PAYABLE: Record<string, { label: string; color: string; bg: string 
 };
 
 const contractSchema = z.object({
-  residentId: z.coerce.number().min(1, "Residente obrigatório"),
+  residentId: z.coerce.number().min(1, "Paciente obrigatório"),
   plan: z.enum(["standard", "premium", "vip"]),
   monthlyValue: z.coerce.number().min(1, "Valor obrigatório"),
   startDate: z.string().min(1, "Data obrigatória"),
@@ -736,7 +736,7 @@ export default function Financeiro() {
       <html lang="pt-BR">
         <head>
           <meta charset="utf-8" />
-          <title>Contrato - ${escapeHtml(contract.residentName ?? "Residente")}</title>
+          <title>Contrato - ${escapeHtml(contract.residentName ?? "Paciente")}</title>
           <style>
             body { margin: 28px; color: #111827; font-family: Arial, sans-serif; line-height: 1.55; }
             header { border-bottom: 2px solid #111827; padding-bottom: 14px; margin-bottom: 22px; }
@@ -759,7 +759,7 @@ export default function Financeiro() {
 
           <h2>Dados do contrato</h2>
           <div class="grid">
-            <div><strong>Residente:</strong> ${escapeHtml(contract.residentName ?? "-")}</div>
+            <div><strong>Paciente:</strong> ${escapeHtml(contract.residentName ?? "-")}</div>
             <div><strong>Plano:</strong> ${escapeHtml(planLabel)}</div>
             <div><strong>Valor mensal:</strong> ${escapeHtml(formatCurrency(Number(contract.monthlyValue ?? 0)))}</div>
             <div><strong>Vencimento:</strong> dia ${escapeHtml(contract.paymentDay ?? "-")}</div>
@@ -772,7 +772,7 @@ export default function Financeiro() {
           <div class="box">
             <p>
               Pelo presente instrumento, as partes registram a contratacao dos servicos assistenciais
-              vinculados ao residente acima identificado, conforme plano, vigencia e valores descritos neste documento.
+              vinculados ao paciente acima identificado, conforme plano, vigencia e valores descritos neste documento.
             </p>
             <p>
               O contratante declara ciencia das rotinas operacionais, regras de pagamento, responsabilidades
@@ -1106,9 +1106,9 @@ export default function Financeiro() {
                 <form onSubmit={contractForm.handleSubmit((d) => createContract.mutate(d))} className="space-y-4">
                   <FormField control={contractForm.control} name="residentId" render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Residente *</FormLabel>
+                      <FormLabel>Paciente *</FormLabel>
                       <Select onValueChange={(v) => field.onChange(Number(v))} value={field.value?.toString() ?? ""}>
-                        <FormControl><SelectTrigger data-testid="select-contract-resident"><SelectValue placeholder="Selecionar residente" /></SelectTrigger></FormControl>
+                        <FormControl><SelectTrigger data-testid="select-contract-resident"><SelectValue placeholder="Selecionar paciente" /></SelectTrigger></FormControl>
                         <SelectContent>
                           {residents.map((r: any) => (
                             <SelectItem key={r.id} value={r.id.toString()}>{r.name}</SelectItem>

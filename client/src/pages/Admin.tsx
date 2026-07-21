@@ -687,7 +687,7 @@ function OrgCard({ org }: { org: Organization }) {
               <Input className="mt-1.5" type="number" min="1" placeholder="Ex: 30"
                 value={editOrgForm.capacity} onChange={(e) => setEditOrgForm({ ...editOrgForm, capacity: e.target.value })}
                 data-testid="input-edit-org-capacity" />
-              <p className="text-xs text-muted-foreground mt-1">Número máximo de residentes que a unidade comporta</p>
+              <p className="text-xs text-muted-foreground mt-1">Número máximo de pacientes que a unidade comporta</p>
             </div>
             <div className="flex gap-3 pt-1">
               <Button variant="outline" className="flex-1" onClick={() => setShowEditOrg(false)}>Cancelar</Button>
@@ -904,7 +904,7 @@ export default function Admin() {
               <Input className="mt-1.5" type="number" min="1" placeholder="Ex: 30"
                 value={orgForm.capacity} onChange={(e) => setOrgForm({ ...orgForm, capacity: e.target.value })}
                 data-testid="input-org-capacity" />
-              <p className="text-xs text-muted-foreground mt-1">Número máximo de residentes que a unidade comporta</p>
+              <p className="text-xs text-muted-foreground mt-1">Número máximo de pacientes que a unidade comporta</p>
             </div>
             <div className="flex gap-3 pt-1">
               <Button variant="outline" className="flex-1" onClick={() => setShowAddOrg(false)}>Cancelar</Button>

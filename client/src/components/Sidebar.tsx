@@ -24,7 +24,7 @@ import { NotificationCenter } from "@/components/NotificationCenter";
 
 const allNavItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/residents", label: "Residentes", icon: Users },
+  { href: "/residents", label: "Pacientes", icon: Users },
   { href: "/prontuario", label: "Prontuário", icon: FileText },
   { href: "/staff", label: "Equipe", icon: UserCheck },
   { href: "/escalas", label: "Escalas", icon: Calendar },

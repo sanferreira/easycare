@@ -130,7 +130,7 @@ async function fetchAddressByCep(cep: string): Promise<{
 // ─── Step indicator ─────────────────────────────────────────────────────────
 
 const STEPS = [
-  { label: "Residente", icon: User },
+  { label: "Paciente", icon: User },
   { label: "Familiar", icon: Users },
   { label: "Contrato", icon: FileText },
   { label: "Conclusão", icon: CheckCircle2 },
@@ -212,7 +212,7 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
         body: JSON.stringify({ ...s1, photoUrl: s1.photoUrl?.trim() || null, status: "active" }),
       });
       if (!resRes.ok) {
-        let message = "Erro ao criar residente";
+        let message = "Erro ao criar paciente";
         try {
           const responseBody = await resRes.json();
           if (responseBody?.message) message = responseBody.message;
@@ -370,11 +370,11 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
           <div className="rounded-xl border border-border p-4 space-y-3">
-            <p className="text-sm font-medium text-foreground">Foto do residente</p>
+            <p className="text-sm font-medium text-foreground">Foto do paciente</p>
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
               <div className="h-20 w-20 rounded-xl border border-border overflow-hidden bg-muted flex items-center justify-center shrink-0">
                 {photoPreview ? (
-                  <img src={photoPreview} alt="Foto do residente" className="h-full w-full object-cover" />
+                  <img src={photoPreview} alt="Foto do paciente" className="h-full w-full object-cover" />
                 ) : (
                   <div className="text-2xl font-semibold text-muted-foreground">
                     {(form.watch("name") || "?").charAt(0)}
@@ -686,7 +686,7 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
                     </FormControl>
                     <div>
                       <p className="text-sm font-medium text-primary">Acesso ao Portal Familiar</p>
-                      <p className="text-xs text-muted-foreground">Libera login no portal para acompanhar o residente</p>
+                      <p className="text-xs text-muted-foreground">Libera login no portal para acompanhar o paciente</p>
                     </div>
                   </div>
                 </FormItem>
@@ -849,7 +849,7 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
             <CheckCircle2 className="h-8 w-8 text-green-600" />
           </div>
           <h3 className="text-xl font-bold text-foreground">Admissão concluída!</h3>
-          <p className="text-sm text-muted-foreground">O residente foi cadastrado com sucesso.</p>
+          <p className="text-sm text-muted-foreground">O paciente foi cadastrado com sucesso.</p>
         </div>
 
         <div className="text-left space-y-3 bg-muted/40 rounded-2xl p-4 border border-border/50">
@@ -859,7 +859,7 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
                 <User className="h-4 w-4 text-primary" />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">Residente</p>
+                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">Paciente</p>
                 <p className="font-semibold text-foreground">{step1Data.name}</p>
                 {step1Data.roomNumber && <p className="text-xs text-muted-foreground">Quarto {step1Data.roomNumber}</p>}
               </div>

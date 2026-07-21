@@ -209,7 +209,7 @@ function OccurrenceDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
               name="residentId"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Residente Envolvido</FormLabel>
+                  <FormLabel>Paciente Envolvido</FormLabel>
                   <Select 
                     onValueChange={(val) => field.onChange(Number(val))} 
                     value={field.value ? String(field.value) : undefined}

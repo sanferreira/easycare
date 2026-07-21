@@ -191,7 +191,7 @@ export function ResidentOccurrenceSection({ residentId, canEdit }: Props) {
         </div>
       ) : (occurrencesQuery.data?.length ?? 0) === 0 ? (
         <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
-          Nenhuma ocorrência registrada para este residente.
+          Nenhuma ocorrência registrada para este paciente.
         </div>
       ) : (
         <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">

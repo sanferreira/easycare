@@ -238,7 +238,7 @@ const defaultPatientDocumentValues: z.infer<typeof patientDocumentSchema> = {
 };
 
 const contractSchema = z.object({
-  residentId: z.coerce.number().min(1, "Residente obrigatorio"),
+  residentId: z.coerce.number().min(1, "Paciente obrigat?rio"),
   plan: z.enum(["standard", "premium", "vip"]),
   monthlyValue: z.coerce.number().min(1, "Valor obrigatorio"),
   startDate: z.string().min(1, "Data obrigatoria"),
@@ -744,21 +744,21 @@ export default function Residents() {
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => {
       const res = await fetch(`/api/residents/${id}`, { method: "DELETE", credentials: "include" });
-      if (!res.ok) throw new Error("Erro ao excluir residente");
+      if (!res.ok) throw new Error("Erro ao excluir paciente");
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/residents"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
-      toast({ title: "Residente excluído" });
+      toast({ title: "Paciente excluído" });
     },
-    onError: () => toast({ variant: "destructive", title: "Erro ao excluir residente" }),
+    onError: () => toast({ variant: "destructive", title: "Erro ao excluir paciente" }),
   });
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-bold font-display text-foreground">Residentes</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold font-display text-foreground">Pacientes</h1>
           <p className="text-muted-foreground mt-1">Gerencie os idosos acolhidos na instituição.</p>
         </div>
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
@@ -801,11 +801,11 @@ export default function Residents() {
       <div className="space-y-3 md:hidden">
         {isLoading ? (
           <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">
-            Carregando residentes...
+            Carregando pacientes...
           </div>
         ) : filteredResidents?.length === 0 ? (
           <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">
-            Nenhum residente encontrado.
+            Nenhum paciente encontrado.
           </div>
         ) : (
           filteredResidents?.map((resident) => (
@@ -880,7 +880,7 @@ export default function Residents() {
                       onClick={(event) => {
                         event.stopPropagation();
                         confirm({
-                          title: "Excluir residente",
+                          title: "Excluir paciente",
                           description: `Excluir "${resident.name}"? Esta ação não pode ser desfeita.`,
                           confirmText: "Excluir",
                           pendingText: "Excluindo...",
@@ -921,7 +921,7 @@ export default function Residents() {
             ) : filteredResidents?.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
-                  Nenhum residente encontrado.
+                  Nenhum paciente encontrado.
                 </TableCell>
               </TableRow>
             ) : (
@@ -990,7 +990,7 @@ export default function Residents() {
                         onClick={(event) => {
                           event.stopPropagation();
                           confirm({
-                            title: "Excluir residente",
+                            title: "Excluir paciente",
                             description: `Excluir "${resident.name}"? Esta ação não pode ser desfeita.`,
                             confirmText: "Excluir",
                             pendingText: "Excluindo...",
@@ -2238,7 +2238,7 @@ function ResidentDetailsDialog({
       <DialogContent className="max-h-[92vh] max-w-6xl overflow-hidden p-0">
         <div className="max-h-[92vh] overflow-y-auto">
           <DialogHeader className="sticky top-0 z-10 border-b border-border bg-background/95 px-4 py-3 backdrop-blur">
-            <DialogTitle className="sr-only">Detalhes do residente</DialogTitle>
+            <DialogTitle className="sr-only">Detalhes do paciente</DialogTitle>
             <div className="flex min-w-0 items-center gap-3 pr-8">
               <ResidentAvatar resident={resident} size="lg" />
               <div className="min-w-0 flex-1">
@@ -2300,7 +2300,7 @@ function ResidentDetailsDialog({
               <>
                 <ResidentSectionHeader
                   title="Medicações prescritas"
-                  description="Prescricoes ativas ou suspensas vinculadas ao residente."
+                  description="Prescricoes ativas ou suspensas vinculadas ao paciente."
                   action={
                     <Button size="sm" onClick={openCreateMedicationDialog}>
                       <Plus className="h-4 w-4 mr-1" />
@@ -2321,7 +2321,7 @@ function ResidentDetailsDialog({
                   </ResidentTabNotice>
                 ) : (medicationsQuery.data?.length ?? 0) === 0 ? (
                   <ResidentTabNotice>
-                    Nenhuma medicação cadastrada para este residente.
+                    Nenhuma medicação cadastrada para este paciente.
                   </ResidentTabNotice>
                 ) : (
                   <>
@@ -2449,7 +2449,7 @@ function ResidentDetailsDialog({
                         <div className="space-y-2">
                           <h4 className="text-sm font-semibold text-foreground">Agenda de doses</h4>
                           <p className="text-xs text-muted-foreground">
-                            Doses geradas por residente com base nos horários e período das prescrições.
+                            Doses geradas por paciente com base nos horários e período das prescrições.
                           </p>
                           <div className="flex items-center gap-2">
                             <Switch
@@ -2701,7 +2701,7 @@ function ResidentDetailsDialog({
                         </ResidentTabNotice>
                       ) : (medicationAdministrationHistoryQuery.data?.length ?? 0) === 0 ? (
                         <ResidentTabNotice>
-                          Nenhuma administração registrada para este residente.
+                          Nenhuma administração registrada para este paciente.
                         </ResidentTabNotice>
                       ) : (
                         <>
@@ -2797,7 +2797,7 @@ function ResidentDetailsDialog({
               <>
                 <ResidentSectionHeader
                   title="Documentos do paciente"
-                  description="Exames, anamnese, contratos assinados e arquivos vinculados ao residente."
+                  description="Exames, anamnese, contratos assinados e arquivos vinculados ao paciente."
                 />
 
                 <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
@@ -2899,7 +2899,7 @@ function ResidentDetailsDialog({
                   </ResidentTabNotice>
                 ) : (patientDocumentsQuery.data?.length ?? 0) === 0 ? (
                   <ResidentTabNotice>
-                    Nenhum documento cadastrado para este residente.
+                    Nenhum documento cadastrado para este paciente.
                   </ResidentTabNotice>
                 ) : (
                   <div className="grid gap-3 md:grid-cols-2">
@@ -2962,7 +2962,7 @@ function ResidentDetailsDialog({
                             onClick={() => {
                               confirm({
                                 title: "Remover documento",
-                                description: `Remover "${document.title}" da ficha do residente?`,
+                                description: `Remover "${document.title}" da ficha do paciente?`,
                                 confirmText: "Remover",
                                 pendingText: "Removendo...",
                                 variant: "destructive",
@@ -2990,7 +2990,7 @@ function ResidentDetailsDialog({
               <>
                 <ResidentSectionHeader
                   title="Escalas vinculadas"
-                  description="Plantões e cuidadores relacionados a este residente."
+                  description="Plantões e cuidadores relacionados a este paciente."
                   action={
                     <Button size="sm" onClick={openCreateShiftDialog}>
                       <Plus className="h-4 w-4 mr-1" />
@@ -3011,7 +3011,7 @@ function ResidentDetailsDialog({
                   </ResidentTabNotice>
                 ) : (shiftsQuery.data?.length ?? 0) === 0 ? (
                   <ResidentTabNotice>
-                    Nenhuma escala vinculada a este residente.
+                    Nenhuma escala vinculada a este paciente.
                   </ResidentTabNotice>
                 ) : (
                   <>
@@ -3153,7 +3153,7 @@ function ResidentDetailsDialog({
                   </ResidentTabNotice>
                 ) : (occurrencesQuery.data?.length ?? 0) === 0 ? (
                   <ResidentTabNotice>
-                    Nenhuma ocorrência registrada para este residente.
+                    Nenhuma ocorrência registrada para este paciente.
                   </ResidentTabNotice>
                 ) : (
                   <>
@@ -4041,7 +4041,7 @@ function ResidentDetailsDialog({
                   </ResidentTabNotice>
                 ) : (familyQuery.data?.length ?? 0) === 0 ? (
                   <ResidentTabNotice>
-                    Nenhum familiar cadastrado para este residente.
+                    Nenhum familiar cadastrado para este paciente.
                   </ResidentTabNotice>
                 ) : (
                   <div className="grid gap-3 md:grid-cols-2">
@@ -4279,7 +4279,7 @@ function ResidentDetailsDialog({
                                   </FormControl>
                                 </div>
                                 <p className="text-xs text-muted-foreground">
-                                  Ao ativar, o familiar podera acessar o portal para acompanhar o residente.
+                                  Ao ativar, o familiar poder? acessar o portal para acompanhar o paciente.
                                 </p>
                               </FormItem>
                             )}
@@ -4373,7 +4373,7 @@ function ResidentDetailsDialog({
                   </div>
                 ) : (contractsQuery.data?.length ?? 0) === 0 ? (
                   <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
-                    Nenhum contrato cadastrado para este residente.
+                    Nenhum contrato cadastrado para este paciente.
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -4741,16 +4741,16 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{resident ? "Editar Residente" : "Novo Residente"}</DialogTitle>
+          <DialogTitle>{resident ? "Editar Paciente" : "Novo Paciente"}</DialogTitle>
         </DialogHeader>
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
             <div className="rounded-xl border border-border p-4 space-y-3">
-              <p className="text-sm font-medium text-foreground">Foto do residente</p>
+              <p className="text-sm font-medium text-foreground">Foto do paciente</p>
               <div className="flex items-center gap-4">
                 <div className="h-20 w-20 rounded-xl border border-border overflow-hidden bg-muted flex items-center justify-center">
                   {photoPreview ? (
-                    <img src={photoPreview} alt="Foto do residente" className="h-full w-full object-cover" />
+                    <img src={photoPreview} alt="Foto do paciente" className="h-full w-full object-cover" />
                   ) : (
                     <div className="text-2xl font-semibold text-muted-foreground">
                       {(form.getValues("name") || resident?.name || "?").charAt(0)}

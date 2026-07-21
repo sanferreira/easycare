@@ -115,7 +115,7 @@ export default function Medications() {
 
     downloadCsv(
       "historico-medicações-administradas.csv",
-      ["Residente", "Medicação", "Dose", "Profissional", "Data/Hora", "Status", "Observações"],
+      ["Paciente", "Medicação", "Dose", "Profissional", "Data/Hora", "Status", "Observações"],
       rows,
     );
   };
@@ -153,7 +153,7 @@ export default function Medications() {
             <Table>
               <TableHeader className="bg-muted/50">
                 <TableRow>
-                  <TableHead>Residente</TableHead>
+                  <TableHead>Paciente</TableHead>
                   <TableHead>Medicamento</TableHead>
                   <TableHead>Dose</TableHead>
                   <TableHead>Frequência</TableHead>
@@ -213,7 +213,7 @@ export default function Medications() {
                             onClick={() => {
                               confirm({
                                 title: "Excluir medicação",
-                                description: `Excluir "${med.name}" de ${med.residentName || "residente"}? Esta ação não pode ser desfeita.`,
+                                description: `Excluir "${med.name}" de ${med.residentName || "paciente"}? Esta ação não pode ser desfeita.`,
                                 confirmText: "Excluir",
                                 pendingText: "Excluindo...",
                                 variant: "destructive",
@@ -262,7 +262,7 @@ export default function Medications() {
               <Table>
                 <TableHeader className="bg-muted/50">
                   <TableRow>
-                    <TableHead>Residente</TableHead>
+                    <TableHead>Paciente</TableHead>
                     <TableHead>Medicamento</TableHead>
                     <TableHead>Profissional</TableHead>
                     <TableHead>Data/Hora</TableHead>
@@ -398,7 +398,7 @@ function MedicationDialog({
               name="residentId"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Residente</FormLabel>
+                  <FormLabel>Paciente</FormLabel>
                   <Select 
                     onValueChange={(val) => field.onChange(Number(val))} 
                     value={field.value ? String(field.value) : undefined}
@@ -406,7 +406,7 @@ function MedicationDialog({
                   >
                     <FormControl>
                       <SelectTrigger>
-                        <SelectValue placeholder="Selecione o residente" />
+                        <SelectValue placeholder="Selecione o paciente" />
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>

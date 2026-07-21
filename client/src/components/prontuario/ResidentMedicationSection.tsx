@@ -572,7 +572,7 @@ export function ResidentMedicationSection({
     ]);
 
     downloadCsv(
-      `historico-medicações-residente-${residentId}.csv`,
+      `historico-medicações-paciente-${residentId}.csv`,
       ["Data/Hora da dose", "Medicação", "Status", "Administrado por", "Registro em", "Observações"],
       rows,
     );
@@ -632,7 +632,7 @@ export function ResidentMedicationSection({
             </div>
           ) : (medicationsQuery.data?.length ?? 0) === 0 ? (
             <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
-              Nenhuma medicação cadastrada para este residente.
+              Nenhuma medicação cadastrada para este paciente.
             </div>
           ) : (
             <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
@@ -919,7 +919,7 @@ export function ResidentMedicationSection({
               </div>
             ) : (historyQuery.data?.length ?? 0) === 0 ? (
               <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
-                Nenhuma administração registrada para este residente.
+                Nenhuma administração registrada para este paciente.
               </div>
             ) : (
               <div className="rounded-xl border border-border overflow-hidden">

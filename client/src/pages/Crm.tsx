@@ -151,7 +151,7 @@ const DEFAULT_CRM_STAGES: CrmStagePayload[] = [
 const PROPOSAL_OFFER_ITEMS: ProposalOfferItem[] = [
   {
     id: "initial_assessment",
-    title: "Avaliacao inicial do residente",
+    title: "Avalia??o inicial do paciente",
     description: "Levantamento do perfil, rotina, grau de dependência e necessidades assistenciais.",
   },
   {
@@ -167,7 +167,7 @@ const PROPOSAL_OFFER_ITEMS: ProposalOfferItem[] = [
   {
     id: "home_care",
     title: "Atendimento Home Care",
-    description: "Cuidado no domicilio conforme jornada combinada, perfil do residente e escala aprovada.",
+    description: "Cuidado no domic?lio conforme jornada combinada, perfil do paciente e escala aprovada.",
   },
   {
     id: "medication_management",
@@ -176,13 +176,13 @@ const PROPOSAL_OFFER_ITEMS: ProposalOfferItem[] = [
   },
   {
     id: "daily_evolution",
-    title: "Evolução diaria e registros assistenciais",
+    title: "Evolução diária e registros assistenciais",
     description: "Registro de evoluções, anotações, sinais vitais, glicemia, checklist e intercorrências.",
   },
   {
     id: "hygiene_routine",
     title: "Rotina de higiene, banho e conforto",
-    description: "Apoio nas atividades de vida diaria conforme autonomia e necessidade do residente.",
+    description: "Apoio nas atividades de vida di?ria conforme autonomia e necessidade do paciente.",
   },
   {
     id: "nutrition",
@@ -207,7 +207,7 @@ const PROPOSAL_OFFER_ITEMS: ProposalOfferItem[] = [
   {
     id: "documents",
     title: "Organização documental",
-    description: "Armazenamento de documentos, exames, anamneses, contratos e arquivos vinculados ao residente.",
+    description: "Armazenamento de documentos, exames, anamneses, contratos e arquivos vinculados ao paciente.",
   },
 ];
 
@@ -553,7 +553,7 @@ export default function CrmPage() {
     queryFn: () =>
       fetchJsonOrThrow(
         buildCrmUrl("/api/crm/responsibles", { organizationId: scopedOrganizationId }),
-        "Erro ao carregar responsaveis do CRM.",
+        "Erro ao carregar responsáveis do CRM.",
       ),
   });
 
@@ -1314,7 +1314,7 @@ export default function CrmPage() {
           <h2>Próximos passos</h2>
           <div class="box">
             <p>1. Validacao da proposta pelo cliente.</p>
-            <p>2. Confirmacao dos dados do residente/paciente e responsaveis.</p>
+            <p>2. Confirma??o dos dados do paciente e respons?veis.</p>
             <p>3. Definição da data de início e formalização contratual.</p>
           </div>
 
@@ -2665,7 +2665,7 @@ export default function CrmPage() {
                         </SelectContent>
                       </Select>
                       <p className="text-xs text-muted-foreground">
-                        Cadastre ou edite responsaveis na aba Equipe.
+                        Cadastre ou edite responsáveis na aba Equipe.
                       </p>
                       <FormMessage />
                     </FormItem>

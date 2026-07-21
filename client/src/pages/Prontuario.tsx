@@ -643,7 +643,7 @@ export default function Prontuario() {
 
   const printEvolutionReport = () => {
     if (!resident) {
-      toast({ variant: "destructive", title: "Selecione um residente." });
+      toast({ variant: "destructive", title: "Selecione um paciente." });
       return;
     }
 
@@ -942,14 +942,14 @@ export default function Prontuario() {
         <h1 className="text-2xl sm:text-3xl font-bold text-foreground" style={{ fontFamily: "var(--font-display)" }}>
           Prontuário
         </h1>
-        <p className="text-muted-foreground mt-1">Histórico médico, evolução diária e informações clínicas dos residentes</p>
+        <p className="text-muted-foreground mt-1">Histórico médico, evolução diária e informações clínicas dos pacientes</p>
       </div>
 
       {/* Resident selector */}
       <Card className="shadow-sm">
         <CardContent className="p-4">
           <div className="grid gap-3 sm:grid-cols-[100px,1fr] sm:items-start">
-            <p className="text-sm font-medium text-muted-foreground pt-2">Residente:</p>
+            <p className="text-sm font-medium text-muted-foreground pt-2">Paciente:</p>
             <div className="space-y-3">
               <Popover open={residentSelectorOpen} onOpenChange={setResidentSelectorOpen}>
                 <PopoverTrigger asChild>
@@ -965,7 +965,7 @@ export default function Prontuario() {
                       <ProntuarioResidentAvatar resident={resident} size="sm" />
                       <div className="min-w-0">
                         <p className="truncate text-sm font-medium text-foreground">
-                          {resident ? resident.name : "Selecionar residente"}
+                          {resident ? resident.name : "Selecionar paciente"}
                         </p>
                         <p className="truncate text-xs text-muted-foreground">
                           {resident ? getResidentSelectorSubtitle(resident) : "Busque por nome ou quarto"}
@@ -979,7 +979,7 @@ export default function Prontuario() {
                   <Command>
                     <CommandInput placeholder="Buscar por nome ou quarto..." />
                     <CommandList>
-                      <CommandEmpty>Nenhum residente encontrado.</CommandEmpty>
+                      <CommandEmpty>Nenhum paciente encontrado.</CommandEmpty>
 
                       {recentResidents.length > 0 && (
                         <CommandGroup heading="Recentes">
@@ -1009,7 +1009,7 @@ export default function Prontuario() {
                         </CommandGroup>
                       )}
 
-                      <CommandGroup heading="Todos os residentes">
+                      <CommandGroup heading="Todos os pacientes">
                         {nonRecentResidents.map((item: any) => (
                           <CommandItem
                             key={item.id}
@@ -1041,8 +1041,8 @@ export default function Prontuario() {
               <div className="flex flex-wrap items-center gap-2">
                 <p className="text-xs text-muted-foreground">
                   {residentsLoading
-                    ? "Carregando residentes..."
-                    : `${residents.length} residente(s) ativo(s)`}
+                    ? "Carregando pacientes..."
+                    : `${residents.length} paciente${residents.length === 1 ? "" : "s"} ativo${residents.length === 1 ? "" : "s"}`}
                 </p>
                 {recentResidents.length > 0 && (
                   <>
@@ -1085,7 +1085,7 @@ export default function Prontuario() {
       {!selectedResident ? (
         <div className="flex flex-col items-center justify-center py-24 text-center">
           <FileText className="h-14 w-14 text-muted-foreground/30 mb-4" />
-          <p className="text-xl font-semibold text-muted-foreground">Selecione um residente</p>
+          <p className="text-xl font-semibold text-muted-foreground">Selecione um paciente</p>
           <p className="text-sm text-muted-foreground/60 mt-1">para visualizar o prontuário</p>
         </div>
       ) : (
@@ -1722,7 +1722,7 @@ export default function Prontuario() {
                                 </button>
                               </div>
                               <p className="text-xs text-muted-foreground">
-                                Ao ativar, o familiar poderá acessar o portal em <strong>/portal</strong> para acompanhar o residente.
+                                Ao ativar, o familiar poderá acessar o portal em <strong>/portal</strong> para acompanhar o paciente.
                               </p>
                             </FormItem>
                           )} />

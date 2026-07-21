@@ -15,7 +15,7 @@ export function useResidents(filters?: { search?: string; status?: 'active' | 'i
     queryKey: [api.residents.list.path, filters],
     queryFn: async () => {
       const res = await fetch(path, { credentials: "include" });
-      if (!res.ok) throw new Error("Falha ao carregar residentes");
+      if (!res.ok) throw new Error("Falha ao carregar pacientes");
       return api.residents.list.responses[200].parse(await res.json());
     },
   });
@@ -28,7 +28,7 @@ export function useResident(id: number) {
       const url = buildUrl(api.residents.get.path, { id });
       const res = await fetch(url, { credentials: "include" });
       if (res.status === 404) return null;
-      if (!res.ok) throw new Error("Falha ao carregar residente");
+      if (!res.ok) throw new Error("Falha ao carregar paciente");
       return api.residents.get.responses[200].parse(await res.json());
     },
     enabled: !!id,
@@ -48,12 +48,12 @@ export function useCreateResident() {
         body: JSON.stringify(validated),
         credentials: "include",
       });
-      if (!res.ok) throw new Error('Falha ao criar residente');
+      if (!res.ok) throw new Error('Falha ao criar paciente');
       return api.residents.create.responses[201].parse(await res.json());
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [api.residents.list.path] });
-      toast({ title: "Sucesso", description: "Residente cadastrado com sucesso" });
+      toast({ title: "Sucesso", description: "Paciente cadastrado com sucesso" });
     },
     onError: (error) => {
       toast({ variant: "destructive", title: "Erro", description: error.message });
@@ -75,7 +75,7 @@ export function useUpdateResident() {
         body: JSON.stringify(validated),
         credentials: "include",
       });
-      if (!res.ok) throw new Error('Falha ao atualizar residente');
+      if (!res.ok) throw new Error('Falha ao atualizar paciente');
       return api.residents.update.responses[200].parse(await res.json());
     },
     onSuccess: (_, variables) => {

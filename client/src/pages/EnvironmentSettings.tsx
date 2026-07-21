@@ -20,7 +20,7 @@ import { Switch } from "@/components/ui/switch";
 
 const MODULE_LABELS: Record<ModuleRoute, string> = {
   "/": "Dashboard",
-  "/residents": "Residentes",
+  "/residents": "Pacientes",
   "/prontuario": "Prontuário",
   "/staff": "Equipe",
   "/escalas": "Escalas",

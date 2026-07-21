@@ -442,7 +442,7 @@ async function dispatchMedicationNotifications(config: MedicationNotificationCon
         const upcomingDoses = buildMedicationDoseOccurrences(activeMedications, now, reminderEnd);
         for (const dose of upcomingDoses) {
           if (administrationResolvesDose(administrationStatusByDose.get(dose.doseKey))) continue;
-          const residentName = dose.medication.residentName || "Residente";
+          const residentName = dose.medication.residentName || "Paciente";
           notificationsToCreate.push(...buildNotificationForUsers(reminderUsers, {
             organizationId: organization.id,
             staffId: null,
@@ -473,7 +473,7 @@ async function dispatchMedicationNotifications(config: MedicationNotificationCon
         const overdueDoses = buildMedicationDoseOccurrences(activeMedications, todayStart, overdueEnd);
         for (const dose of overdueDoses) {
           if (administrationResolvesDose(administrationStatusByDose.get(dose.doseKey))) continue;
-          const residentName = dose.medication.residentName || "Residente";
+          const residentName = dose.medication.residentName || "Paciente";
           notificationsToCreate.push(...buildNotificationForUsers(overdueUsers, {
             organizationId: organization.id,
             staffId: null,

@@ -1139,7 +1139,7 @@ export default function Escalas() {
                                 <p className="text-xs text-muted-foreground">{shift.staffRole}</p>
                               )}
                               {shift.residentName && (
-                                <p className="text-xs text-muted-foreground">Assistido: {shift.residentName}</p>
+                                <p className="text-xs text-muted-foreground">Paciente: {shift.residentName}</p>
                               )}
                             </div>
                             {isActive && (
@@ -1270,13 +1270,13 @@ export default function Escalas() {
             </div>
 
             <div>
-              <Label className="text-sm font-medium">Residente / Assistido</Label>
+              <Label className="text-sm font-medium">Paciente</Label>
               <Select value={form.residentId} onValueChange={(v) => setForm({ ...form, residentId: v })}>
                 <SelectTrigger className="mt-1.5" data-testid="select-resident">
-                  <SelectValue placeholder="Sem residente vinculado" />
+                  <SelectValue placeholder="Sem paciente vinculado" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">Sem residente vinculado</SelectItem>
+                  <SelectItem value="none">Sem paciente vinculado</SelectItem>
                   {residents.map((resident) => (
                     <SelectItem key={resident.id} value={String(resident.id)}>
                       {resident.name}
@@ -1285,7 +1285,7 @@ export default function Escalas() {
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground mt-1.5">
-                Vincule quando o plantão for dedicado a um assistido especifico.
+                Vincule quando o plantão for dedicado a um paciente específico.
               </p>
             </div>
 
