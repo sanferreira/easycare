@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useResidents, useCreateResident, useUpdateResident } from "@/hooks/use-residents";
 import { useAuth } from "@/hooks/use-auth";
@@ -45,7 +45,7 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Plus, Search, Trash2, Phone, Bed, Pencil, Eye, EyeOff, Globe, Sun, Moon, Timer, ClipboardList, Calendar as CalendarIcon } from "lucide-react";
+import { Plus, Search, Trash2, Phone, Bed, Pencil, Eye, EyeOff, Globe, Sun, Moon, Timer, ClipboardList, Calendar as CalendarIcon, FileText, Download, Upload, MapPin } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -57,11 +57,13 @@ import {
   type Occurrence,
   type ShiftAssignment,
   type FamilyMember,
+  type PatientDocument,
   type Contract,
 } from "@shared/schema";
 import { addDays, format } from "date-fns";
-import { maskCpf, maskPhoneBR } from "@/lib/masks";
+import { digitsOnly, maskCep, maskCpf, maskPhoneBR } from "@/lib/masks";
 import { imageFileToDataUrl } from "@/lib/imageUpload";
+import { toDateInputValue } from "@/lib/date";
 import { DEFAULT_ENVIRONMENT_SETTINGS, getShiftProfileRule } from "@shared/environment";
 
 type MedicationWithResident = Medication & { residentName?: string };
@@ -105,7 +107,80 @@ type MedicationDoseScheduleResponse = {
 type OccurrenceWithResident = Occurrence & { residentName?: string };
 type ShiftWithDetails = ShiftAssignment & { residentName?: string; staffName?: string };
 type ContractWithResident = Contract & { residentName?: string };
-type ResidentDetailsTab = "medications" | "shifts" | "occurrences" | "family" | "contracts";
+type PatientDocumentItem = PatientDocument;
+type ResidentDetailsTab = "medications" | "documents" | "shifts" | "occurrences" | "family" | "contracts";
+
+type ViaCepPayload = {
+  cep?: string;
+  logradouro?: string;
+  bairro?: string;
+  localidade?: string;
+  uf?: string;
+  erro?: boolean;
+};
+
+const MAX_PATIENT_DOCUMENT_BYTES = 8 * 1024 * 1024;
+
+function readDocumentFileAsDataUrl(file: File): Promise<string> {
+  if (file.size > MAX_PATIENT_DOCUMENT_BYTES) {
+    throw new Error("Arquivo maior que 8MB.");
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      if (!result.startsWith("data:")) {
+        reject(new Error("Arquivo invalido."));
+        return;
+      }
+      resolve(result);
+    };
+    reader.onerror = () => reject(new Error("Nao foi possivel ler o arquivo."));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function fetchResidentAddressByCep(cep: string): Promise<{
+  cep: string;
+  address: string;
+  neighborhood: string;
+  city: string;
+  state: string;
+}> {
+  const normalizedCep = digitsOnly(cep);
+  if (normalizedCep.length !== 8) {
+    throw new Error("Informe um CEP valido com 8 digitos.");
+  }
+
+  const response = await fetch(`https://viacep.com.br/ws/${normalizedCep}/json/`);
+  if (!response.ok) throw new Error("Nao foi possivel consultar o ViaCEP.");
+
+  const data: ViaCepPayload = await response.json();
+  if (data.erro) throw new Error("CEP nao encontrado.");
+
+  return {
+    cep: maskCep(data.cep || normalizedCep),
+    address: data.logradouro || "",
+    neighborhood: data.bairro || "",
+    city: data.localidade || "",
+    state: data.uf || "",
+  };
+}
+
+function formatFileSize(bytes?: number | null): string {
+  const value = Number(bytes ?? 0);
+  if (!Number.isFinite(value) || value <= 0) return "-";
+  if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatDateTimeLabel(value?: string | Date | null): string {
+  if (!value) return "-";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "-";
+  return format(parsed, "dd/MM/yyyy HH:mm");
+}
 
 const familySchema = z.object({
   name: z.string().min(2, "Nome obrigatorio"),
@@ -139,6 +214,26 @@ const defaultFamilyFormValues: z.infer<typeof familySchema> = {
   portalAccess: false,
   portalUsername: "",
   portalPassword: "",
+};
+
+const patientDocumentSchema = z.object({
+  title: z.string().trim().min(2, "Titulo obrigatorio"),
+  subtitle: z.string().optional(),
+  category: z.string().optional(),
+  fileName: z.string().min(1, "Selecione um arquivo"),
+  fileType: z.string().optional(),
+  fileSize: z.number().optional(),
+  fileData: z.string().min(1, "Selecione um arquivo"),
+});
+
+const defaultPatientDocumentValues: z.infer<typeof patientDocumentSchema> = {
+  title: "",
+  subtitle: "",
+  category: "document",
+  fileName: "",
+  fileType: "",
+  fileSize: 0,
+  fileData: "",
 };
 
 const contractSchema = z.object({
@@ -177,28 +272,25 @@ const residentShiftSchema = z.object({
   endTime: z.string().optional(),
   notes: z.string().optional(),
 }).superRefine((data, ctx) => {
-  if (data.shiftType === "avulso") {
-    if (!data.startTime?.trim()) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["startTime"],
-        message: "Inicio obrigatorio",
-      });
-    }
-    if (!data.endTime?.trim()) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["endTime"],
-        message: "Fim obrigatorio",
-      });
-    }
-    return;
-  }
   if (!data.date?.trim()) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["date"],
       message: "Data obrigatoria",
+    });
+  }
+  if (!data.startTime?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["startTime"],
+      message: "Inicio obrigatorio",
+    });
+  }
+  if (!data.endTime?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["endTime"],
+      message: "Fim obrigatorio",
     });
   }
 });
@@ -304,6 +396,13 @@ function formatDateLabel(value?: string | null): string {
   return format(parsed, "dd/MM/yyyy");
 }
 
+function formatMedicationDoseDateTime(dose: MedicationDoseScheduleItem): string {
+  if (dose.scheduledDate && dose.scheduledTime) {
+    return `${formatDateLabel(dose.scheduledDate)} ${dose.scheduledTime}`;
+  }
+  return format(new Date(dose.scheduledFor), "dd/MM/yyyy HH:mm");
+}
+
 const medicationAdministrationStatusLabel: Record<
   MedicationDoseScheduleItem["status"] | MedicationAdministrationWithDetails["status"],
   string
@@ -337,19 +436,19 @@ const shiftTypeLabel: Record<string, string> = {
 const shiftTypeMeta = {
   "12h_manha": {
     label: "12h Manha",
-    hint: "07:00 - 19:00",
+    hint: "12h editavel",
     icon: Sun,
     selectedStyle: "bg-sky-100 text-sky-800 border-sky-200 ring-sky-500/25",
   },
   "12h_noite": {
     label: "12h Noite",
-    hint: "19:00 - 07:00",
+    hint: "12h editavel",
     icon: Moon,
     selectedStyle: "bg-violet-100 text-violet-800 border-violet-200 ring-violet-500/25",
   },
   "24h": {
     label: "Plantao 24h",
-    hint: "07:00 - 07:00",
+    hint: "24h editavel",
     icon: Timer,
     selectedStyle: "bg-amber-100 text-amber-800 border-amber-200 ring-amber-500/25",
   },
@@ -369,25 +468,150 @@ function medicationAdministrationStatusClass(status: MedicationDoseScheduleItem[
   return "bg-slate-100 text-slate-700 border-slate-200";
 }
 
+const residentStatusView: Record<string, { label: string; className: string }> = {
+  active: { label: "Ativo", className: "border-emerald-200 bg-emerald-50 text-emerald-700" },
+  inactive: { label: "Inativo", className: "border-amber-200 bg-amber-50 text-amber-700" },
+  deceased: { label: "Falecido", className: "border-neutral-200 bg-neutral-100 text-neutral-600" },
+};
+
+function getResidentStatusView(status?: string | null) {
+  return residentStatusView[status || ""] ?? residentStatusView.inactive;
+}
+
+function formatResidentBirthDate(value?: string | Date | null) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return format(date, "dd/MM/yyyy");
+}
+
+function ResidentAvatar({ resident, size = "md" }: { resident: Resident; size?: "sm" | "md" | "lg" }) {
+  const sizeClass = size === "lg" ? "h-16 w-16 text-xl" : size === "sm" ? "h-10 w-10 text-sm" : "h-12 w-12 text-base";
+  if (resident.photoUrl) {
+    return (
+      <img
+        src={resident.photoUrl}
+        alt={resident.name}
+        className={`${sizeClass} shrink-0 rounded-lg border border-border object-cover`}
+      />
+    );
+  }
+
+  return (
+    <div className={`${sizeClass} flex shrink-0 items-center justify-center rounded-lg bg-secondary font-bold text-primary`}>
+      {resident.name.charAt(0)}
+    </div>
+  );
+}
+
+function ResidentStatusBadge({ status }: { status?: string | null }) {
+  const view = getResidentStatusView(status);
+  return (
+    <Badge variant="outline" className={view.className}>
+      {view.label}
+    </Badge>
+  );
+}
+
+function ResidentSectionHeader({
+  title,
+  description,
+  action,
+}: {
+  title: string;
+  description?: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="min-w-0">
+        <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+        {description ? (
+          <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+        ) : null}
+      </div>
+      {action ? <div className="shrink-0">{action}</div> : null}
+    </div>
+  );
+}
+
+function ResidentTabNotice({
+  children,
+  variant = "muted",
+}: {
+  children: ReactNode;
+  variant?: "muted" | "destructive";
+}) {
+  const className =
+    variant === "destructive"
+      ? "rounded-lg border border-destructive/40 bg-destructive/5 p-6 text-sm text-destructive"
+      : "rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground";
+
+  return <div className={className}>{children}</div>;
+}
+
 function getDefaultShiftTimes(
   type: z.infer<typeof residentShiftSchema>["shiftType"],
   date: string,
+  rule?: ReturnType<typeof getShiftProfileRule>,
 ): { startTime: string; endTime: string } {
   if (!date) return { startTime: "", endTime: "" };
-  const [year, month, day] = date.split("-").map(Number);
-  const nextDay = new Date(year, month - 1, day + 1);
-  const nextDate = format(nextDay, "yyyy-MM-dd");
-
+  let startClock = "08:00";
   switch (type) {
     case "12h_manha":
-      return { startTime: `${date}T07:00`, endTime: `${date}T19:00` };
+      startClock = "07:00";
+      break;
     case "12h_noite":
-      return { startTime: `${date}T19:00`, endTime: `${nextDate}T07:00` };
+      startClock = "19:00";
+      break;
     case "24h":
-      return { startTime: `${date}T07:00`, endTime: `${nextDate}T07:00` };
-    default:
-      return { startTime: `${date}T08:00`, endTime: `${date}T17:00` };
+      startClock = "07:00";
+      break;
   }
+
+  const startTime = `${date}T${startClock}`;
+  const durationHours = getResidentShiftDurationHours(type, rule) ?? 9;
+  return {
+    startTime,
+    endTime: addHoursToDateTimeInput(startTime, durationHours) ?? `${date}T17:00`,
+  };
+}
+
+function getResidentShiftDurationHours(
+  type: z.infer<typeof residentShiftSchema>["shiftType"],
+  rule?: ReturnType<typeof getShiftProfileRule>,
+): number | null {
+  if (type === "avulso") return null;
+  const configuredDuration = Number(rule?.exactShiftHours ?? 0);
+  if (rule?.enabled && Number.isFinite(configuredDuration) && configuredDuration > 0) {
+    return configuredDuration;
+  }
+  if (type === "12h_manha" || type === "12h_noite") return 12;
+  if (type === "24h") return 24;
+  return null;
+}
+
+function parseDateTimeInput(value: string): Date | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function formatDateTimeInput(value: Date): string {
+  return format(value, "yyyy-MM-dd'T'HH:mm");
+}
+
+function addHoursToDateTimeInput(value: string, hours: number): string | null {
+  const parsed = parseDateTimeInput(value);
+  if (!parsed) return null;
+  return formatDateTimeInput(new Date(parsed.getTime() + (hours * 60 * 60 * 1000)));
+}
+
+function subtractHoursFromDateTimeInput(value: string, hours: number): string | null {
+  const parsed = parseDateTimeInput(value);
+  if (!parsed) return null;
+  return formatDateTimeInput(new Date(parsed.getTime() - (hours * 60 * 60 * 1000)));
 }
 
 function buildShiftRuleHint(rule: ReturnType<typeof getShiftProfileRule>): string | null {
@@ -464,6 +688,7 @@ async function fetchResidentData<T>(path: string, fallbackMessage: string): Prom
 
 export default function Residents() {
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive" | "deceased">("all");
   const { data: residents, isLoading } = useResidents({ search });
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingResident, setEditingResident] = useState<Resident | null>(null);
@@ -479,11 +704,41 @@ export default function Residents() {
   const canViewEscalas = canAccessRoute(user?.role, "/escalas", environmentSettings?.roleRoutes);
   const canViewOccurrences = canAccessRoute(user?.role, "/occurrences", environmentSettings?.roleRoutes);
   const canManageFamily = canAccessRoute(user?.role, "/prontuario", environmentSettings?.roleRoutes);
+  const canManageDocuments = canAccessRoute(user?.role, "/prontuario", environmentSettings?.roleRoutes);
   const canManageContracts = canAccessRoute(user?.role, "/financeiro", environmentSettings?.roleRoutes);
 
-  const filteredResidents = residents?.filter(r => 
-    r.name.toLowerCase().includes(search.toLowerCase())
-  );
+  const residentStatusFilterOptions = useMemo(() => {
+    const list = residents ?? [];
+    const countByStatus = (status: string) => list.filter((resident) => resident.status === status).length;
+
+    return [
+      { value: "all" as const, label: "Todos", count: list.length },
+      { value: "active" as const, label: "Ativos", count: countByStatus("active") },
+      { value: "inactive" as const, label: "Inativos", count: countByStatus("inactive") },
+      { value: "deceased" as const, label: "Falecidos", count: countByStatus("deceased") },
+    ];
+  }, [residents]);
+
+  const filteredResidents = residents?.filter((resident) => {
+    const normalizedSearch = search.trim().toLowerCase();
+    const matchesSearch =
+      normalizedSearch.length === 0 ||
+      [
+        resident.name,
+        resident.roomNumber,
+        resident.contactName,
+        resident.contactPhone,
+        resident.address,
+        resident.city,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedSearch);
+    const matchesStatus = statusFilter === "all" || resident.status === statusFilter;
+
+    return matchesSearch && matchesStatus;
+  });
 
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => {
@@ -515,17 +770,136 @@ export default function Residents() {
         </div>
       </div>
 
-      <div className="flex items-center gap-2 bg-card p-3 sm:p-4 rounded-xl border border-border shadow-sm">
-        <Search className="h-4 w-4 sm:h-5 sm:w-5 text-muted-foreground" />
-        <Input 
-          placeholder="Buscar por nome..." 
-          value={search} 
-          onChange={(e) => setSearch(e.target.value)}
-          className="border-0 focus-visible:ring-0 bg-transparent px-0 text-sm sm:text-base"
-        />
+      <div className="space-y-3 rounded-xl border border-border bg-card p-3 shadow-sm sm:p-4">
+        <div className="flex items-center gap-2">
+          <Search className="h-4 w-4 sm:h-5 sm:w-5 text-muted-foreground" />
+          <Input
+            placeholder="Buscar por nome, quarto ou contato..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="border-0 focus-visible:ring-0 bg-transparent px-0 text-sm sm:text-base"
+          />
+        </div>
+        <div className="flex gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
+          {residentStatusFilterOptions.map((option) => (
+            <Button
+              key={option.value}
+              type="button"
+              variant={statusFilter === option.value ? "default" : "outline"}
+              size="sm"
+              className="h-8 shrink-0 gap-2 rounded-lg px-3"
+              onClick={() => setStatusFilter(option.value)}
+            >
+              <span>{option.label}</span>
+              <span className="rounded-md bg-background/25 px-1.5 text-xs">{option.count}</span>
+            </Button>
+          ))}
+        </div>
       </div>
 
-      <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
+      <div className="space-y-3 md:hidden">
+        {isLoading ? (
+          <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">
+            Carregando residentes...
+          </div>
+        ) : filteredResidents?.length === 0 ? (
+          <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">
+            Nenhum residente encontrado.
+          </div>
+        ) : (
+          filteredResidents?.map((resident) => (
+            <div
+              key={resident.id}
+              className="w-full rounded-lg border border-border bg-card p-3 text-left shadow-sm transition-colors hover:bg-muted/40"
+            >
+              <div className="flex items-start gap-3">
+                <ResidentAvatar resident={resident} size="md" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate font-semibold text-foreground">{resident.name}</p>
+                      <p className="text-xs text-muted-foreground">{formatResidentBirthDate(resident.birthDate)}</p>
+                    </div>
+                    <ResidentStatusBadge status={resident.status} />
+                  </div>
+                  <div className="mt-3 grid gap-2 text-sm text-muted-foreground">
+                    <div className="flex items-center gap-2">
+                      <Bed className="h-4 w-4 shrink-0" />
+                      <span>Quarto {resident.roomNumber || "-"}</span>
+                    </div>
+                    {resident.careType === "home_care" || resident.address ? (
+                      <div className="flex min-w-0 items-center gap-2">
+                        <MapPin className="h-4 w-4 shrink-0" />
+                        <span className="truncate">
+                          {resident.address
+                            ? [resident.address, resident.addressNumber, resident.city].filter(Boolean).join(", ")
+                            : "Home Care"}
+                        </span>
+                      </div>
+                    ) : null}
+                    <div className="min-w-0">
+                      <p className="truncate font-medium text-foreground">{resident.contactName || "Sem contato"}</p>
+                      <div className="flex items-center gap-1">
+                        <Phone className="h-3.5 w-3.5 shrink-0" />
+                        <span>{maskPhoneBR(resident.contactPhone)}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex items-center justify-end gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => {
+                        setSelectedResident(resident);
+                        setDetailsTab(undefined);
+                      }}
+                      data-testid={`button-open-resident-mobile-${resident.id}`}
+                    >
+                      Abrir ficha
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setEditingResident(resident);
+                        setIsDialogOpen(true);
+                      }}
+                      data-testid={`button-edit-resident-mobile-${resident.id}`}
+                    >
+                      Editar
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                      disabled={deleteMutation.isPending}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        confirm({
+                          title: "Excluir residente",
+                          description: `Excluir "${resident.name}"? Esta acao nao pode ser desfeita.`,
+                          confirmText: "Excluir",
+                          pendingText: "Excluindo...",
+                          variant: "destructive",
+                          onConfirm: () => deleteMutation.mutateAsync(resident.id),
+                        });
+                      }}
+                      data-testid={`button-delete-resident-mobile-${resident.id}`}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="hidden overflow-hidden rounded-xl border border-border bg-card shadow-sm md:block">
         <Table>
           <TableHeader className="bg-muted/50">
             <TableRow>
@@ -561,21 +935,11 @@ export default function Residents() {
                 >
                   <TableCell>
                     <div className="flex items-center gap-3">
-                      {resident.photoUrl ? (
-                        <img
-                          src={resident.photoUrl}
-                          alt={resident.name}
-                          className="h-10 w-10 rounded-full object-cover border border-border"
-                        />
-                      ) : (
-                        <div className="h-10 w-10 rounded-full bg-secondary text-primary flex items-center justify-center font-bold">
-                          {resident.name.charAt(0)}
-                        </div>
-                      )}
+                      <ResidentAvatar resident={resident} size="sm" />
                       <div>
                         <div className="font-medium">{resident.name}</div>
                         <div className="text-xs text-muted-foreground">
-                          {format(new Date(resident.birthDate), "dd/MM/yyyy")}
+                          {formatResidentBirthDate(resident.birthDate)}
                         </div>
                       </div>
                     </div>
@@ -583,8 +947,14 @@ export default function Residents() {
                   <TableCell>
                     <div className="flex items-center gap-2 text-sm">
                       <Bed className="h-4 w-4 text-muted-foreground" />
-                      {resident.roomNumber}
+                      {resident.roomNumber || "-"}
                     </div>
+                    {resident.careType === "home_care" ? (
+                      <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+                        <MapPin className="h-3 w-3" />
+                        Home Care
+                      </div>
+                    ) : null}
                   </TableCell>
                   <TableCell>
                     <div className="text-sm">
@@ -596,15 +966,7 @@ export default function Residents() {
                     </div>
                   </TableCell>
                   <TableCell>
-                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border
-                      ${resident.status === 'active' 
-                        ? 'bg-green-50 text-green-700 border-green-200' 
-                        : resident.status === 'deceased'
-                        ? 'bg-neutral-100 text-neutral-600 border-neutral-200'
-                        : 'bg-yellow-50 text-yellow-700 border-yellow-200'
-                      }`}>
-                      {resident.status === 'active' ? 'Ativo' : resident.status === 'deceased' ? 'Falecido' : 'Inativo'}
-                    </span>
+                    <ResidentStatusBadge status={resident.status} />
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-1">
@@ -667,6 +1029,7 @@ export default function Residents() {
         canViewEscalas={canViewEscalas}
         canViewOccurrences={canViewOccurrences}
         canManageFamily={canManageFamily}
+        canManageDocuments={canManageDocuments}
         canManageContracts={canManageContracts}
       />
       {confirmDialog}
@@ -684,6 +1047,7 @@ function ResidentDetailsDialog({
   canViewEscalas,
   canViewOccurrences,
   canManageFamily,
+  canManageDocuments,
   canManageContracts,
 }: {
   open: boolean;
@@ -694,6 +1058,7 @@ function ResidentDetailsDialog({
   canViewEscalas: boolean;
   canViewOccurrences: boolean;
   canManageFamily: boolean;
+  canManageDocuments: boolean;
   canManageContracts: boolean;
 }) {
   const { toast } = useToast();
@@ -709,6 +1074,7 @@ function ResidentDetailsDialog({
     if (tab === "shifts") return canViewEscalas;
     if (tab === "occurrences") return canViewOccurrences;
     if (tab === "family") return canManageFamily;
+    if (tab === "documents") return canManageDocuments;
     if (tab === "contracts") return canManageContracts;
     return false;
   };
@@ -717,6 +1083,8 @@ function ResidentDetailsDialog({
     ? initialTab
     : canViewMedications
     ? "medications"
+    : canManageDocuments
+      ? "documents"
     : canViewEscalas
       ? "shifts"
       : canViewOccurrences
@@ -858,6 +1226,16 @@ function ResidentDetailsDialog({
       ),
   });
 
+  const patientDocumentsQuery = useQuery<PatientDocumentItem[]>({
+    queryKey: ["/api/residents", residentId, "documents", "resident-details"],
+    enabled: open && !!resident && canManageDocuments,
+    queryFn: () =>
+      fetchResidentData<PatientDocumentItem[]>(
+        `/api/residents/${residentId}/documents`,
+        "Erro ao carregar documentos.",
+      ),
+  });
+
   const contractsQuery = useQuery<ContractWithResident[]>({
     queryKey: ["/api/contracts", "resident-details", residentId],
     enabled: open && !!resident && canManageContracts,
@@ -961,13 +1339,18 @@ function ResidentDetailsDialog({
     defaultValues: defaultFamilyFormValues,
   });
 
+  const patientDocumentForm = useForm<z.infer<typeof patientDocumentSchema>>({
+    resolver: zodResolver(patientDocumentSchema),
+    defaultValues: defaultPatientDocumentValues,
+  });
+
   const contractForm = useForm<z.infer<typeof contractSchema>>({
     resolver: zodResolver(contractSchema),
     defaultValues: {
       residentId,
       plan: "standard",
       monthlyValue: 3200,
-      startDate: new Date().toISOString().split("T")[0],
+      startDate: toDateInputValue(),
       paymentDay: 5,
       paymentMethod: "",
       notes: "",
@@ -1027,9 +1410,21 @@ function ResidentDetailsDialog({
   useEffect(() => {
     const currentShiftType = shiftForm.getValues("shiftType");
     if (!availableShiftTypes.includes(currentShiftType)) {
-      shiftForm.setValue("shiftType", availableShiftTypes[0] ?? "12h_manha", { shouldDirty: true, shouldValidate: true });
+      const nextShiftType = availableShiftTypes[0] ?? "12h_manha";
+      const date = shiftForm.getValues("date") || format(new Date(), "yyyy-MM-dd");
+      const suggestedTimes = getDefaultShiftTimes(nextShiftType, date, selectedStaffRule);
+      const previousStartClock = shiftForm.getValues("startTime")?.slice(11, 16);
+      const startTime = previousStartClock ? `${date}T${previousStartClock}` : suggestedTimes.startTime;
+      const durationHours = getResidentShiftDurationHours(nextShiftType, selectedStaffRule);
+      const endTime = durationHours
+        ? (addHoursToDateTimeInput(startTime, durationHours) ?? suggestedTimes.endTime)
+        : suggestedTimes.endTime;
+      shiftForm.setValue("shiftType", nextShiftType, { shouldDirty: true, shouldValidate: true });
+      shiftForm.setValue("date", date, { shouldDirty: true, shouldValidate: true });
+      shiftForm.setValue("startTime", startTime, { shouldDirty: true, shouldValidate: true });
+      shiftForm.setValue("endTime", endTime, { shouldDirty: true, shouldValidate: true });
     }
-  }, [availableShiftTypes, shiftForm]);
+  }, [availableShiftTypes, selectedStaffRule, shiftForm]);
 
   useEffect(() => {
     if (!isCaregiver || !defaultShiftStaffId) return;
@@ -1215,15 +1610,12 @@ function ResidentDetailsDialog({
 
   const createShift = useMutation({
     mutationFn: async (data: z.infer<typeof residentShiftSchema>) => {
-      const times = data.shiftType !== "avulso"
-        ? getDefaultShiftTimes(data.shiftType, data.date || "")
-        : { startTime: data.startTime || "", endTime: data.endTime || "" };
       const payload = {
         residentId,
         staffId: Number(data.staffId),
         shiftType: data.shiftType,
-        startTime: new Date(times.startTime),
-        endTime: new Date(times.endTime),
+        startTime: new Date(data.startTime || ""),
+        endTime: new Date(data.endTime || ""),
         notes: data.notes?.trim() || null,
       };
       const res = await fetch("/api/shift-assignments", {
@@ -1264,15 +1656,12 @@ function ResidentDetailsDialog({
 
   const updateShift = useMutation({
     mutationFn: async ({ id, data }: { id: number; data: z.infer<typeof residentShiftSchema> }) => {
-      const times = data.shiftType !== "avulso"
-        ? getDefaultShiftTimes(data.shiftType, data.date || "")
-        : { startTime: data.startTime || "", endTime: data.endTime || "" };
       const payload = {
         residentId,
         staffId: Number(data.staffId),
         shiftType: data.shiftType,
-        startTime: new Date(times.startTime),
-        endTime: new Date(times.endTime),
+        startTime: new Date(data.startTime || ""),
+        endTime: new Date(data.endTime || ""),
         notes: data.notes?.trim() || null,
       };
       const res = await fetch(`/api/shift-assignments/${id}`, {
@@ -1509,6 +1898,59 @@ function ResidentDetailsDialog({
     },
   });
 
+  const createPatientDocument = useMutation({
+    mutationFn: async (data: z.infer<typeof patientDocumentSchema>) => {
+      const payload = {
+        title: data.title.trim(),
+        subtitle: data.subtitle?.trim() || null,
+        category: data.category?.trim() || "document",
+        fileName: data.fileName,
+        fileType: data.fileType?.trim() || null,
+        fileSize: data.fileSize ?? null,
+        fileData: data.fileData,
+      };
+      const res = await fetch(`/api/residents/${residentId}/documents`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        let message = "Erro ao salvar documento.";
+        try {
+          const responseBody = await res.json();
+          if (responseBody?.message) message = responseBody.message;
+        } catch {}
+        throw new Error(message);
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/residents", residentId, "documents"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/residents", residentId, "documents", "resident-details"] });
+      patientDocumentForm.reset(defaultPatientDocumentValues);
+      toast({ title: "Documento salvo com sucesso" });
+    },
+    onError: (error: Error) => {
+      toast({ variant: "destructive", title: error.message || "Erro ao salvar documento" });
+    },
+  });
+
+  const deletePatientDocument = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/patient-documents/${id}`, { method: "DELETE", credentials: "include" });
+      if (!res.ok) throw new Error("Erro ao remover documento.");
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/residents", residentId, "documents"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/residents", residentId, "documents", "resident-details"] });
+      toast({ title: "Documento removido" });
+    },
+    onError: (error: Error) => {
+      toast({ variant: "destructive", title: error.message || "Erro ao remover documento" });
+    },
+  });
+
   const createContract = useMutation({
     mutationFn: async (data: z.infer<typeof contractSchema>) => {
       const payload = {
@@ -1543,7 +1985,7 @@ function ResidentDetailsDialog({
         residentId,
         plan: "standard",
         monthlyValue: 3200,
-        startDate: new Date().toISOString().split("T")[0],
+        startDate: toDateInputValue(),
         paymentDay: 5,
         paymentMethod: "",
         notes: "",
@@ -1654,13 +2096,15 @@ function ResidentDetailsDialog({
   };
 
   const openCreateShiftDialog = () => {
+    const date = format(new Date(), "yyyy-MM-dd");
+    const times = getDefaultShiftTimes("12h_manha", date, selectedStaffRule);
     setEditingShift(null);
     shiftForm.reset({
       staffId: defaultShiftStaffId,
       shiftType: "12h_manha",
-      date: format(new Date(), "yyyy-MM-dd"),
-      startTime: "",
-      endTime: "",
+      date,
+      startTime: times.startTime,
+      endTime: times.endTime,
       notes: "",
     });
     setIsShiftDialogOpen(true);
@@ -1731,13 +2175,36 @@ function ResidentDetailsDialog({
     setIsFamilyDialogOpen(true);
   };
 
+  async function handlePatientDocumentSelection(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const dataUrl = await readDocumentFileAsDataUrl(file);
+      patientDocumentForm.setValue("fileName", file.name, { shouldDirty: true, shouldValidate: true });
+      patientDocumentForm.setValue("fileType", file.type || "application/octet-stream", { shouldDirty: true });
+      patientDocumentForm.setValue("fileSize", file.size, { shouldDirty: true });
+      patientDocumentForm.setValue("fileData", dataUrl, { shouldDirty: true, shouldValidate: true });
+      if (!patientDocumentForm.getValues("title").trim()) {
+        patientDocumentForm.setValue("title", file.name.replace(/\.[^.]+$/, ""), { shouldDirty: true, shouldValidate: true });
+      }
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: error instanceof Error ? error.message : "Nao foi possivel carregar o arquivo.",
+      });
+    } finally {
+      event.target.value = "";
+    }
+  }
+
   const openCreateContractDialog = () => {
     setEditingContract(null);
     contractForm.reset({
       residentId,
       plan: "standard",
       monthlyValue: 3200,
-      startDate: resident?.admissionDate || new Date().toISOString().split("T")[0],
+      startDate: resident?.admissionDate || toDateInputValue(),
       endDate: "",
       paymentDay: 5,
       paymentMethod: "",
@@ -1767,91 +2234,152 @@ function ResidentDetailsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Detalhes do residente</DialogTitle>
-        </DialogHeader>
-
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-          <div className="rounded-lg border border-border bg-muted/30 p-3 flex items-center justify-center">
-            {resident.photoUrl ? (
-              <img
-                src={resident.photoUrl}
-                alt={resident.name}
-                className="h-20 w-20 rounded-xl object-cover border border-border"
-              />
-            ) : (
-              <div className="h-20 w-20 rounded-xl bg-secondary text-primary flex items-center justify-center text-2xl font-bold">
-                {resident.name.charAt(0)}
+      <DialogContent className="max-h-[92vh] max-w-6xl overflow-hidden p-0">
+        <div className="max-h-[92vh] overflow-y-auto">
+          <DialogHeader className="sticky top-0 z-10 border-b border-border bg-background/95 px-4 py-3 backdrop-blur">
+            <DialogTitle className="sr-only">Detalhes do residente</DialogTitle>
+            <div className="flex min-w-0 items-center gap-3 pr-8">
+              <ResidentAvatar resident={resident} size="lg" />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="truncate text-lg font-semibold text-foreground">{resident.name}</h2>
+                  <ResidentStatusBadge status={resident.status} />
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                  <span className="inline-flex items-center gap-1">
+                    <Bed className="h-3.5 w-3.5" />
+                    Quarto {resident.roomNumber || "-"}
+                  </span>
+                  <span>Nasc. {formatResidentBirthDate(resident.birthDate)}</span>
+                  {resident.careType === "home_care" || resident.address ? (
+                    <span className="inline-flex min-w-0 items-center gap-1">
+                      <MapPin className="h-3.5 w-3.5" />
+                      <span className="truncate">
+                        {resident.address
+                          ? [resident.address, resident.addressNumber, resident.city].filter(Boolean).join(", ")
+                          : "Home Care"}
+                      </span>
+                    </span>
+                  ) : null}
+                  <span className="truncate">{resident.contactName || "Sem contato principal"}</span>
+                </div>
               </div>
-            )}
-          </div>
-          <div className="rounded-lg border border-border bg-muted/30 p-3">
-            <p className="text-xs text-muted-foreground">Nome</p>
-            <p className="font-semibold text-foreground">{resident.name}</p>
-          </div>
-          <div className="rounded-lg border border-border bg-muted/30 p-3">
-            <p className="text-xs text-muted-foreground">Quarto</p>
-            <p className="font-semibold text-foreground">{resident.roomNumber || "-"}</p>
-          </div>
-          <div className="rounded-lg border border-border bg-muted/30 p-3">
-            <p className="text-xs text-muted-foreground">Nascimento</p>
-            <p className="font-semibold text-foreground">
-              {resident.birthDate ? format(new Date(resident.birthDate), "dd/MM/yyyy") : "-"}
-            </p>
-          </div>
-        </div>
+            </div>
+          </DialogHeader>
 
-        <Tabs defaultValue={defaultTab} className="space-y-4">
-          <TabsList className="grid w-full grid-cols-1 sm:grid-cols-2 lg:grid-cols-5">
-            <TabsTrigger value="medications" disabled={!canViewMedications}>
+          <div className="space-y-4 p-4">
+            <Tabs defaultValue={defaultTab} className="space-y-4">
+              <TabsList className="flex h-auto w-full justify-start overflow-x-auto rounded-lg bg-muted/60 p-1">
+                <TabsTrigger className="min-w-[132px] flex-1 sm:flex-none" value="medications" disabled={!canViewMedications}>
               Medicacoes
-            </TabsTrigger>
-            <TabsTrigger value="shifts" disabled={!canViewEscalas}>
+                </TabsTrigger>
+                <TabsTrigger className="min-w-[124px] flex-1 sm:flex-none" value="documents" disabled={!canManageDocuments}>
+              Documentos
+                </TabsTrigger>
+                <TabsTrigger className="min-w-[112px] flex-1 sm:flex-none" value="shifts" disabled={!canViewEscalas}>
               Escalas
-            </TabsTrigger>
-            <TabsTrigger value="occurrences" disabled={!canViewOccurrences}>
+                </TabsTrigger>
+                <TabsTrigger className="min-w-[124px] flex-1 sm:flex-none" value="occurrences" disabled={!canViewOccurrences}>
               Ocorrencias
-            </TabsTrigger>
-            <TabsTrigger value="family" disabled={!canManageFamily}>
+                </TabsTrigger>
+                <TabsTrigger className="min-w-[120px] flex-1 sm:flex-none" value="family" disabled={!canManageFamily}>
               Familiares
-            </TabsTrigger>
-            <TabsTrigger value="contracts" disabled={!canManageContracts}>
+                </TabsTrigger>
+                <TabsTrigger className="min-w-[112px] flex-1 sm:flex-none" value="contracts" disabled={!canManageContracts}>
               Contratos
-            </TabsTrigger>
-          </TabsList>
+                </TabsTrigger>
+              </TabsList>
 
-          <TabsContent value="medications" className="mt-0">
+          <TabsContent value="medications" className="mt-0 space-y-4">
             {!canViewMedications ? (
-              <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+              <ResidentTabNotice>
                 Sem permissao para visualizar medicacoes.
-              </div>
+              </ResidentTabNotice>
             ) : (
               <>
-                <div className="flex justify-end mb-3">
-                  <Button size="sm" onClick={openCreateMedicationDialog}>
-                    <Plus className="h-4 w-4 mr-1" />
-                    Nova Medicacao
-                  </Button>
-                </div>
+                <ResidentSectionHeader
+                  title="Medicacoes prescritas"
+                  description="Prescricoes ativas ou suspensas vinculadas ao residente."
+                  action={
+                    <Button size="sm" onClick={openCreateMedicationDialog}>
+                      <Plus className="h-4 w-4 mr-1" />
+                      Nova Medicacao
+                    </Button>
+                  }
+                />
 
                 {medicationsQuery.isLoading ? (
-                  <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                  <ResidentTabNotice>
                     Carregando medicacoes...
-                  </div>
+                  </ResidentTabNotice>
                 ) : medicationsQuery.error ? (
-                  <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-6 text-sm text-destructive">
+                  <ResidentTabNotice variant="destructive">
                     {medicationsQuery.error instanceof Error
                       ? medicationsQuery.error.message
                       : "Erro ao carregar medicacoes."}
-                  </div>
+                  </ResidentTabNotice>
                 ) : (medicationsQuery.data?.length ?? 0) === 0 ? (
-                  <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                  <ResidentTabNotice>
                     Nenhuma medicacao cadastrada para este residente.
-                  </div>
+                  </ResidentTabNotice>
                 ) : (
-                  <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
-                    <Table>
+                  <>
+                    <div className="space-y-3 md:hidden">
+                      {medicationsQuery.data?.map((medication) => (
+                        <div key={medication.id} className="rounded-lg border border-border bg-card p-3 shadow-sm">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate font-semibold text-foreground">{medication.name}</p>
+                              <p className="text-sm text-muted-foreground">{medication.dosage}</p>
+                            </div>
+                            <Badge
+                              variant="outline"
+                              className={
+                                medication.status === "active"
+                                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                  : "border-amber-200 bg-amber-50 text-amber-700"
+                              }
+                            >
+                              {medicationStatusLabel[medication.status] ?? medication.status}
+                            </Badge>
+                          </div>
+                          <div className="mt-3 grid gap-1 text-sm text-muted-foreground">
+                            <span>{getMedicationFrequencyLabel(medication.frequency)}</span>
+                            {medication.route ? <span>Via: {medication.route}</span> : null}
+                            {medication.prescribedBy ? <span>Prescrito por: {medication.prescribedBy}</span> : null}
+                          </div>
+                          <div className="mt-3 flex justify-end gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => openEditMedicationDialog(medication)}
+                            >
+                              Editar
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                              disabled={deleteMedication.isPending}
+                              onClick={() => {
+                                confirm({
+                                  title: "Excluir medicaÃ§Ã£o",
+                                  description: `Excluir a medicaÃ§Ã£o "${medication.name}"?`,
+                                  confirmText: "Excluir",
+                                  pendingText: "Excluindo...",
+                                  variant: "destructive",
+                                  onConfirm: () => deleteMedication.mutateAsync(medication.id),
+                                });
+                              }}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="hidden overflow-x-auto rounded-xl border border-border bg-card shadow-sm md:block">
+                      <Table className="min-w-[720px]">
                       <TableHeader className="bg-muted/50">
                         <TableRow>
                           <TableHead>Medicamento</TableHead>
@@ -1903,11 +2431,12 @@ function ResidentDetailsDialog({
                           </TableRow>
                         ))}
                       </TableBody>
-                    </Table>
-                  </div>
+                      </Table>
+                    </div>
+                  </>
                 )}
 
-                <Tabs defaultValue="agenda" className="mt-5 space-y-3">
+                <Tabs defaultValue="agenda" className="space-y-3">
                   <TabsList className="grid w-full grid-cols-1 sm:grid-cols-2">
                     <TabsTrigger value="agenda">Agenda de doses</TabsTrigger>
                     <TabsTrigger value="historico">Historico de administracoes</TabsTrigger>
@@ -2031,30 +2560,66 @@ function ResidentDetailsDialog({
                       </div>
 
                       {medicationDoseScheduleQuery.isLoading ? (
-                        <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                        <ResidentTabNotice>
                           Carregando agenda de doses...
-                        </div>
+                        </ResidentTabNotice>
                       ) : medicationDoseScheduleQuery.error ? (
-                        <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-6 text-sm text-destructive">
+                        <ResidentTabNotice variant="destructive">
                           {medicationDoseScheduleQuery.error instanceof Error
                             ? medicationDoseScheduleQuery.error.message
                             : "Erro ao carregar agenda de doses."}
-                        </div>
+                        </ResidentTabNotice>
                       ) : (medicationDoseScheduleQuery.data?.doses.length ?? 0) === 0 ? (
-                        <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                        <ResidentTabNotice>
                           Nenhuma dose gerada no periodo selecionado.
-                        </div>
+                        </ResidentTabNotice>
                       ) : visibleMedicationScheduleDoses.length === 0 ? (
-                        <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                        <ResidentTabNotice>
                           Todas as doses deste periodo ja foram registradas. Ative "Mostrar registradas" para visualizar.
-                        </div>
+                        </ResidentTabNotice>
                       ) : filteredVisibleMedicationScheduleDoses.length === 0 ? (
-                        <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                        <ResidentTabNotice>
                           Nenhuma dose encontrada para o medicamento selecionado.
-                        </div>
+                        </ResidentTabNotice>
                       ) : (
-                        <div className="rounded-xl border border-border overflow-hidden">
-                          <Table>
+                        <>
+                          <div className="space-y-3 md:hidden">
+                            {filteredVisibleMedicationScheduleDoses.map((dose) => (
+                              <div key={dose.key} className="rounded-lg border border-border bg-background p-3">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <p className="font-semibold text-foreground">{formatMedicationDoseDateTime(dose)}</p>
+                                    <p className="truncate text-sm text-muted-foreground">{dose.medicationName}</p>
+                                  </div>
+                                  <Badge
+                                    variant="outline"
+                                    className={medicationAdministrationStatusClass(dose.status)}
+                                  >
+                                    {medicationAdministrationStatusLabel[dose.status]}
+                                  </Badge>
+                                </div>
+                                <div className="mt-3 grid gap-1 text-sm text-muted-foreground">
+                                  <span>Dose: {dose.dosage}</span>
+                                  <span>{getMedicationFrequencyLabel(dose.frequency)}</span>
+                                  <span>Administrado por: {dose.administeredByName || "-"}</span>
+                                  {dose.isOverdue && dose.status === "pending" ? (
+                                    <span className="text-rose-600">Dose em atraso</span>
+                                  ) : null}
+                                </div>
+                                <div className="mt-3 flex justify-end">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => openDoseActionDialog(dose)}
+                                  >
+                                    {dose.status === "pending" ? "Registrar" : "Editar registro"}
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="hidden overflow-x-auto rounded-xl border border-border md:block">
+                            <Table className="min-w-[860px]">
                             <TableHeader className="bg-muted/50">
                               <TableRow>
                                 <TableHead>Data/Hora</TableHead>
@@ -2070,7 +2635,7 @@ function ResidentDetailsDialog({
                                 <TableRow key={dose.key}>
                                   <TableCell className="font-medium">
                                     <div className="flex flex-col">
-                                      <span>{format(new Date(dose.scheduledFor), "dd/MM/yyyy HH:mm")}</span>
+                                      <span>{formatMedicationDoseDateTime(dose)}</span>
                                       {dose.isOverdue && dose.status === "pending" ? (
                                         <span className="text-[11px] text-rose-600">Dose em atraso</span>
                                       ) : null}
@@ -2108,8 +2673,9 @@ function ResidentDetailsDialog({
                                 </TableRow>
                               ))}
                             </TableBody>
-                          </Table>
-                        </div>
+                            </Table>
+                          </div>
+                        </>
                       )}
                     </div>
                   </TabsContent>
@@ -2123,22 +2689,52 @@ function ResidentDetailsDialog({
                         </p>
                       </div>
                       {medicationAdministrationHistoryQuery.isLoading ? (
-                        <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                        <ResidentTabNotice>
                           Carregando historico...
-                        </div>
+                        </ResidentTabNotice>
                       ) : medicationAdministrationHistoryQuery.error ? (
-                        <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-6 text-sm text-destructive">
+                        <ResidentTabNotice variant="destructive">
                           {medicationAdministrationHistoryQuery.error instanceof Error
                             ? medicationAdministrationHistoryQuery.error.message
                             : "Erro ao carregar historico de administracoes."}
-                        </div>
+                        </ResidentTabNotice>
                       ) : (medicationAdministrationHistoryQuery.data?.length ?? 0) === 0 ? (
-                        <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                        <ResidentTabNotice>
                           Nenhuma administracao registrada para este residente.
-                        </div>
+                        </ResidentTabNotice>
                       ) : (
-                        <div className="rounded-xl border border-border overflow-hidden">
-                          <Table>
+                        <>
+                          <div className="space-y-3 md:hidden">
+                            {medicationAdministrationHistoryQuery.data?.map((entry) => (
+                              <div key={entry.id} className="rounded-lg border border-border bg-background p-3">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <p className="truncate font-semibold text-foreground">{entry.medicationName || "-"}</p>
+                                    <p className="text-sm text-muted-foreground">
+                                      Dose: {entry.scheduledFor ? format(new Date(entry.scheduledFor), "dd/MM/yyyy HH:mm") : "-"}
+                                    </p>
+                                  </div>
+                                  <Badge
+                                    variant="outline"
+                                    className={medicationAdministrationStatusClass(entry.status)}
+                                  >
+                                    {medicationAdministrationStatusLabel[entry.status]}
+                                  </Badge>
+                                </div>
+                                <div className="mt-3 grid gap-1 text-sm text-muted-foreground">
+                                  <span>Profissional: {entry.administeredByName || "-"}</span>
+                                  <span>
+                                    Registro: {entry.administeredAt
+                                      ? format(new Date(entry.administeredAt), "dd/MM/yyyy HH:mm")
+                                      : "-"}
+                                  </span>
+                                  {entry.notes ? <span>Obs.: {entry.notes}</span> : null}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="hidden overflow-x-auto rounded-xl border border-border md:block">
+                            <Table className="min-w-[900px]">
                             <TableHeader className="bg-muted/50">
                               <TableRow>
                                 <TableHead>Data/Hora da dose</TableHead>
@@ -2180,8 +2776,9 @@ function ResidentDetailsDialog({
                                 </TableRow>
                               ))}
                             </TableBody>
-                          </Table>
-                        </div>
+                            </Table>
+                          </div>
+                        </>
                       )}
                     </div>
                   </TabsContent>
@@ -2190,37 +2787,265 @@ function ResidentDetailsDialog({
             )}
           </TabsContent>
 
-          <TabsContent value="shifts" className="mt-0">
-            {!canViewEscalas ? (
-              <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
-                Sem permissao para visualizar escalas.
-              </div>
+          <TabsContent value="documents" className="mt-0 space-y-4">
+            {!canManageDocuments ? (
+              <ResidentTabNotice>
+                Sem permissao para gerenciar documentos.
+              </ResidentTabNotice>
             ) : (
               <>
-                <div className="flex justify-end mb-3">
-                  <Button size="sm" onClick={openCreateShiftDialog}>
-                    <Plus className="h-4 w-4 mr-1" />
-                    Nova Escala
-                  </Button>
+                <ResidentSectionHeader
+                  title="Documentos do paciente"
+                  description="Exames, anamnese, contratos assinados e arquivos vinculados ao residente."
+                />
+
+                <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+                  <Form {...patientDocumentForm}>
+                    <form
+                      className="space-y-4"
+                      onSubmit={patientDocumentForm.handleSubmit((data) => createPatientDocument.mutate(data))}
+                    >
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                        <FormField
+                          control={patientDocumentForm.control}
+                          name="title"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Titulo *</FormLabel>
+                              <FormControl>
+                                <Input placeholder="Ex: Contrato 2026" {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={patientDocumentForm.control}
+                          name="category"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Categoria</FormLabel>
+                              <Select onValueChange={field.onChange} value={field.value || "document"}>
+                                <FormControl>
+                                  <SelectTrigger>
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                </FormControl>
+                                <SelectContent>
+                                  <SelectItem value="document">Documento</SelectItem>
+                                  <SelectItem value="exam">Exame</SelectItem>
+                                  <SelectItem value="anamnese">Anamnese</SelectItem>
+                                  <SelectItem value="contract">Contrato</SelectItem>
+                                  <SelectItem value="other">Outro</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </FormItem>
+                          )}
+                        />
+                      </div>
+
+                      <FormField
+                        control={patientDocumentForm.control}
+                        name="subtitle"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Subtitulo</FormLabel>
+                            <FormControl>
+                              <Input placeholder="Ex: Exame de sangue - julho/2026" {...field} value={field.value ?? ""} />
+                            </FormControl>
+                          </FormItem>
+                        )}
+                      />
+
+                      <div className="grid gap-3 rounded-lg border border-dashed border-border bg-muted/30 p-3 md:grid-cols-[1fr_auto] md:items-center">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-foreground">
+                            {patientDocumentForm.watch("fileName") || "Nenhum arquivo selecionado"}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            PDF, imagem ou documento ate 8MB.
+                            {patientDocumentForm.watch("fileSize")
+                              ? ` Selecionado: ${formatFileSize(patientDocumentForm.watch("fileSize"))}.`
+                              : ""}
+                          </p>
+                        </div>
+                        <div className="flex flex-col gap-2 sm:flex-row">
+                          <Input
+                            className="md:w-[260px]"
+                            type="file"
+                            accept=".pdf,.png,.jpg,.jpeg,.webp,.doc,.docx,image/*,application/pdf"
+                            onChange={handlePatientDocumentSelection}
+                          />
+                          <Button type="submit" disabled={createPatientDocument.isPending} className="gap-2">
+                            <Upload className="h-4 w-4" />
+                            Salvar
+                          </Button>
+                        </div>
+                      </div>
+                    </form>
+                  </Form>
                 </div>
 
-                {shiftsQuery.isLoading ? (
-                  <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
-                    Carregando escalas...
+                {patientDocumentsQuery.isLoading ? (
+                  <ResidentTabNotice>
+                    Carregando documentos...
+                  </ResidentTabNotice>
+                ) : patientDocumentsQuery.error ? (
+                  <ResidentTabNotice variant="destructive">
+                    {patientDocumentsQuery.error instanceof Error
+                      ? patientDocumentsQuery.error.message
+                      : "Erro ao carregar documentos."}
+                  </ResidentTabNotice>
+                ) : (patientDocumentsQuery.data?.length ?? 0) === 0 ? (
+                  <ResidentTabNotice>
+                    Nenhum documento cadastrado para este residente.
+                  </ResidentTabNotice>
+                ) : (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {patientDocumentsQuery.data?.map((document) => (
+                      <div key={document.id} className="rounded-xl border border-border bg-card p-4 shadow-sm">
+                        <div className="flex items-start gap-3">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                            <FileText className="h-4 w-4" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="truncate font-semibold text-foreground">{document.title}</p>
+                              <Badge variant="secondary" className="text-[10px]">
+                                {document.category || "documento"}
+                              </Badge>
+                            </div>
+                            {document.subtitle ? (
+                              <p className="mt-1 text-sm text-muted-foreground">{document.subtitle}</p>
+                            ) : null}
+                            <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
+                              <span className="truncate">{document.fileName}</span>
+                              <span>{formatFileSize(document.fileSize)} - {formatDateTimeLabel(document.createdAt)}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-border pt-3">
+                          <Button asChild size="sm" variant="outline">
+                            <a href={document.fileData} target="_blank" rel="noreferrer">
+                              Abrir
+                            </a>
+                          </Button>
+                          <Button asChild size="sm" variant="outline" className="gap-1">
+                            <a href={document.fileData} download={document.fileName || "documento"}>
+                              <Download className="h-3.5 w-3.5" />
+                              Baixar
+                            </a>
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                            disabled={deletePatientDocument.isPending}
+                            onClick={() => {
+                              confirm({
+                                title: "Remover documento",
+                                description: `Remover "${document.title}" da ficha do residente?`,
+                                confirmText: "Remover",
+                                pendingText: "Removendo...",
+                                variant: "destructive",
+                                onConfirm: () => deletePatientDocument.mutateAsync(document.id),
+                              });
+                            }}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
+                )}
+              </>
+            )}
+          </TabsContent>
+
+          <TabsContent value="shifts" className="mt-0 space-y-4">
+            {!canViewEscalas ? (
+              <ResidentTabNotice>
+                Sem permissao para visualizar escalas.
+              </ResidentTabNotice>
+            ) : (
+              <>
+                <ResidentSectionHeader
+                  title="Escalas vinculadas"
+                  description="Plantoes e cuidadores relacionados a este residente."
+                  action={
+                    <Button size="sm" onClick={openCreateShiftDialog}>
+                      <Plus className="h-4 w-4 mr-1" />
+                      Nova Escala
+                    </Button>
+                  }
+                />
+
+                {shiftsQuery.isLoading ? (
+                  <ResidentTabNotice>
+                    Carregando escalas...
+                  </ResidentTabNotice>
                 ) : shiftsQuery.error ? (
-                  <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-6 text-sm text-destructive">
+                  <ResidentTabNotice variant="destructive">
                     {shiftsQuery.error instanceof Error
                       ? shiftsQuery.error.message
                       : "Erro ao carregar escalas."}
-                  </div>
+                  </ResidentTabNotice>
                 ) : (shiftsQuery.data?.length ?? 0) === 0 ? (
-                  <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                  <ResidentTabNotice>
                     Nenhuma escala vinculada a este residente.
-                  </div>
+                  </ResidentTabNotice>
                 ) : (
-                  <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
-                    <Table>
+                  <>
+                    <div className="space-y-3 md:hidden">
+                      {shiftsQuery.data?.map((shift) => (
+                        <div key={shift.id} className="rounded-lg border border-border bg-card p-3 shadow-sm">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate font-semibold text-foreground">{shift.staffName || "-"}</p>
+                              <p className="text-sm text-muted-foreground">
+                                {shiftTypeLabel[shift.shiftType || ""] ?? shift.shiftType}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-8 w-8 p-0"
+                                onClick={() => openEditShiftDialog(shift)}
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-8 w-8 p-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                                disabled={deleteShift.isPending}
+                                onClick={() => {
+                                  confirm({
+                                    title: "Excluir escala vinculada",
+                                    description: "Excluir esta escala vinculada?",
+                                    confirmText: "Excluir",
+                                    pendingText: "Excluindo...",
+                                    variant: "destructive",
+                                    onConfirm: () => deleteShift.mutateAsync(shift.id),
+                                  });
+                                }}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="mt-3 grid gap-1 text-sm text-muted-foreground">
+                            <span>Inicio: {format(new Date(shift.startTime), "dd/MM/yyyy HH:mm")}</span>
+                            <span>Fim: {format(new Date(shift.endTime), "dd/MM/yyyy HH:mm")}</span>
+                            {shift.notes ? <span>Obs.: {shift.notes}</span> : null}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="hidden overflow-x-auto rounded-xl border border-border bg-card shadow-sm md:block">
+                      <Table className="min-w-[880px]">
                       <TableHeader className="bg-muted/50">
                         <TableRow>
                           <TableHead>Cuidador</TableHead>
@@ -2272,44 +3097,101 @@ function ResidentDetailsDialog({
                           </TableRow>
                         ))}
                       </TableBody>
-                    </Table>
-                  </div>
+                      </Table>
+                    </div>
+                  </>
                 )}
               </>
             )}
           </TabsContent>
 
-          <TabsContent value="occurrences" className="mt-0">
+          <TabsContent value="occurrences" className="mt-0 space-y-4">
             {!canViewOccurrences ? (
-              <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+              <ResidentTabNotice>
                 Sem permissao para visualizar ocorrencias.
-              </div>
+              </ResidentTabNotice>
             ) : (
               <>
-                <div className="flex justify-end mb-3">
-                  <Button size="sm" variant="destructive" onClick={openCreateOccurrenceDialog}>
-                    <Plus className="h-4 w-4 mr-1" />
-                    Nova Ocorrencia
-                  </Button>
-                </div>
+                <ResidentSectionHeader
+                  title="Ocorrencias"
+                  description="Registros clinicos, intercorrencias e pendencias acompanhadas pela equipe."
+                  action={
+                    <Button size="sm" variant="destructive" onClick={openCreateOccurrenceDialog}>
+                      <Plus className="h-4 w-4 mr-1" />
+                      Nova Ocorrencia
+                    </Button>
+                  }
+                />
 
                 {occurrencesQuery.isLoading ? (
-                  <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                  <ResidentTabNotice>
                     Carregando ocorrencias...
-                  </div>
+                  </ResidentTabNotice>
                 ) : occurrencesQuery.error ? (
-                  <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-6 text-sm text-destructive">
+                  <ResidentTabNotice variant="destructive">
                     {occurrencesQuery.error instanceof Error
                       ? occurrencesQuery.error.message
                       : "Erro ao carregar ocorrencias."}
-                  </div>
+                  </ResidentTabNotice>
                 ) : (occurrencesQuery.data?.length ?? 0) === 0 ? (
-                  <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                  <ResidentTabNotice>
                     Nenhuma ocorrencia registrada para este residente.
-                  </div>
+                  </ResidentTabNotice>
                 ) : (
-                  <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
-                    <Table>
+                  <>
+                    <div className="space-y-3 md:hidden">
+                      {occurrencesQuery.data?.map((occurrence) => (
+                        <div key={occurrence.id} className="rounded-lg border border-border bg-card p-3 shadow-sm">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate font-semibold text-foreground">{occurrence.type}</p>
+                              <p className="text-sm text-muted-foreground">
+                                {occurrence.createdAt ? format(new Date(occurrence.createdAt), "dd/MM/yyyy HH:mm") : "-"}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-8 w-8 p-0"
+                                onClick={() => openEditOccurrenceDialog(occurrence)}
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-8 w-8 p-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                                disabled={deleteOccurrence.isPending}
+                                onClick={() => {
+                                  confirm({
+                                    title: "Excluir ocorrÃªncia",
+                                    description: "Excluir esta ocorrÃªncia?",
+                                    confirmText: "Excluir",
+                                    pendingText: "Excluindo...",
+                                    variant: "destructive",
+                                    onConfirm: () => deleteOccurrence.mutateAsync(occurrence.id),
+                                  });
+                                }}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <Badge variant="outline">
+                              {occurrenceSeverityLabel[occurrence.severity] ?? occurrence.severity}
+                            </Badge>
+                            <Badge variant="secondary">
+                              {occurrenceStatusLabel[occurrence.status] ?? occurrence.status}
+                            </Badge>
+                          </div>
+                          <p className="mt-3 text-sm text-muted-foreground">{occurrence.description}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="hidden overflow-x-auto rounded-xl border border-border bg-card shadow-sm md:block">
+                      <Table className="min-w-[860px]">
                       <TableHeader className="bg-muted/50">
                         <TableRow>
                           <TableHead>Tipo</TableHead>
@@ -2371,8 +3253,9 @@ function ResidentDetailsDialog({
                           </TableRow>
                         ))}
                       </TableBody>
-                    </Table>
-                  </div>
+                      </Table>
+                    </div>
+                  </>
                 )}
               </>
             )}
@@ -2601,7 +3484,7 @@ function ResidentDetailsDialog({
                       {selectedDoseItem.medicationName} ({selectedDoseItem.dosage})
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {format(new Date(selectedDoseItem.scheduledFor), "dd/MM/yyyy HH:mm")}
+                      {formatMedicationDoseDateTime(selectedDoseItem)}
                     </p>
                   </div>
                   <Form {...medicationDoseActionForm}>
@@ -2748,7 +3631,34 @@ function ResidentDetailsDialog({
                       <FormItem>
                         <FormLabel>Cuidador / Funcionario *</FormLabel>
                         <Select
-                          onValueChange={(value) => field.onChange(Number(value))}
+                          onValueChange={(value) => {
+                            const nextStaffId = Number(value);
+                            const nextStaff = selectableStaff.find((staffMember) => staffMember.id === nextStaffId);
+                            const nextRule = getShiftProfileRule(nextStaff?.shift, configuredShiftProfiles);
+                            const allShiftTypes = ["12h_manha", "12h_noite", "24h", "avulso"] as Array<z.infer<typeof residentShiftSchema>["shiftType"]>;
+                            const allowedShiftTypes = nextRule.enabled && nextRule.allowedShiftTypes.length > 0
+                              ? nextRule.allowedShiftTypes.filter((item): item is z.infer<typeof residentShiftSchema>["shiftType"] =>
+                                allShiftTypes.includes(item as z.infer<typeof residentShiftSchema>["shiftType"]),
+                              )
+                              : allShiftTypes;
+                            const currentShiftType = shiftForm.getValues("shiftType");
+                            const nextShiftType = allowedShiftTypes.includes(currentShiftType)
+                              ? currentShiftType
+                              : (allowedShiftTypes[0] ?? "12h_manha");
+                            const date = shiftForm.getValues("date") || format(new Date(), "yyyy-MM-dd");
+                            const suggestedTimes = getDefaultShiftTimes(nextShiftType, date, nextRule);
+                            const previousStartClock = shiftForm.getValues("startTime")?.slice(11, 16);
+                            const startTime = previousStartClock ? `${date}T${previousStartClock}` : suggestedTimes.startTime;
+                            const durationHours = getResidentShiftDurationHours(nextShiftType, nextRule);
+                            const endTime = durationHours
+                              ? (addHoursToDateTimeInput(startTime, durationHours) ?? suggestedTimes.endTime)
+                              : suggestedTimes.endTime;
+                            field.onChange(nextStaffId);
+                            shiftForm.setValue("shiftType", nextShiftType, { shouldDirty: true, shouldValidate: true });
+                            shiftForm.setValue("date", date, { shouldDirty: true, shouldValidate: true });
+                            shiftForm.setValue("startTime", startTime, { shouldDirty: true, shouldValidate: true });
+                            shiftForm.setValue("endTime", endTime, { shouldDirty: true, shouldValidate: true });
+                          }}
                           value={field.value ? String(field.value) : undefined}
                           disabled={isCaregiver}
                         >
@@ -2791,7 +3701,14 @@ function ResidentDetailsDialog({
                           <button
                             key={shiftType}
                             type="button"
-                            onClick={() => shiftForm.setValue("shiftType", shiftType, { shouldDirty: true, shouldValidate: true })}
+                            onClick={() => {
+                              const date = shiftForm.getValues("date") || format(new Date(), "yyyy-MM-dd");
+                              const times = getDefaultShiftTimes(shiftType, date, selectedStaffRule);
+                              shiftForm.setValue("shiftType", shiftType, { shouldDirty: true, shouldValidate: true });
+                              shiftForm.setValue("date", date, { shouldDirty: true, shouldValidate: true });
+                              shiftForm.setValue("startTime", times.startTime, { shouldDirty: true, shouldValidate: true });
+                              shiftForm.setValue("endTime", times.endTime, { shouldDirty: true, shouldValidate: true });
+                            }}
                             data-testid={`resident-shift-type-${shiftType}`}
                             className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border text-sm font-medium transition-all text-left
                               ${isSelected
@@ -2810,7 +3727,7 @@ function ResidentDetailsDialog({
                     </div>
                   </div>
 
-                  {selectedShiftType !== "avulso" ? (
+                  <div className="space-y-3">
                     <FormField
                       control={shiftForm.control}
                       name="date"
@@ -2822,24 +3739,26 @@ function ResidentDetailsDialog({
                               type="date"
                               className="mt-1.5"
                               value={field.value ?? ""}
-                              onChange={(event) => field.onChange(event.target.value)}
+                              onChange={(event) => {
+                                const date = event.target.value;
+                                const suggestedTimes = getDefaultShiftTimes(selectedShiftType, date, selectedStaffRule);
+                                const previousStartClock = shiftForm.getValues("startTime")?.slice(11, 16);
+                                const startTime = previousStartClock ? `${date}T${previousStartClock}` : suggestedTimes.startTime;
+                                const durationHours = getResidentShiftDurationHours(selectedShiftType, selectedStaffRule);
+                                const endTime = durationHours
+                                  ? (addHoursToDateTimeInput(startTime, durationHours) ?? suggestedTimes.endTime)
+                                  : suggestedTimes.endTime;
+                                field.onChange(date);
+                                shiftForm.setValue("startTime", startTime, { shouldDirty: true, shouldValidate: true });
+                                shiftForm.setValue("endTime", endTime, { shouldDirty: true, shouldValidate: true });
+                              }}
                               data-testid="resident-shift-date"
                             />
                           </FormControl>
-                          {shiftDate && (
-                            <p className="text-xs text-muted-foreground mt-1">
-                              {(() => {
-                                const times = getDefaultShiftTimes(selectedShiftType, shiftDate);
-                                const hasCrossDayEnd = selectedShiftType !== "12h_manha";
-                                return `Das ${times.startTime.split("T")[1]} as ${times.endTime.split("T")[1]}${hasCrossDayEnd ? " (dia seguinte)" : ""}`;
-                              })()}
-                            </p>
-                          )}
                           <FormMessage />
                         </FormItem>
                       )}
                     />
-                  ) : (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <FormField
                         control={shiftForm.control}
@@ -2848,7 +3767,24 @@ function ResidentDetailsDialog({
                           <FormItem>
                             <FormLabel>Inicio *</FormLabel>
                             <FormControl>
-                              <Input type="datetime-local" className="mt-1.5" {...field} value={field.value ?? ""} />
+                              <Input
+                                type="datetime-local"
+                                className="mt-1.5"
+                                {...field}
+                                value={field.value ?? ""}
+                                onChange={(event) => {
+                                  const startTime = event.target.value;
+                                  const durationHours = getResidentShiftDurationHours(selectedShiftType, selectedStaffRule);
+                                  field.onChange(startTime);
+                                  shiftForm.setValue("date", startTime.slice(0, 10) || shiftDate || "", { shouldDirty: true, shouldValidate: true });
+                                  if (durationHours) {
+                                    const endTime = addHoursToDateTimeInput(startTime, durationHours);
+                                    if (endTime) {
+                                      shiftForm.setValue("endTime", endTime, { shouldDirty: true, shouldValidate: true });
+                                    }
+                                  }
+                                }}
+                              />
                             </FormControl>
                             <FormMessage />
                           </FormItem>
@@ -2861,14 +3797,36 @@ function ResidentDetailsDialog({
                           <FormItem>
                             <FormLabel>Fim *</FormLabel>
                             <FormControl>
-                              <Input type="datetime-local" className="mt-1.5" {...field} value={field.value ?? ""} />
+                              <Input
+                                type="datetime-local"
+                                className="mt-1.5"
+                                {...field}
+                                value={field.value ?? ""}
+                                onChange={(event) => {
+                                  const endTime = event.target.value;
+                                  const durationHours = getResidentShiftDurationHours(selectedShiftType, selectedStaffRule);
+                                  field.onChange(endTime);
+                                  if (durationHours) {
+                                    const startTime = subtractHoursFromDateTimeInput(endTime, durationHours);
+                                    if (startTime) {
+                                      shiftForm.setValue("date", startTime.slice(0, 10), { shouldDirty: true, shouldValidate: true });
+                                      shiftForm.setValue("startTime", startTime, { shouldDirty: true, shouldValidate: true });
+                                    }
+                                  }
+                                }}
+                              />
                             </FormControl>
                             <FormMessage />
                           </FormItem>
                         )}
                       />
                     </div>
-                  )}
+                    <p className="text-xs text-muted-foreground">
+                      {getResidentShiftDurationHours(selectedShiftType, selectedStaffRule)
+                        ? `Inicio e fim sao editaveis; ao alterar um deles, o outro e recalculado para ${getResidentShiftDurationHours(selectedShiftType, selectedStaffRule)}h.`
+                        : "Inicio e fim podem ser ajustados livremente para plantao avulso."}
+                    </p>
+                  </div>
 
                   <FormField
                     control={shiftForm.control}
@@ -3037,87 +3995,98 @@ function ResidentDetailsDialog({
 
           <TabsContent value="family" className="mt-0 space-y-4">
             {!canManageFamily ? (
-              <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+              <ResidentTabNotice>
                 Sem permissao para gerenciar familiares.
-              </div>
+              </ResidentTabNotice>
             ) : (
               <>
-                <div className="flex justify-end">
-                  <Button size="sm" onClick={openCreateFamilyDialog}>
-                    <Plus className="h-4 w-4 mr-1" />
-                    Adicionar Familiar
-                  </Button>
-                </div>
+                <ResidentSectionHeader
+                  title="Familiares e portal"
+                  description="Contatos autorizados, responsavel principal e acesso ao portal da familia."
+                  action={
+                    <Button size="sm" onClick={openCreateFamilyDialog}>
+                      <Plus className="h-4 w-4 mr-1" />
+                      Adicionar Familiar
+                    </Button>
+                  }
+                />
 
                 {familyQuery.isLoading ? (
-                  <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                  <ResidentTabNotice>
                     Carregando familiares...
-                  </div>
+                  </ResidentTabNotice>
                 ) : familyQuery.error ? (
-                  <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-6 text-sm text-destructive">
+                  <ResidentTabNotice variant="destructive">
                     {familyQuery.error instanceof Error
                       ? familyQuery.error.message
                       : "Erro ao carregar familiares."}
-                  </div>
+                  </ResidentTabNotice>
                 ) : (familyQuery.data?.length ?? 0) === 0 ? (
-                  <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
+                  <ResidentTabNotice>
                     Nenhum familiar cadastrado para este residente.
-                  </div>
+                  </ResidentTabNotice>
                 ) : (
                   <div className="grid gap-3 md:grid-cols-2">
                     {familyQuery.data?.map((family) => (
                       <div key={family.id} className="rounded-xl border border-border bg-card p-4 shadow-sm">
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
                             <p className="font-semibold text-foreground">{family.name}</p>
                             <p className="text-sm text-muted-foreground">{family.relationship}</p>
-                            <p className="text-sm text-muted-foreground">{maskPhoneBR(family.phone)}</p>
-                            {family.phone2 && (
-                              <p className="text-sm text-muted-foreground">{maskPhoneBR(family.phone2)}</p>
-                            )}
-                            {family.email && <p className="text-xs text-muted-foreground">{family.email}</p>}
                           </div>
-                          <div className="flex items-center gap-1">
+                          <div className="flex shrink-0 flex-wrap justify-end gap-1">
                             {family.isPrimary && (
                               <Badge variant="secondary" className="text-[10px]">Principal</Badge>
                             )}
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-7 w-7 p-0"
-                              onClick={() => openEditFamilyDialog(family)}
-                            >
-                              <Pencil className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                              disabled={deleteFamily.isPending}
-                              onClick={() => {
-                                confirm({
-                                  title: "Remover familiar",
-                                  description: `Remover "${family.name}" dos familiares? ${
-                                    family.portalAccess
-                                      ? "O acesso ao portal desta pessoa também será removido."
-                                      : ""
-                                  }`,
-                                  confirmText: "Remover",
-                                  pendingText: "Removendo...",
-                                  variant: "destructive",
-                                  onConfirm: () => deleteFamily.mutateAsync(family.id),
-                                });
-                              }}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
+                            {family.portalAccess && (
+                              <Badge variant="outline" className="border-cyan-200 bg-cyan-50 text-cyan-700">
+                                Portal
+                              </Badge>
+                            )}
                           </div>
                         </div>
+                        <div className="mt-3 grid gap-1 text-sm text-muted-foreground">
+                          <span>{maskPhoneBR(family.phone)}</span>
+                          {family.phone2 ? <span>{maskPhoneBR(family.phone2)}</span> : null}
+                          {family.email ? <span className="truncate">{family.email}</span> : null}
+                        </div>
                         {family.portalAccess && (
-                          <div className="mt-2 text-xs text-cyan-600 bg-cyan-50 border border-cyan-200 rounded-md px-2 py-1 inline-block">
+                          <div className="mt-3 inline-block rounded-md border border-cyan-200 bg-cyan-50 px-2 py-1 text-xs text-cyan-700">
                             Portal ativo @{family.portalUsername}
                           </div>
                         )}
+                        <div className="mt-4 flex justify-end gap-2 border-t border-border pt-3">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => openEditFamilyDialog(family)}
+                          >
+                            <Pencil className="mr-1 h-3.5 w-3.5" />
+                            Editar
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                            disabled={deleteFamily.isPending}
+                            onClick={() => {
+                              confirm({
+                                title: "Remover familiar",
+                                description: `Remover "${family.name}" dos familiares? ${
+                                  family.portalAccess
+                                    ? "O acesso ao portal desta pessoa também será removido."
+                                    : ""
+                                }`,
+                                confirmText: "Remover",
+                                pendingText: "Removendo...",
+                                variant: "destructive",
+                                onConfirm: () => deleteFamily.mutateAsync(family.id),
+                              });
+                            }}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -3608,7 +4577,9 @@ function ResidentDetailsDialog({
               </>
             )}
           </TabsContent>
-        </Tabs>
+            </Tabs>
+          </div>
+        </div>
       </DialogContent>
       {confirmDialog}
     </Dialog>
@@ -3620,20 +4591,37 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
   const updateMutation = useUpdateResident();
   const { toast } = useToast();
   const [isProcessingPhoto, setIsProcessingPhoto] = useState(false);
+  const [isLookingUpCep, setIsLookingUpCep] = useState(false);
 
   const defaultValues: ResidentFormInput = {
     name: "",
     birthDate: "",
+    gender: null,
+    cpf: null,
+    rg: null,
+    susNumber: null,
+    maritalStatus: null,
+    nationality: "Brasileiro(a)",
     contactName: "",
     contactPhone: "",
+    contactRelationship: null,
     bloodType: null,
+    dietaryRestrictions: null,
     mobilityStatus: null,
     cognitiveStatus: null,
-    admissionDate: new Date().toISOString().split('T')[0],
+    admissionDate: toDateInputValue(),
     roomNumber: "",
     healthNotes: "",
     allergies: "",
     photoUrl: "",
+    careType: "residential",
+    cep: "",
+    address: "",
+    addressNumber: "",
+    addressComplement: "",
+    neighborhood: "",
+    city: "",
+    state: "",
     status: "active"
   };
   
@@ -3649,8 +4637,8 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
       form.reset({
         ...defaultValues,
         ...resident,
-        birthDate: resident.birthDate ? new Date(resident.birthDate).toISOString().split('T')[0] : "",
-        admissionDate: resident.admissionDate ? new Date(resident.admissionDate).toISOString().split('T')[0] : "",
+        birthDate: resident.birthDate ? toDateInputValue(resident.birthDate) : "",
+        admissionDate: resident.admissionDate ? toDateInputValue(resident.admissionDate) : "",
         photoUrl: resident.photoUrl ?? "",
       });
       return;
@@ -3660,6 +4648,32 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
   }, [open, resident, form]);
 
   const photoPreview = form.watch("photoUrl");
+
+  async function handleLookupCep() {
+    const currentCep = form.getValues("cep");
+    if (digitsOnly(currentCep || "").length !== 8) {
+      form.setError("cep", { type: "manual", message: "Informe um CEP valido." });
+      return;
+    }
+
+    setIsLookingUpCep(true);
+    try {
+      const address = await fetchResidentAddressByCep(currentCep || "");
+      form.setValue("cep", address.cep, { shouldDirty: true, shouldValidate: true });
+      form.setValue("address", address.address, { shouldDirty: true, shouldValidate: true });
+      form.setValue("neighborhood", address.neighborhood, { shouldDirty: true, shouldValidate: true });
+      form.setValue("city", address.city, { shouldDirty: true, shouldValidate: true });
+      form.setValue("state", address.state, { shouldDirty: true, shouldValidate: true });
+      toast({ title: "Endereco preenchido pelo CEP." });
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: error instanceof Error ? error.message : "Nao foi possivel buscar o CEP.",
+      });
+    } finally {
+      setIsLookingUpCep(false);
+    }
+  }
 
   async function handlePhotoSelection(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -3684,6 +4698,14 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
     const payload: ResidentFormInput = {
       ...data,
       photoUrl: data.photoUrl?.trim() || null,
+      careType: data.careType || "residential",
+      cep: data.cep?.trim() || null,
+      address: data.address?.trim() || null,
+      addressNumber: data.addressNumber?.trim() || null,
+      addressComplement: data.addressComplement?.trim() || null,
+      neighborhood: data.neighborhood?.trim() || null,
+      city: data.city?.trim() || null,
+      state: data.state?.trim()?.toUpperCase() || null,
     };
 
     if (resident) {
@@ -3895,6 +4917,153 @@ function ResidentDialog({ open, onOpenChange, resident }: { open: boolean; onOpe
                         value={field.value ?? ""}
                         onChange={(e) => field.onChange(maskPhoneBR(e.target.value))}
                       />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <div className="rounded-xl border border-border p-4 space-y-4">
+              <div className="flex items-center gap-2">
+                <MapPin className="h-4 w-4 text-primary" />
+                <p className="text-sm font-medium text-foreground">Endereco e atendimento</p>
+              </div>
+
+              <FormField
+                control={form.control}
+                name="careType"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Tipo de atendimento</FormLabel>
+                    <Select onValueChange={field.onChange} value={field.value ?? "residential"}>
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="residential">Instituicao</SelectItem>
+                        <SelectItem value="home_care">Home Care</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <div className="grid grid-cols-1 md:grid-cols-[180px_1fr] gap-4">
+                <FormField
+                  control={form.control}
+                  name="cep"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>CEP</FormLabel>
+                      <FormControl>
+                        <div className="flex gap-2">
+                          <Input
+                            {...field}
+                            maxLength={9}
+                            value={field.value ?? ""}
+                            onChange={(event) => field.onChange(maskCep(event.target.value))}
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            disabled={isLookingUpCep}
+                            onClick={handleLookupCep}
+                          >
+                            Buscar
+                          </Button>
+                        </div>
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="address"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Logradouro</FormLabel>
+                      <FormControl>
+                        <Input {...field} value={field.value ?? ""} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-[140px_1fr_1fr_96px] gap-4">
+                <FormField
+                  control={form.control}
+                  name="addressNumber"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Numero</FormLabel>
+                      <FormControl>
+                        <Input {...field} value={field.value ?? ""} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="addressComplement"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Complemento</FormLabel>
+                      <FormControl>
+                        <Input {...field} value={field.value ?? ""} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="neighborhood"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Bairro</FormLabel>
+                      <FormControl>
+                        <Input {...field} value={field.value ?? ""} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="state"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>UF</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          maxLength={2}
+                          value={field.value ?? ""}
+                          onChange={(event) => field.onChange(event.target.value.toUpperCase())}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+
+              <FormField
+                control={form.control}
+                name="city"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Cidade</FormLabel>
+                    <FormControl>
+                      <Input {...field} value={field.value ?? ""} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>

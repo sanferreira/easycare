@@ -40,7 +40,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import type { ShiftAssignment } from "@shared/schema";
-import { DEFAULT_ENVIRONMENT_SETTINGS, getShiftProfileRule } from "@shared/environment";
+import { DEFAULT_ENVIRONMENT_SETTINGS, getShiftProfileRule, type ShiftProfileRule } from "@shared/environment";
 
 type ShiftType = "12h_manha" | "12h_noite" | "24h" | "avulso";
 
@@ -158,23 +158,73 @@ function ShiftTypeBadge({ type }: { type: string }) {
   );
 }
 
-// Calculate default start/end times based on shift type and date
-function getDefaultTimes(type: ShiftType, date: string): { startTime: string; endTime: string } {
-  if (!date) return { startTime: "", endTime: "" };
-  const [y, m, d] = date.split("-");
-  const next = new Date(Number(y), Number(m) - 1, Number(d) + 1);
-  const nextStr = format(next, "yyyy-MM-dd");
+function getShiftDurationHours(type: ShiftType, rule?: ShiftProfileRule): number | null {
+  if (type === "avulso") return null;
+  const configuredDuration = Number(rule?.exactShiftHours ?? 0);
+  if (rule?.enabled && Number.isFinite(configuredDuration) && configuredDuration > 0) {
+    return configuredDuration;
+  }
+  if (type === "12h_manha" || type === "12h_noite") return 12;
+  if (type === "24h") return 24;
+  return null;
+}
 
+function parseDateTimeInput(value: string): Date | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function formatDateTimeInput(value: Date): string {
+  return format(value, "yyyy-MM-dd'T'HH:mm");
+}
+
+function addHoursToDateTimeInput(value: string, hours: number): string | null {
+  const parsed = parseDateTimeInput(value);
+  if (!parsed) return null;
+  return formatDateTimeInput(new Date(parsed.getTime() + (hours * 60 * 60 * 1000)));
+}
+
+function subtractHoursFromDateTimeInput(value: string, hours: number): string | null {
+  const parsed = parseDateTimeInput(value);
+  if (!parsed) return null;
+  return formatDateTimeInput(new Date(parsed.getTime() - (hours * 60 * 60 * 1000)));
+}
+
+// Sugere horarios iniciais, mas inicio/fim continuam editaveis.
+function getDefaultTimes(type: ShiftType, date: string, rule?: ShiftProfileRule): { startTime: string; endTime: string } {
+  if (!date) return { startTime: "", endTime: "" };
+
+  let startClock = "08:00";
   switch (type) {
     case "12h_manha":
-      return { startTime: `${date}T07:00`, endTime: `${date}T19:00` };
+      startClock = "07:00";
+      break;
     case "12h_noite":
-      return { startTime: `${date}T19:00`, endTime: `${nextStr}T07:00` };
+      startClock = "19:00";
+      break;
     case "24h":
-      return { startTime: `${date}T07:00`, endTime: `${nextStr}T07:00` };
-    default:
-      return { startTime: `${date}T08:00`, endTime: `${date}T17:00` };
+      startClock = "07:00";
+      break;
   }
+
+  const startTime = `${date}T${startClock}`;
+  const durationHours = getShiftDurationHours(type, rule) ?? 9;
+  return {
+    startTime,
+    endTime: addHoursToDateTimeInput(startTime, durationHours) ?? `${date}T17:00`,
+  };
+}
+
+function getShiftTimesForSubmit(form: { startTime: string; endTime: string }) {
+  if (!form.startTime || !form.endTime) {
+    throw new Error("Informe horario de inicio e fim do plantao.");
+  }
+  return {
+    startTime: form.startTime,
+    endTime: form.endTime,
+  };
 }
 
 function isAutoMonthShift(shift: ShiftWithDetails): boolean {
@@ -219,8 +269,7 @@ export default function Escalas() {
     residentId: "none",
     shiftType: "12h_manha" as ShiftType,
     date: format(new Date(), "yyyy-MM-dd"),
-    startTime: "",
-    endTime: "",
+    ...getDefaultTimes("12h_manha", format(new Date(), "yyyy-MM-dd")),
     notes: "",
     payableAmount: "",
     applyPayableAsDefault: true,
@@ -330,9 +379,25 @@ export default function Escalas() {
 
   useEffect(() => {
     if (!availableShiftTypes.includes(form.shiftType)) {
-      setForm((prev) => ({ ...prev, shiftType: availableShiftTypes[0] ?? "12h_manha" }));
+      setForm((prev) => {
+        const nextShiftType = availableShiftTypes[0] ?? "12h_manha";
+        const date = prev.date || format(new Date(), "yyyy-MM-dd");
+        const suggestedTimes = getDefaultTimes(nextShiftType, date, selectedStaffRule);
+        const previousStartClock = prev.startTime.slice(11, 16);
+        const startTime = previousStartClock ? `${date}T${previousStartClock}` : suggestedTimes.startTime;
+        const durationHours = getShiftDurationHours(nextShiftType, selectedStaffRule);
+        return {
+          ...prev,
+          shiftType: nextShiftType,
+          date,
+          startTime,
+          endTime: durationHours
+            ? (addHoursToDateTimeInput(startTime, durationHours) ?? suggestedTimes.endTime)
+            : suggestedTimes.endTime,
+        };
+      });
     }
-  }, [availableShiftTypes, form.shiftType]);
+  }, [availableShiftTypes, form.shiftType, selectedStaffRule]);
 
   useEffect(() => {
     if (!isCaregiver) return;
@@ -373,9 +438,7 @@ export default function Escalas() {
 
   const createShiftMutation = useMutation({
     mutationFn: async () => {
-      const times = form.shiftType !== "avulso"
-        ? getDefaultTimes(form.shiftType, form.date)
-        : { startTime: form.startTime, endTime: form.endTime };
+      const times = getShiftTimesForSubmit(form);
       const parsedPayableAmount = parsePayableAmountInput(form.payableAmount);
       if (form.payableAmount.trim() && parsedPayableAmount === null) {
         throw new Error("Valor do plantao invalido. Use apenas numeros (ex.: 300 ou 300,50).");
@@ -406,13 +469,14 @@ export default function Escalas() {
       queryClient.invalidateQueries({ queryKey: ["/api/shift-assignments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/accounts-payable"] });
       setOpenDialog(false);
+      const defaultStaff = selectableStaff.find((member) => String(member.id) === defaultStaffIdForForm);
+      const defaultRule = getShiftProfileRule(defaultStaff?.shift, configuredShiftProfiles);
       setForm({
         staffId: defaultStaffIdForForm,
         residentId: "none",
         shiftType: "12h_manha",
         date: format(new Date(), "yyyy-MM-dd"),
-        startTime: "",
-        endTime: "",
+        ...getDefaultTimes("12h_manha", format(new Date(), "yyyy-MM-dd"), defaultRule),
         notes: "",
         payableAmount: resolveDefaultPayableAmount(defaultStaffIdForForm),
         applyPayableAsDefault: true,
@@ -425,9 +489,7 @@ export default function Escalas() {
 
   const updateShiftMutation = useMutation({
     mutationFn: async (id: number) => {
-      const times = form.shiftType !== "avulso"
-        ? getDefaultTimes(form.shiftType, form.date)
-        : { startTime: form.startTime, endTime: form.endTime };
+      const times = getShiftTimesForSubmit(form);
       const parsedPayableAmount = parsePayableAmountInput(form.payableAmount);
       if (form.payableAmount.trim() && parsedPayableAmount === null) {
         throw new Error("Valor do plantao invalido. Use apenas numeros (ex.: 300 ou 300,50).");
@@ -484,13 +546,14 @@ export default function Escalas() {
       queryClient.invalidateQueries({ queryKey: ["/api/shift-assignments", id, "payable"] });
       setOpenDialog(false);
       setEditingShiftId(null);
+      const defaultStaff = selectableStaff.find((member) => String(member.id) === defaultStaffIdForForm);
+      const defaultRule = getShiftProfileRule(defaultStaff?.shift, configuredShiftProfiles);
       setForm({
         staffId: defaultStaffIdForForm,
         residentId: "none",
         shiftType: "12h_manha",
         date: format(new Date(), "yyyy-MM-dd"),
-        startTime: "",
-        endTime: "",
+        ...getDefaultTimes("12h_manha", format(new Date(), "yyyy-MM-dd"), defaultRule),
         notes: "",
         payableAmount: resolveDefaultPayableAmount(defaultStaffIdForForm),
         applyPayableAsDefault: true,
@@ -543,7 +606,7 @@ export default function Escalas() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           month: selectedMonth,
-          clearGenerated: true,
+          clearGenerated: false,
         }),
       });
       if (!res.ok) {
@@ -741,13 +804,15 @@ export default function Escalas() {
       return;
     }
     setEditingShiftId(null);
+    const date = format(day ?? new Date(), "yyyy-MM-dd");
+    const defaultStaff = selectableStaff.find((member) => String(member.id) === defaultStaffIdForForm);
+    const defaultRule = getShiftProfileRule(defaultStaff?.shift, configuredShiftProfiles);
     setForm({
       staffId: defaultStaffIdForForm,
       residentId: "none",
       shiftType: "12h_manha",
-      date: format(day ?? new Date(), "yyyy-MM-dd"),
-      startTime: "",
-      endTime: "",
+      date,
+      ...getDefaultTimes("12h_manha", date, defaultRule),
       notes: "",
       payableAmount: resolveDefaultPayableAmount(defaultStaffIdForForm),
       applyPayableAsDefault: true,
@@ -1136,11 +1201,35 @@ export default function Escalas() {
               <Select
                 value={form.staffId}
                 onValueChange={(v) =>
-                  setForm((current) => ({
-                    ...current,
-                    staffId: v,
-                    payableAmount: editingShiftId ? current.payableAmount : resolveDefaultPayableAmount(v),
-                  }))}
+                  setForm((current) => {
+                    const nextStaff = selectableStaff.find((member) => String(member.id) === v);
+                    const nextRule = getShiftProfileRule(nextStaff?.shift, configuredShiftProfiles);
+                    const allShiftTypes: ShiftType[] = ["12h_manha", "12h_noite", "24h", "avulso"];
+                    const allowedShiftTypes = nextRule.enabled && nextRule.allowedShiftTypes.length > 0
+                      ? nextRule.allowedShiftTypes.filter((item): item is ShiftType =>
+                        allShiftTypes.includes(item as ShiftType),
+                      )
+                      : allShiftTypes;
+                    const nextShiftType = allowedShiftTypes.includes(current.shiftType)
+                      ? current.shiftType
+                      : (allowedShiftTypes[0] ?? "12h_manha");
+                    const date = current.date || format(new Date(), "yyyy-MM-dd");
+                    const suggestedTimes = getDefaultTimes(nextShiftType, date, nextRule);
+                    const previousStartClock = current.startTime.slice(11, 16);
+                    const startTime = previousStartClock ? `${date}T${previousStartClock}` : suggestedTimes.startTime;
+                    const durationHours = getShiftDurationHours(nextShiftType, nextRule);
+                    return {
+                      ...current,
+                      staffId: v,
+                      shiftType: nextShiftType,
+                      date,
+                      startTime,
+                      endTime: durationHours
+                        ? (addHoursToDateTimeInput(startTime, durationHours) ?? suggestedTimes.endTime)
+                        : suggestedTimes.endTime,
+                      payableAmount: editingShiftId ? current.payableAmount : resolveDefaultPayableAmount(v),
+                    };
+                  })}
                 disabled={isCaregiver}
               >
                 <SelectTrigger className="mt-1.5" data-testid="select-staff">
@@ -1199,7 +1288,15 @@ export default function Escalas() {
                     <button
                       key={key}
                       type="button"
-                      onClick={() => setForm({ ...form, shiftType: key })}
+                      onClick={() => {
+                        const date = form.date || format(new Date(), "yyyy-MM-dd");
+                        setForm({
+                          ...form,
+                          shiftType: key,
+                          date,
+                          ...getDefaultTimes(key, date, selectedStaffRule),
+                        });
+                      }}
                       data-testid={`shift-type-${key}`}
                       className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border text-sm font-medium transition-all text-left
                         ${isSelected
@@ -1210,10 +1307,9 @@ export default function Escalas() {
                       <Icon className="h-4 w-4 shrink-0" />
                       <div>
                         <p className="leading-none">{meta.label}</p>
-                        {key === "12h_manha" && <p className="text-[10px] opacity-70 mt-0.5">07:00 - 19:00</p>}
-                        {key === "12h_noite" && <p className="text-[10px] opacity-70 mt-0.5">19:00 - 07:00</p>}
-                        {key === "24h" && <p className="text-[10px] opacity-70 mt-0.5">07:00 - 07:00</p>}
-                        {key === "avulso" && <p className="text-[10px] opacity-70 mt-0.5">horario livre</p>}
+                        <p className="text-[10px] opacity-70 mt-0.5">
+                          {key === "avulso" ? "horario livre" : "horarios editaveis"}
+                        </p>
                       </div>
                     </button>
                   );
@@ -1221,44 +1317,78 @@ export default function Escalas() {
               </div>
             </div>
 
-            {/* Date (for 12h / 24h) or datetime (for avulso) */}
-            {form.shiftType !== "avulso" ? (
+            {/* Date and editable times */}
+            <div className="space-y-3">
               <div>
                 <Label className="text-sm font-medium">Data do Plantao *</Label>
                 <Input
                   type="date"
                   className="mt-1.5"
                   value={form.date}
-                  onChange={(e) => setForm({ ...form, date: e.target.value })}
+                  onChange={(e) => {
+                    const date = e.target.value;
+                    const suggestedTimes = getDefaultTimes(form.shiftType, date, selectedStaffRule);
+                    const previousStartClock = form.startTime.slice(11, 16);
+                    const startTime = previousStartClock ? `${date}T${previousStartClock}` : suggestedTimes.startTime;
+                    const durationHours = getShiftDurationHours(form.shiftType, selectedStaffRule);
+                    const endTime = durationHours
+                      ? (addHoursToDateTimeInput(startTime, durationHours) ?? suggestedTimes.endTime)
+                      : suggestedTimes.endTime;
+                    setForm({
+                      ...form,
+                      date,
+                      startTime,
+                      endTime,
+                    });
+                  }}
                   data-testid="input-date"
                 />
-                {form.date && (
-                  <p className="text-xs text-muted-foreground mt-1">
-                    {(() => {
-                      const times = getDefaultTimes(form.shiftType, form.date);
-                      return `Das ${times.startTime.split("T")[1]} as ${times.endTime.split("T")[1]} ${form.shiftType !== "12h_manha" ? "(dia seguinte)" : ""}`;
-                    })()}
-                  </p>
-                )}
               </div>
-            ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <Label className="text-sm font-medium">Inicio *</Label>
                   <Input type="datetime-local" className="mt-1.5"
                     value={form.startTime}
-                    onChange={(e) => setForm({ ...form, startTime: e.target.value })}
+                    onChange={(e) => {
+                      const startTime = e.target.value;
+                      const durationHours = getShiftDurationHours(form.shiftType, selectedStaffRule);
+                      setForm({
+                        ...form,
+                        date: startTime.slice(0, 10) || form.date,
+                        startTime,
+                        endTime: durationHours
+                          ? (addHoursToDateTimeInput(startTime, durationHours) ?? form.endTime)
+                          : form.endTime,
+                      });
+                    }}
                     data-testid="input-start-time" />
                 </div>
                 <div>
                   <Label className="text-sm font-medium">Fim *</Label>
                   <Input type="datetime-local" className="mt-1.5"
                     value={form.endTime}
-                    onChange={(e) => setForm({ ...form, endTime: e.target.value })}
+                    onChange={(e) => {
+                      const endTime = e.target.value;
+                      const durationHours = getShiftDurationHours(form.shiftType, selectedStaffRule);
+                      const startTime = durationHours
+                        ? (subtractHoursFromDateTimeInput(endTime, durationHours) ?? form.startTime)
+                        : form.startTime;
+                      setForm({
+                        ...form,
+                        date: startTime.slice(0, 10) || form.date,
+                        startTime,
+                        endTime,
+                      });
+                    }}
                     data-testid="input-end-time" />
                 </div>
               </div>
-            )}
+              <p className="text-xs text-muted-foreground">
+                {getShiftDurationHours(form.shiftType, selectedStaffRule)
+                  ? `Inicio e fim sao editaveis; ao alterar um deles, o outro e recalculado para ${getShiftDurationHours(form.shiftType, selectedStaffRule)}h.`
+                  : "A data preenche uma sugestao pelo tipo selecionado, mas inicio e fim podem ser ajustados manualmente."}
+              </p>
+            </div>
 
             {/* Notes */}
             <div>

@@ -4,6 +4,7 @@ export const MODULE_ROUTE_VALUES = [
   "/prontuario",
   "/staff",
   "/escalas",
+  "/ponto-eletronico",
   "/occurrences",
   "/financeiro",
   "/crm",
@@ -31,16 +32,16 @@ export const APP_ROLE_VALUES = [
 export type AppRole = (typeof APP_ROLE_VALUES)[number];
 
 export const DEFAULT_ROLE_ROUTES: Record<string, ModuleRoute[]> = {
-  admin: ["/", "/residents", "/prontuario", "/staff", "/escalas", "/occurrences", "/financeiro", "/crm", "/environment"],
-  enfermeiro: ["/", "/residents", "/prontuario", "/escalas", "/occurrences"],
-  medico: ["/", "/residents", "/prontuario", "/occurrences"],
-  tecnico_enfermagem: ["/", "/residents", "/prontuario", "/escalas", "/occurrences"],
-  cuidador: ["/", "/residents", "/escalas", "/occurrences"],
-  fisioterapeuta: ["/", "/residents", "/prontuario", "/occurrences"],
-  nutricionista: ["/", "/residents", "/prontuario", "/occurrences"],
-  recepcionista: ["/", "/residents", "/escalas", "/occurrences", "/financeiro"],
-  administrativo: ["/", "/residents", "/escalas", "/occurrences", "/financeiro"],
-  staff: ["/", "/residents", "/occurrences"],
+  admin: ["/", "/residents", "/prontuario", "/staff", "/escalas", "/ponto-eletronico", "/occurrences", "/financeiro", "/crm", "/environment"],
+  enfermeiro: ["/", "/residents", "/prontuario", "/escalas", "/ponto-eletronico", "/occurrences"],
+  medico: ["/", "/residents", "/prontuario", "/ponto-eletronico", "/occurrences"],
+  tecnico_enfermagem: ["/", "/residents", "/prontuario", "/escalas", "/ponto-eletronico", "/occurrences"],
+  cuidador: ["/", "/residents", "/escalas", "/ponto-eletronico", "/occurrences"],
+  fisioterapeuta: ["/", "/residents", "/prontuario", "/ponto-eletronico", "/occurrences"],
+  nutricionista: ["/", "/residents", "/prontuario", "/ponto-eletronico", "/occurrences"],
+  recepcionista: ["/", "/residents", "/escalas", "/ponto-eletronico", "/occurrences", "/financeiro"],
+  administrativo: ["/", "/residents", "/escalas", "/ponto-eletronico", "/occurrences", "/financeiro"],
+  staff: ["/", "/residents", "/ponto-eletronico", "/occurrences"],
 };
 
 export const DEFAULT_ROLE_EDIT_ROUTES: Record<string, ModuleRoute[]> = Object.fromEntries(
@@ -79,6 +80,18 @@ export type CrmKanbanSettings = {
   stages: CrmKanbanStage[];
 };
 
+export type TimeClockSettings = {
+  lateToleranceMinutes: number;
+  overtimeToleranceMinutes: number;
+  breakDurationMinutes: number;
+  breakReminderBeforeMinutes: number;
+  nightStartTime: string;
+  nightEndTime: string;
+  blockCloseWithIncompleteDays: boolean;
+  blockCloseWithAbsences: boolean;
+  blockCloseWithOutOfRangeAttempts: boolean;
+};
+
 type ShiftProfilesSettings = {
   available: string[];
   scheduleConfigurable: string[];
@@ -91,6 +104,7 @@ export type EnvironmentSettings = {
   availableStaffRoles: StaffRoleOption[];
   shiftProfiles: ShiftProfilesSettings;
   crmKanban: CrmKanbanSettings;
+  timeClock: TimeClockSettings;
 };
 
 const allowedRouteSet = new Set<string>(MODULE_ROUTE_VALUES);
@@ -184,7 +198,7 @@ function deriveShiftProfileRule(profile: string): ShiftProfileRule | null {
 
 export const DEFAULT_SHIFT_PROFILES: ShiftProfilesSettings = {
   available: ["flexivel", "12x36", "comercial"],
-  scheduleConfigurable: ["flexivel", "comercial"],
+  scheduleConfigurable: ["flexivel", "12x36", "comercial"],
   rules: {
     flexivel: DEFAULT_SHIFT_PROFILE_RULES.flexivel,
     "12x36": DEFAULT_SHIFT_PROFILE_RULES["12x36"],
@@ -200,6 +214,17 @@ const DEFAULT_CRM_STAGES: CrmKanbanStage[] = [
   { value: "won", label: "Ganho", color: "#10B981" },
   { value: "no_interest", label: "Nao tem interesse", color: "#F97316" },
 ];
+export const DEFAULT_TIME_CLOCK_SETTINGS: TimeClockSettings = {
+  lateToleranceMinutes: 10,
+  overtimeToleranceMinutes: 0,
+  breakDurationMinutes: 60,
+  breakReminderBeforeMinutes: 10,
+  nightStartTime: "22:00",
+  nightEndTime: "05:00",
+  blockCloseWithIncompleteDays: false,
+  blockCloseWithAbsences: false,
+  blockCloseWithOutOfRangeAttempts: false,
+};
 const CRM_STAGE_FALLBACK_COLORS = [
   "#64748B",
   "#0EA5E9",
@@ -213,6 +238,7 @@ const CRM_STAGE_FALLBACK_COLORS = [
   "#EF4444",
 ] as const;
 const CRM_STAGE_COLOR_REGEX = /^#[0-9a-fA-F]{6}$/;
+const TIME_VALUE_REGEX = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 const resolveDefaultCrmStageColor = (stageValue: string, index: number): string => {
   const normalizedStage = toCrmStageKey(stageValue);
@@ -377,8 +403,6 @@ const normalizeShiftProfiles = (value: unknown): EnvironmentSettings["shiftProfi
         .filter((item, index, source) => item.length > 0 && source.indexOf(item) === index)
     : [...DEFAULT_SHIFT_PROFILES.scheduleConfigurable];
 
-  const scheduleConfigurable = scheduleConfigurableRaw.filter((profile) => safeAvailable.includes(profile));
-
   const rawRulesSource = candidate.rules && typeof candidate.rules === "object"
     ? (candidate.rules as Record<string, unknown>)
     : {};
@@ -398,11 +422,22 @@ const normalizeShiftProfiles = (value: unknown): EnvironmentSettings["shiftProfi
     rules[profile] = normalizeShiftProfileRule(normalizedRawRules[profile], defaultRule);
   }
 
+  const fixedRuleProfiles = safeAvailable.filter((profile) => {
+    const rule = rules[profile];
+    return Boolean(rule?.enabled && rule.exactShiftHours && rule.exactShiftHours > 0);
+  });
+  const scheduleConfigurable = Array.from(
+    new Set([
+      ...scheduleConfigurableRaw.filter((profile) => safeAvailable.includes(profile)),
+      ...fixedRuleProfiles,
+    ]),
+  );
+
   return {
     available: safeAvailable,
     scheduleConfigurable: scheduleConfigurable.length > 0
       ? scheduleConfigurable
-      : safeAvailable.filter((profile) => profile !== "12x36"),
+      : safeAvailable,
     rules,
   };
 };
@@ -441,6 +476,64 @@ const normalizeCrmKanban = (value: unknown): CrmKanbanSettings => {
   };
 };
 
+function parseNonNegativeInteger(value: unknown, fallback: number, max: number): number {
+  const parsed = typeof value === "number"
+    ? value
+    : typeof value === "string" && value.trim()
+      ? Number(value.trim().replace(",", "."))
+      : Number.NaN;
+  if (!Number.isFinite(parsed)) return fallback;
+  const normalized = Math.round(parsed);
+  if (normalized < 0) return fallback;
+  return Math.min(normalized, max);
+}
+
+function normalizeTimeValue(value: unknown, fallback: string): string {
+  if (typeof value !== "string") return fallback;
+  const normalized = value.trim();
+  return TIME_VALUE_REGEX.test(normalized) ? normalized : fallback;
+}
+
+const normalizeTimeClockSettings = (value: unknown): TimeClockSettings => {
+  const candidate = value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : {};
+
+  return {
+    lateToleranceMinutes: parseNonNegativeInteger(
+      candidate.lateToleranceMinutes,
+      DEFAULT_TIME_CLOCK_SETTINGS.lateToleranceMinutes,
+      240,
+    ),
+    overtimeToleranceMinutes: parseNonNegativeInteger(
+      candidate.overtimeToleranceMinutes,
+      DEFAULT_TIME_CLOCK_SETTINGS.overtimeToleranceMinutes,
+      240,
+    ),
+    breakDurationMinutes: parseNonNegativeInteger(
+      candidate.breakDurationMinutes,
+      DEFAULT_TIME_CLOCK_SETTINGS.breakDurationMinutes,
+      720,
+    ),
+    breakReminderBeforeMinutes: parseNonNegativeInteger(
+      candidate.breakReminderBeforeMinutes,
+      DEFAULT_TIME_CLOCK_SETTINGS.breakReminderBeforeMinutes,
+      120,
+    ),
+    nightStartTime: normalizeTimeValue(candidate.nightStartTime, DEFAULT_TIME_CLOCK_SETTINGS.nightStartTime),
+    nightEndTime: normalizeTimeValue(candidate.nightEndTime, DEFAULT_TIME_CLOCK_SETTINGS.nightEndTime),
+    blockCloseWithIncompleteDays: typeof candidate.blockCloseWithIncompleteDays === "boolean"
+      ? candidate.blockCloseWithIncompleteDays
+      : DEFAULT_TIME_CLOCK_SETTINGS.blockCloseWithIncompleteDays,
+    blockCloseWithAbsences: typeof candidate.blockCloseWithAbsences === "boolean"
+      ? candidate.blockCloseWithAbsences
+      : DEFAULT_TIME_CLOCK_SETTINGS.blockCloseWithAbsences,
+    blockCloseWithOutOfRangeAttempts: typeof candidate.blockCloseWithOutOfRangeAttempts === "boolean"
+      ? candidate.blockCloseWithOutOfRangeAttempts
+      : DEFAULT_TIME_CLOCK_SETTINGS.blockCloseWithOutOfRangeAttempts,
+  };
+};
+
 const syncStaffRolesWithRoleRoutes = (
   roleRoutes: Record<string, ModuleRoute[]>,
   staffRoles: StaffRoleOption[],
@@ -460,6 +553,7 @@ export const DEFAULT_ENVIRONMENT_SETTINGS: EnvironmentSettings = {
   availableStaffRoles: [],
   shiftProfiles: normalizeShiftProfiles(DEFAULT_SHIFT_PROFILES),
   crmKanban: normalizeCrmKanban(DEFAULT_CRM_STAGES),
+  timeClock: normalizeTimeClockSettings(DEFAULT_TIME_CLOCK_SETTINGS),
 };
 
 const defaultStaffRoles = normalizeStaffRoleOptions(DEFAULT_STAFF_ROLE_OPTIONS);
@@ -498,6 +592,7 @@ export function normalizeEnvironmentSettings(value: unknown): EnvironmentSetting
     availableStaffRoles,
     shiftProfiles: normalizeShiftProfiles(candidate.shiftProfiles),
     crmKanban: normalizeCrmKanban(candidate.crmKanban),
+    timeClock: normalizeTimeClockSettings(candidate.timeClock),
   };
 }
 

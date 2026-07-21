@@ -39,13 +39,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Plus, Pill, Trash2, ClipboardCheck } from "lucide-react";
+import { Plus, Pill, Trash2, ClipboardCheck, Download } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { medicationFormSchema, type MedicationFormInput, type Medication } from "@shared/schema";
 import { z } from "zod";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import { downloadCsv } from "@/lib/csv";
 
 const STATUS_ADMIN: Record<string, { label: string; color: string; bg: string }> = {
   given:   { label: "Administrado", color: "#22C55E", bg: "#DCFCE7" },
@@ -96,6 +97,28 @@ export default function Medications() {
       toast({ title: "Erro ao excluir", variant: "destructive" });
     },
   });
+
+  const exportAdministrationHistory = () => {
+    const rows = administrations.map((adm: any) => {
+      const med = medications?.find((item) => item.id === adm.medicationId);
+      const statusInfo = STATUS_ADMIN[adm.status];
+      return [
+        adm.residentName || med?.residentName || "",
+        med?.name ?? adm.medicationName ?? `Medicamento #${adm.medicationId}`,
+        med?.dosage ?? "",
+        adm.administeredByName || "",
+        adm.administeredAt ? format(new Date(adm.administeredAt), "dd/MM/yyyy HH:mm", { locale: ptBR }) : "",
+        statusInfo?.label ?? adm.status,
+        adm.notes || "",
+      ];
+    });
+
+    downloadCsv(
+      "historico-medicacoes-administradas.csv",
+      ["Residente", "Medicacao", "Dose", "Profissional", "Data/Hora", "Status", "Observacoes"],
+      rows,
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -213,6 +236,19 @@ export default function Medications() {
 
         {/* ADMINISTRATIONS TAB */}
         <TabsContent value="administrations" className="mt-4">
+          <div className="mb-3 flex justify-end">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="gap-2"
+              onClick={exportAdministrationHistory}
+              disabled={administrations.length === 0}
+            >
+              <Download className="h-4 w-4" />
+              Exportar
+            </Button>
+          </div>
           {adminsLoading ? (
             <div className="space-y-3">{[1,2,3].map(i => <div key={i} className="h-16 bg-muted rounded-xl animate-pulse" />)}</div>
           ) : administrations.length === 0 ? (

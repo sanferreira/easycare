@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ChangeEvent } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -19,8 +19,11 @@ import {
 import {
   User, Users, FileText, CheckCircle2, ChevronRight, ChevronLeft,
   UserPlus, Phone, Calendar, Bed, Heart, DollarSign, CreditCard,
+  MapPin,
 } from "lucide-react";
-import { maskCpf, maskPhoneBR } from "@/lib/masks";
+import { digitsOnly, maskCep, maskCpf, maskPhoneBR } from "@/lib/masks";
+import { toDateInputValue } from "@/lib/date";
+import { imageFileToDataUrl } from "@/lib/imageUpload";
 
 // ─── Schemas ────────────────────────────────────────────────────────────────
 
@@ -36,6 +39,15 @@ const step1Schema = z.object({
   allergies: z.string().optional(),
   contactName: z.string().optional(),
   contactPhone: z.string().optional(),
+  photoUrl: z.string().optional(),
+  careType: z.enum(["residential", "home_care"]).default("residential"),
+  cep: z.string().optional(),
+  address: z.string().optional(),
+  addressNumber: z.string().optional(),
+  addressComplement: z.string().optional(),
+  neighborhood: z.string().optional(),
+  city: z.string().optional(),
+  state: z.string().optional(),
 });
 
 const step2Schema = z.object({
@@ -78,6 +90,42 @@ const step3Schema = z.object({
 type Step1Data = z.infer<typeof step1Schema>;
 type Step2Data = z.infer<typeof step2Schema>;
 type Step3Data = z.infer<typeof step3Schema>;
+
+type ViaCepPayload = {
+  cep?: string;
+  logradouro?: string;
+  bairro?: string;
+  localidade?: string;
+  uf?: string;
+  erro?: boolean;
+};
+
+async function fetchAddressByCep(cep: string): Promise<{
+  cep: string;
+  address: string;
+  neighborhood: string;
+  city: string;
+  state: string;
+}> {
+  const normalizedCep = digitsOnly(cep);
+  if (normalizedCep.length !== 8) {
+    throw new Error("Informe um CEP valido com 8 digitos.");
+  }
+
+  const response = await fetch(`https://viacep.com.br/ws/${normalizedCep}/json/`);
+  if (!response.ok) throw new Error("Nao foi possivel consultar o ViaCEP.");
+
+  const data: ViaCepPayload = await response.json();
+  if (data.erro) throw new Error("CEP nao encontrado.");
+
+  return {
+    cep: maskCep(data.cep || normalizedCep),
+    address: data.logradouro || "",
+    neighborhood: data.bairro || "",
+    city: data.localidade || "",
+    state: data.uf || "",
+  };
+}
 
 // ─── Step indicator ─────────────────────────────────────────────────────────
 
@@ -134,6 +182,7 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
   const [step2Data, setStep2Data] = useState<Step2Data | null>(null);
   const [step3Data, setStep3Data] = useState<Step3Data | null>(null);
   const [createdResidentId, setCreatedResidentId] = useState<number | null>(null);
+  const [isProcessingPhoto, setIsProcessingPhoto] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -143,6 +192,7 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
     setStep2Data(null);
     setStep3Data(null);
     setCreatedResidentId(null);
+    setIsProcessingPhoto(false);
   }
 
   function handleClose() {
@@ -159,7 +209,7 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ ...s1, status: "active" }),
+        body: JSON.stringify({ ...s1, photoUrl: s1.photoUrl?.trim() || null, status: "active" }),
       });
       if (!resRes.ok) throw new Error("Erro ao criar residente");
       const resident = await resRes.json();
@@ -222,12 +272,13 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
   // ─── Step 1 ────────────────────────────────────────────────────────────────
 
   function Step1() {
+    const [isLookingUpCep, setIsLookingUpCep] = useState(false);
     const form = useForm<Step1Data>({
       resolver: zodResolver(step1Schema),
       defaultValues: step1Data || {
         name: "",
         birthDate: "",
-        admissionDate: new Date().toISOString().split("T")[0],
+        admissionDate: toDateInputValue(),
         gender: "",
         nationality: "Brasileiro(a)",
         roomNumber: "",
@@ -235,17 +286,114 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
         allergies: "",
         contactName: "",
         contactPhone: "",
+        photoUrl: "",
+        careType: "residential",
+        cep: "",
+        address: "",
+        addressNumber: "",
+        addressComplement: "",
+        neighborhood: "",
+        city: "",
+        state: "",
       },
     });
+    const photoPreview = form.watch("photoUrl");
+
+    async function handleLookupCep() {
+      const currentCep = form.getValues("cep");
+      if (digitsOnly(currentCep || "").length !== 8) {
+        form.setError("cep", { type: "manual", message: "Informe um CEP valido." });
+        return;
+      }
+
+      setIsLookingUpCep(true);
+      try {
+        const address = await fetchAddressByCep(currentCep || "");
+        form.setValue("cep", address.cep, { shouldDirty: true, shouldValidate: true });
+        form.setValue("address", address.address, { shouldDirty: true, shouldValidate: true });
+        form.setValue("neighborhood", address.neighborhood, { shouldDirty: true, shouldValidate: true });
+        form.setValue("city", address.city, { shouldDirty: true, shouldValidate: true });
+        form.setValue("state", address.state, { shouldDirty: true, shouldValidate: true });
+        toast({ title: "Endereco preenchido pelo CEP." });
+      } catch (error) {
+        toast({
+          variant: "destructive",
+          title: error instanceof Error ? error.message : "Nao foi possivel buscar o CEP.",
+        });
+      } finally {
+        setIsLookingUpCep(false);
+      }
+    }
+
+    async function handlePhotoSelection(event: ChangeEvent<HTMLInputElement>) {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      setIsProcessingPhoto(true);
+      try {
+        const dataUrl = await imageFileToDataUrl(file);
+        form.setValue("photoUrl", dataUrl, { shouldDirty: true, shouldValidate: true });
+      } catch (error) {
+        toast({
+          variant: "destructive",
+          title: error instanceof Error ? error.message : "Nao foi possivel carregar a foto.",
+        });
+      } finally {
+        setIsProcessingPhoto(false);
+        event.target.value = "";
+      }
+    }
 
     function onSubmit(data: Step1Data) {
-      setStep1Data(data);
+      setStep1Data({
+        ...data,
+        careType: data.careType || "residential",
+        cep: data.cep?.trim() || undefined,
+        address: data.address?.trim() || undefined,
+        addressNumber: data.addressNumber?.trim() || undefined,
+        addressComplement: data.addressComplement?.trim() || undefined,
+        neighborhood: data.neighborhood?.trim() || undefined,
+        city: data.city?.trim() || undefined,
+        state: data.state?.trim()?.toUpperCase() || undefined,
+      });
       setStep(1);
     }
 
     return (
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+          <div className="rounded-xl border border-border p-4 space-y-3">
+            <p className="text-sm font-medium text-foreground">Foto do residente</p>
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+              <div className="h-20 w-20 rounded-xl border border-border overflow-hidden bg-muted flex items-center justify-center shrink-0">
+                {photoPreview ? (
+                  <img src={photoPreview} alt="Foto do residente" className="h-full w-full object-cover" />
+                ) : (
+                  <div className="text-2xl font-semibold text-muted-foreground">
+                    {(form.watch("name") || "?").charAt(0)}
+                  </div>
+                )}
+              </div>
+              <div className="space-y-2">
+                <Input type="file" accept="image/*" onChange={handlePhotoSelection} data-testid="wizard-photo" />
+                <div className="flex items-center gap-2">
+                  {photoPreview && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => form.setValue("photoUrl", "", { shouldDirty: true, shouldValidate: true })}
+                    >
+                      Remover foto
+                    </Button>
+                  )}
+                  {isProcessingPhoto && (
+                    <span className="text-xs text-muted-foreground">Processando imagem...</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <FormField control={form.control} name="name" render={({ field }) => (
               <FormItem className="sm:col-span-2">
@@ -329,6 +477,90 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
                 </FormControl>
               </FormItem>
             )} />
+            <div className="sm:col-span-2 rounded-xl border border-border p-4 space-y-4">
+              <div className="flex items-center gap-2">
+                <MapPin className="h-4 w-4 text-primary" />
+                <p className="text-sm font-medium text-foreground">Endereco e atendimento</p>
+              </div>
+              <FormField control={form.control} name="careType" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Tipo de atendimento</FormLabel>
+                  <Select onValueChange={field.onChange} value={field.value ?? "residential"}>
+                    <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
+                    <SelectContent>
+                      <SelectItem value="residential">Instituicao</SelectItem>
+                      <SelectItem value="home_care">Home Care</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </FormItem>
+              )} />
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-[180px_1fr]">
+                <FormField control={form.control} name="cep" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>CEP</FormLabel>
+                    <FormControl>
+                      <div className="flex gap-2">
+                        <Input
+                          {...field}
+                          maxLength={9}
+                          value={field.value ?? ""}
+                          onChange={(event) => field.onChange(maskCep(event.target.value))}
+                        />
+                        <Button type="button" variant="outline" disabled={isLookingUpCep} onClick={handleLookupCep}>
+                          Buscar
+                        </Button>
+                      </div>
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+                <FormField control={form.control} name="address" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Logradouro</FormLabel>
+                    <FormControl><Input {...field} value={field.value ?? ""} /></FormControl>
+                  </FormItem>
+                )} />
+              </div>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-[140px_1fr_1fr_96px]">
+                <FormField control={form.control} name="addressNumber" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Numero</FormLabel>
+                    <FormControl><Input {...field} value={field.value ?? ""} /></FormControl>
+                  </FormItem>
+                )} />
+                <FormField control={form.control} name="addressComplement" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Complemento</FormLabel>
+                    <FormControl><Input {...field} value={field.value ?? ""} /></FormControl>
+                  </FormItem>
+                )} />
+                <FormField control={form.control} name="neighborhood" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Bairro</FormLabel>
+                    <FormControl><Input {...field} value={field.value ?? ""} /></FormControl>
+                  </FormItem>
+                )} />
+                <FormField control={form.control} name="state" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>UF</FormLabel>
+                    <FormControl>
+                      <Input
+                        {...field}
+                        maxLength={2}
+                        value={field.value ?? ""}
+                        onChange={(event) => field.onChange(event.target.value.toUpperCase())}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )} />
+              </div>
+              <FormField control={form.control} name="city" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Cidade</FormLabel>
+                  <FormControl><Input {...field} value={field.value ?? ""} /></FormControl>
+                </FormItem>
+              )} />
+            </div>
             <FormField control={form.control} name="healthNotes" render={({ field }) => (
               <FormItem className="sm:col-span-2">
                 <FormLabel>Observações de saúde</FormLabel>
@@ -494,7 +726,7 @@ export default function AdmissaoWizard({ open, onOpenChange }: AdmissaoWizardPro
         skip: false,
         plan: undefined,
         monthlyValue: undefined,
-        startDate: step1Data?.admissionDate || new Date().toISOString().split("T")[0],
+        startDate: step1Data?.admissionDate || toDateInputValue(),
         paymentDay: 5,
         paymentMethod: "",
         notes: "",

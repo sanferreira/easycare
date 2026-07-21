@@ -5,9 +5,10 @@ import { z } from "zod";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
-import type { SessionUser } from "@shared/schema";
+import type { InsertNotification, Medication, SessionUser } from "@shared/schema";
 import { verifyPassword } from "./security";
 import { pool } from "./db";
+import { getWebPushPublicKey, isWebPushConfigured, sendWebPushNotifications } from "./web-push";
 import {
   DEFAULT_ENVIRONMENT_SETTINGS,
   getShiftProfileRule,
@@ -18,7 +19,9 @@ import {
   type ModulePermissionAction,
   type ModuleRoute,
   type ShiftAssignmentType,
+  type TimeClockSettings,
 } from "@shared/environment";
+import { NOTIFICATION_TYPES } from "@shared/notifications";
 
 const SessionStore = connectPgSimple(session);
 
@@ -52,6 +55,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     store: new SessionStore({
       pool,
       tableName: "user_sessions",
+      createTableIfMissing: true,
       pruneSessionInterval: 60 * 15,
     }),
     cookie: {
@@ -134,6 +138,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     { pattern: /^\/api\/environment-settings(?:\/|$)/, route: "/environment" },
     { pattern: /^\/api\/stats(?:\/|$)/, route: "/" },
     { pattern: /^\/api\/residents\/[^/]+\/family(?:\/|$)/, route: "/prontuario" },
+    { pattern: /^\/api\/residents\/[^/]+\/documents(?:\/|$)/, route: "/prontuario" },
+    { pattern: /^\/api\/patient-documents(?:\/|$)/, route: "/prontuario" },
     { pattern: /^\/api\/residents\/[^/]+\/medical-records(?:\/|$)/, route: "/prontuario" },
     { pattern: /^\/api\/residents\/[^/]+\/comorbidities(?:\/|$)/, route: "/prontuario" },
     { pattern: /^\/api\/medical-records(?:\/|$)/, route: "/prontuario" },
@@ -144,6 +150,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     { pattern: /^\/api\/medications(?:\/|$)/, route: "/prontuario" },
     { pattern: /^\/api\/staff(?:\/|$)/, route: "/staff" },
     { pattern: /^\/api\/shift-assignments(?:\/|$)/, route: "/escalas" },
+    { pattern: /^\/api\/time-clock(?:\/|$)/, route: "/ponto-eletronico" },
     { pattern: /^\/api\/contracts(?:\/|$)/, route: "/financeiro" },
     { pattern: /^\/api\/monthly-fees(?:\/|$)/, route: "/financeiro" },
     { pattern: /^\/api\/accounts-payable(?:\/|$)/, route: "/financeiro" },
@@ -321,6 +328,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   const MEDICATION_ROLES = ["admin", "enfermeiro", "medico", "tecnico_enfermagem"];
   // Papéis com acesso ao CRM
   const CRM_ROLES = ["admin"];
+  // Papéis com acesso ao ponto eletrônico
+  const TIME_CLOCK_ROLES = [
+    "admin",
+    "enfermeiro",
+    "medico",
+    "tecnico_enfermagem",
+    "cuidador",
+    "fisioterapeuta",
+    "nutricionista",
+    "recepcionista",
+    "administrativo",
+    "staff",
+  ];
 
   const getOrgId = (req: Request): number => {
     const orgId = req.session.user?.organizationId;
@@ -362,11 +382,179 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "");
 
+  const booleanQuerySchema = z.preprocess((value) => {
+    if (value === undefined) return undefined;
+    if (value === true || value === "true") return true;
+    if (value === false || value === "false") return false;
+    return value;
+  }, z.boolean().optional());
+  const notificationQuerySchema = z.object({
+    unreadOnly: booleanQuerySchema.default(false),
+    limit: z.coerce.number().int().min(1).max(100).optional().default(30),
+  });
+  const browserPushSubscriptionSchema = z.object({
+    endpoint: z.string().trim().url().max(2048),
+    expirationTime: z.number().nullable().optional(),
+    keys: z.object({
+      p256dh: z.string().trim().min(20).max(500),
+      auth: z.string().trim().min(10).max(500),
+    }),
+  });
+  const browserPushUnsubscribeSchema = z.object({
+    endpoint: z.string().trim().url().max(2048),
+  });
+  type InternalNotificationPayload = {
+    userId?: number | null;
+    staffId?: number | null;
+    type: string;
+    severity?: string;
+    sourceModule?: string;
+    title: string;
+    message: string;
+    actionUrl?: string | null;
+    entityType?: string | null;
+    entityId?: number | null;
+    dedupeKey?: string | null;
+    metadata?: unknown;
+    scheduledFor?: Date | null;
+  };
+  const buildInternalNotification = (
+    orgId: number,
+    payload: InternalNotificationPayload,
+  ): InsertNotification => ({
+    organizationId: orgId,
+    userId: payload.userId ?? null,
+    staffId: payload.staffId ?? null,
+    type: payload.type,
+    severity: payload.severity ?? "info",
+    sourceModule: payload.sourceModule ?? "system",
+    title: payload.title,
+    message: payload.message,
+    actionUrl: payload.actionUrl ?? null,
+    entityType: payload.entityType ?? null,
+    entityId: payload.entityId ?? null,
+    dedupeKey: payload.dedupeKey ?? null,
+    metadata: payload.metadata === undefined ? null : JSON.stringify(payload.metadata),
+    scheduledFor: payload.scheduledFor ?? new Date(),
+    deliveredAt: new Date(),
+    readAt: null,
+    cancelledAt: null,
+  });
+  const safeCreateInternalNotifications = async (
+    orgId: number,
+    payloads: InternalNotificationPayload[],
+  ) => {
+    const items = payloads
+      .filter((payload) => Number.isInteger(payload.userId) && Number(payload.userId) > 0)
+      .map((payload) => buildInternalNotification(orgId, payload));
+    if (items.length === 0) return;
+    try {
+      const created = await storage.createNotifications(items);
+      void sendWebPushNotifications(created).catch((error) => {
+        console.error("[web-push] erro ao enviar notificacoes recem-criadas", error);
+      });
+    } catch (error) {
+      console.error("[notifications] erro ao criar notificacoes internas", error);
+    }
+  };
+  const notifyUsers = async (
+    orgId: number,
+    userIds: Array<number | null | undefined>,
+    payload: Omit<InternalNotificationPayload, "userId">,
+  ) => {
+    const uniqueUserIds = Array.from(new Set(
+      userIds.filter((userId): userId is number => Number.isInteger(userId) && Number(userId) > 0),
+    ));
+    await safeCreateInternalNotifications(
+      orgId,
+      uniqueUserIds.map((userId) => ({ ...payload, userId })),
+    );
+  };
+  const notifyOrganizationRoles = async (
+    orgId: number,
+    roles: string[],
+    payload: Omit<InternalNotificationPayload, "userId">,
+  ) => {
+    const organizationUsers = await storage.getUsersByOrganization(orgId);
+    const roleSet = new Set(roles);
+    await notifyUsers(
+      orgId,
+      organizationUsers
+        .filter((user) => user.active !== false && roleSet.has(user.role))
+        .map((user) => user.id),
+      payload,
+    );
+  };
+  const resolveNotificationUserIdsForStaff = async (orgId: number, staffId: number) => {
+    const staffMember = await storage.getStaffMember(orgId, staffId);
+    if (!staffMember) return [];
+    const organizationUsers = await storage.getUsersByOrganization(orgId);
+    const normalizedStaffName = normalizeComparableText(staffMember.name);
+    return Array.from(new Set(
+      organizationUsers
+        .filter((user) => user.active !== false)
+        .filter((user) =>
+          user.id === staffMember.portalUserId
+          || normalizeComparableText(user.name) === normalizedStaffName,
+        )
+        .map((user) => user.id),
+    ));
+  };
+  const notifyStaffUsers = async (
+    orgId: number,
+    staffId: number,
+    payload: Omit<InternalNotificationPayload, "userId">,
+  ) => {
+    await notifyUsers(orgId, await resolveNotificationUserIdsForStaff(orgId, staffId), payload);
+  };
+  const formatAppNotificationDateTime = (date: Date) =>
+    date.toLocaleString("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  const notifyMedicationRoles = async (
+    orgId: number,
+    payload: Omit<InternalNotificationPayload, "userId" | "sourceModule">,
+  ) => {
+    await notifyOrganizationRoles(orgId, MEDICATION_ROLES, {
+      ...payload,
+      sourceModule: "medications",
+      actionUrl: payload.actionUrl ?? "/prontuario",
+    });
+  };
+  const buildMedicationActionUrl = (input: {
+    residentId?: number | null;
+    medicationId?: number | null;
+    scheduledFor?: Date | string | null;
+    medicationTab?: "medicacoes" | "agenda" | "historico";
+  }) => {
+    const params = new URLSearchParams({ tab: "medications" });
+    params.set("medicationTab", input.medicationTab ?? "agenda");
+    if (input.residentId) params.set("residentId", String(input.residentId));
+    if (input.medicationId) params.set("medicationId", String(input.medicationId));
+    if (input.scheduledFor) {
+      const scheduledFor = input.scheduledFor instanceof Date
+        ? input.scheduledFor.toISOString()
+        : input.scheduledFor;
+      params.set("scheduledFor", scheduledFor);
+    }
+    return `/prontuario?${params.toString()}`;
+  };
+
   const resolveLinkedStaffForSessionUser = async (
     orgId: number,
     user: SessionUser | undefined,
   ) => {
     if (!user) return null;
+    if (user.id) {
+      const staffMembers = await storage.getStaff(orgId);
+      const linkedByPortalUserId = staffMembers.find((member) => member.portalUserId === user.id);
+      if (linkedByPortalUserId) return linkedByPortalUserId;
+    }
+
     const normalizedUserName = normalizeComparableText(user.name);
     if (!normalizedUserName) return null;
 
@@ -508,6 +696,167 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   });
   app.get("/api/auth/me", (req, res) => { res.json(req.session.user || null); });
+
+  // ===== NOTIFICATIONS =====
+  app.get("/api/notifications", requireAuth, async (req, res, next) => {
+    try {
+      const sessionUser = req.session.user;
+      if (!sessionUser?.id || sessionUser.isSuperAdmin || !sessionUser.organizationId) {
+        return res.json({ notifications: [], unreadCount: 0 });
+      }
+      const input = notificationQuerySchema.parse(req.query);
+      const [items, unreadCount] = await Promise.all([
+        storage.getNotifications(sessionUser.organizationId, sessionUser.id, {
+          unreadOnly: input.unreadOnly,
+          limit: input.limit,
+        }),
+        storage.countUnreadNotifications(sessionUser.organizationId, sessionUser.id),
+      ]);
+      res.json({ notifications: items, unreadCount });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Filtro invalido." });
+      }
+      next(error);
+    }
+  });
+
+  app.patch("/api/notifications/read-all", requireAuth, async (req, res, next) => {
+    try {
+      const sessionUser = req.session.user;
+      if (!sessionUser?.id || sessionUser.isSuperAdmin || !sessionUser.organizationId) {
+        return res.json({ updated: 0 });
+      }
+      const updated = await storage.markAllNotificationsRead(sessionUser.organizationId, sessionUser.id);
+      res.json({ updated });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch("/api/notifications/:id/read", requireAuth, async (req, res, next) => {
+    try {
+      const sessionUser = req.session.user;
+      if (!sessionUser?.id || sessionUser.isSuperAdmin || !sessionUser.organizationId) {
+        return res.status(404).json({ message: "Notificacao nao encontrada." });
+      }
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id <= 0) {
+        return res.status(400).json({ message: "Notificacao invalida." });
+      }
+      const updated = await storage.markNotificationRead(sessionUser.organizationId, sessionUser.id, id);
+      if (!updated) return res.status(404).json({ message: "Notificacao nao encontrada." });
+      res.json(updated);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ===== WEB PUSH NOTIFICATIONS =====
+  app.get("/api/push-notifications/public-key", requireAuth, (req, res) => {
+    const sessionUser = req.session.user;
+    if (!sessionUser?.id || sessionUser.isSuperAdmin || !sessionUser.organizationId) {
+      return res.json({ enabled: false, publicKey: null });
+    }
+
+    const publicKey = getWebPushPublicKey();
+    res.json({
+      enabled: isWebPushConfigured(),
+      publicKey: publicKey || null,
+    });
+  });
+
+  app.post("/api/push-notifications/subscriptions", requireAuth, async (req, res, next) => {
+    try {
+      const sessionUser = req.session.user;
+      if (!sessionUser?.id || sessionUser.isSuperAdmin || !sessionUser.organizationId) {
+        return res.status(403).json({ message: "Usuario sem organizacao para notificacoes." });
+      }
+      if (!isWebPushConfigured()) {
+        return res.status(503).json({ message: "Web Push nao configurado no servidor." });
+      }
+
+      const subscription = browserPushSubscriptionSchema.parse(req.body?.subscription ?? req.body);
+      const saved = await storage.upsertPushSubscription({
+        organizationId: sessionUser.organizationId,
+        userId: sessionUser.id,
+        endpoint: subscription.endpoint,
+        p256dh: subscription.keys.p256dh,
+        auth: subscription.keys.auth,
+        userAgent: req.get("user-agent") ?? null,
+        active: true,
+        lastSeenAt: new Date(),
+        updatedAt: new Date(),
+      });
+      res.status(201).json({
+        id: saved.id,
+        enabled: saved.active !== false,
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Inscricao push invalida." });
+      }
+      next(error);
+    }
+  });
+
+  app.post("/api/push-notifications/test", requireAuth, async (req, res, next) => {
+    try {
+      const sessionUser = req.session.user;
+      if (!sessionUser?.id || sessionUser.isSuperAdmin || !sessionUser.organizationId) {
+        return res.status(403).json({ message: "Usuario sem organizacao para notificacoes." });
+      }
+      if (!isWebPushConfigured()) {
+        return res.status(503).json({ message: "Web Push nao configurado no servidor." });
+      }
+
+      const subscriptions = await storage.getActivePushSubscriptions(sessionUser.organizationId, sessionUser.id);
+      if (subscriptions.length === 0) {
+        return res.status(400).json({ message: "Nenhuma inscricao Push ativa para este usuario neste dispositivo." });
+      }
+
+      const created = await storage.createNotification(buildInternalNotification(sessionUser.organizationId, {
+        userId: sessionUser.id,
+        type: "push_test",
+        severity: "info",
+        sourceModule: "notifications",
+        title: "Teste de notificacao EasyCare",
+        message: "Se esta mensagem apareceu no celular, o Push deste dispositivo esta funcionando.",
+        actionUrl: "/notificacoes",
+      }));
+
+      await sendWebPushNotifications([created]);
+      res.json({
+        success: true,
+        notificationId: created.id,
+        subscriptions: subscriptions.length,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/push-notifications/subscriptions", requireAuth, async (req, res, next) => {
+    try {
+      const sessionUser = req.session.user;
+      if (!sessionUser?.id || sessionUser.isSuperAdmin || !sessionUser.organizationId) {
+        return res.json({ updated: 0 });
+      }
+
+      const input = browserPushUnsubscribeSchema.parse(req.body);
+      const updated = await storage.deactivatePushSubscription(
+        sessionUser.organizationId,
+        sessionUser.id,
+        input.endpoint,
+      );
+      res.json({ updated });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Inscricao push invalida." });
+      }
+      next(error);
+    }
+  });
 
   // ===== FAMILY PORTAL AUTH =====
   const requireFamilyAuth = async (req: Request, res: Response, next: NextFunction) => {
@@ -887,6 +1236,62 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.status(204).send();
   });
 
+  // ===== PATIENT DOCUMENTS =====
+  const patientDocumentInputSchema = z.object({
+    title: z.string().trim().min(2, "Titulo obrigatorio.").max(160),
+    subtitle: z.string().trim().max(240).optional().nullable(),
+    category: z.string().trim().max(60).optional().nullable(),
+    fileName: z.string().trim().min(1, "Arquivo obrigatorio.").max(255),
+    fileType: z.string().trim().max(120).optional().nullable(),
+    fileSize: z.coerce.number().int().min(1).max(8 * 1024 * 1024).optional().nullable(),
+    fileData: z.string().max(12_000_000).refine((value) => value.startsWith("data:"), "Arquivo invalido."),
+  });
+
+  app.get("/api/residents/:residentId/documents", requireAuth, requireRole(...CLINICAL_ROLES), async (req, res) => {
+    const orgId = getOrgId(req);
+    const residentId = Number(req.params.residentId);
+    const resident = await storage.getResident(orgId, residentId);
+    if (!resident) return res.status(404).json({ message: "Residente nao encontrado." });
+    res.json(await storage.getPatientDocuments(orgId, residentId));
+  });
+
+  app.post("/api/residents/:residentId/documents", requireAuth, requireRole(...CLINICAL_ROLES), async (req, res) => {
+    try {
+      const orgId = getOrgId(req);
+      const residentId = Number(req.params.residentId);
+      const resident = await storage.getResident(orgId, residentId);
+      if (!resident) return res.status(404).json({ message: "Residente nao encontrado." });
+
+      const input = patientDocumentInputSchema.parse(req.body);
+      const document = await storage.createPatientDocument({
+        organizationId: orgId,
+        residentId,
+        title: input.title,
+        subtitle: input.subtitle?.trim() || null,
+        category: input.category?.trim() || "document",
+        fileName: input.fileName,
+        fileType: input.fileType?.trim() || null,
+        fileSize: input.fileSize ?? null,
+        fileData: input.fileData,
+        createdByUserId: req.session.user?.id ?? null,
+      });
+      res.status(201).json(document);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Documento invalido." });
+      }
+      res.status(400).json({
+        message: error instanceof Error ? error.message : "Erro ao salvar documento.",
+      });
+    }
+  });
+
+  app.delete("/api/patient-documents/:id", requireAuth, requireRole(...CLINICAL_ROLES), async (req, res) => {
+    const orgId = getOrgId(req);
+    await storage.deletePatientDocument(orgId, Number(req.params.id));
+    res.status(204).send();
+  });
+
   // ===== COMORBIDITIES =====
   app.get("/api/residents/:residentId/comorbidities", requireAuth, async (req, res) => {
     const orgId = getOrgId(req);
@@ -914,7 +1319,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/residents/:residentId/medical-records", requireAuth, requireRole(...CLINICAL_ROLES), async (req, res) => {
     const orgId = getOrgId(req);
     const authorId = req.session.user?.id;
-    res.status(201).json(await storage.createMedicalRecord({ ...req.body, organizationId: orgId, residentId: Number(req.params.residentId), authorId }));
+    const rawStaffId = req.body?.staffId;
+    const staffId = rawStaffId === undefined || rawStaffId === null || rawStaffId === ""
+      ? null
+      : Number(rawStaffId);
+    if (staffId !== null && (!Number.isInteger(staffId) || staffId <= 0)) {
+      return res.status(400).json({ message: "Profissional invalido." });
+    }
+    if (staffId !== null) {
+      const staffMember = await storage.getStaffMember(orgId, staffId);
+      if (!staffMember) return res.status(400).json({ message: "Profissional invalido." });
+    }
+    res.status(201).json(await storage.createMedicalRecord({
+      ...req.body,
+      staffId,
+      organizationId: orgId,
+      residentId: Number(req.params.residentId),
+      authorId,
+    }));
   });
   app.put("/api/medical-records/:id", requireAuth, requireRole(...CLINICAL_ROLES), async (req, res) => {
     const orgId = getOrgId(req);
@@ -1117,6 +1539,56 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   const buildMedicationDoseKey = (medicationId: number, scheduledFor: Date): string => {
     const minuteBucket = Math.round(scheduledFor.getTime() / MINUTE_IN_MS);
     return `${medicationId}:${minuteBucket}`;
+  };
+  const medicationDoseAttentionView = (status: "given" | "skipped" | "refused" | "late") => {
+    if (status === "refused") {
+      return { title: "Dose recusada", label: "recusada", severity: "error" };
+    }
+    if (status === "skipped") {
+      return { title: "Dose nao administrada", label: "nao administrada", severity: "warning" };
+    }
+    if (status === "late") {
+      return { title: "Dose administrada com atraso", label: "marcada como atrasada", severity: "warning" };
+    }
+    return null;
+  };
+  const notifyMedicationDoseAttention = async (input: {
+    orgId: number;
+    medication: Medication & { residentName?: string | null };
+    scheduledFor: Date | null;
+    status: "given" | "skipped" | "refused" | "late";
+    notes?: string | null;
+  }) => {
+    const view = medicationDoseAttentionView(input.status);
+    if (!view) return;
+    const scheduledLabel = input.scheduledFor
+      ? ` prevista para ${formatAppNotificationDateTime(input.scheduledFor)}`
+      : "";
+    const residentLabel = input.medication.residentName || "Residente";
+    await notifyMedicationRoles(input.orgId, {
+      staffId: null,
+      type: NOTIFICATION_TYPES.medicationDoseAttention,
+      severity: view.severity,
+      title: view.title,
+      message: `${residentLabel}: ${input.medication.name} ${input.medication.dosage}${scheduledLabel} foi ${view.label}.${input.notes ? ` Obs: ${input.notes}` : ""}`,
+      actionUrl: buildMedicationActionUrl({
+        residentId: input.medication.residentId,
+        medicationId: input.medication.id,
+        scheduledFor: input.scheduledFor,
+        medicationTab: input.scheduledFor ? "agenda" : "historico",
+      }),
+      entityType: "medication_dose",
+      entityId: input.medication.id,
+      dedupeKey: input.scheduledFor
+        ? `medication-dose:${input.medication.id}:${buildMedicationDoseKey(input.medication.id, input.scheduledFor)}:${input.status}`
+        : `medication-dose:${input.medication.id}:manual:${input.status}:${Date.now()}`,
+      metadata: {
+        medicationId: input.medication.id,
+        residentId: input.medication.residentId,
+        scheduledFor: input.scheduledFor?.toISOString() ?? null,
+        status: input.status,
+      },
+    });
   };
 
   app.get("/api/residents/:residentId/medication-dose-schedule", requireAuth, async (req, res, next) => {
@@ -1438,6 +1910,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         status: input.status,
         notes: input.notes?.trim() || null,
       });
+      await notifyMedicationDoseAttention({
+        orgId,
+        medication,
+        scheduledFor: input.scheduledFor ?? null,
+        status: input.status,
+        notes: input.notes?.trim() || null,
+      });
 
       res.status(201).json(created);
     } catch (error) {
@@ -1494,6 +1973,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         staffId: effectiveStaffId,
         scheduledFor: input.scheduledFor,
         administeredAt: input.administeredAt ?? new Date(),
+        status: input.status,
+        notes: input.notes?.trim() || null,
+      });
+      await notifyMedicationDoseAttention({
+        orgId,
+        medication,
+        scheduledFor: input.scheduledFor,
         status: input.status,
         notes: input.notes?.trim() || null,
       });
@@ -1801,7 +2287,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   const generateMonthInputSchema = z.object({
     month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Mes invalido. Use YYYY-MM."),
     staffId: z.number().optional(),
-    clearGenerated: z.boolean().optional().default(true),
+    clearGenerated: z.boolean().optional().default(false),
   });
   class ShiftValidationError extends Error {}
 
@@ -2552,10 +3038,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const hasRecurringSchedule = hasWeeklyRule || hasOddRule || hasEvenRule;
 
         const shiftRule = getShiftProfileRule(member.shift, environmentSettings.shiftProfiles);
-        const canGenerateFromProfileRule =
-          !hasRecurringSchedule
-          && shiftRule.enabled
-          && Boolean(shiftRule.exactShiftHours && shiftRule.exactShiftHours > 0);
+        // Sem agenda recorrente configurada, nao inferimos mais 07:00/19:00 pelo perfil.
+        // O perfil valida duracao/descanso; os horarios reais precisam vir do colaborador ou da escala manual.
+        const canGenerateFromProfileRule = false;
         const preferredProfileShiftType =
           schedule.profileCycleStart
           && shiftRule.allowedShiftTypes.includes(schedule.profileCycleStart)
@@ -2981,6 +3466,1718 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
     await storage.deleteShiftAssignment(orgId, shiftId);
     res.status(204).send();
+  });
+
+  // ===== TIME CLOCK / PONTO ELETRONICO =====
+  const TIME_CLOCK_EVENT_TYPES = ["clock_in", "break_start", "break_end", "clock_out"] as const;
+  type TimeClockEventType = (typeof TIME_CLOCK_EVENT_TYPES)[number];
+  type TimeClockState = {
+    state: "closed" | "working" | "on_break";
+    nextActions: TimeClockEventType[];
+    message?: string;
+  };
+  const TIME_CLOCK_EVENT_LABELS: Record<TimeClockEventType, string> = {
+    clock_in: "Entrada",
+    break_start: "Pausa",
+    break_end: "Retorno",
+    clock_out: "Saida",
+  };
+  const BREAK_NOTIFICATION_TYPES = ["time_clock_break_reminder", "time_clock_break_overdue"] as const;
+  const CLOCK_OUT_NOTIFICATION_TYPES = ["time_clock_clock_out_missing"] as const;
+  const formatNotificationDateTime = (date: Date) =>
+    date.toLocaleString("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  const formatNotificationTime = (date: Date) =>
+    date.toLocaleTimeString("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  const addMinutesToDate = (date: Date, minutes: number) =>
+    new Date(date.getTime() + minutes * 60 * 1000);
+  const buildTimeClockActionUrl = (input: {
+    tab?: "closure" | "mirror" | "log";
+    entryId?: number | null;
+    adjustmentId?: number | null;
+    staffId?: number | null;
+    month?: string | null;
+  } = {}) => {
+    const params = new URLSearchParams({ tab: input.tab ?? "log" });
+    if (input.entryId) params.set("entryId", String(input.entryId));
+    if (input.adjustmentId) params.set("adjustmentId", String(input.adjustmentId));
+    if (input.staffId) params.set("staffId", String(input.staffId));
+    if (input.month) params.set("month", input.month);
+    return `/ponto-eletronico?${params.toString()}`;
+  };
+  const buildPunchNotificationMessage = (input: {
+    eventType: TimeClockEventType;
+    eventTime: Date;
+    requiresApproval: boolean;
+    settings?: TimeClockSettings | null;
+  }) => {
+    const eventTimeLabel = formatNotificationTime(input.eventTime);
+    const approvalSuffix = input.requiresApproval ? " Esta batida foi enviada para aprovacao do gestor." : "";
+
+    if (input.eventType === "break_start" && input.settings) {
+      const durationMinutes = Math.max(0, Math.round(input.settings.breakDurationMinutes));
+      const reminderBeforeMinutes = Math.max(0, Math.round(input.settings.breakReminderBeforeMinutes));
+      const expectedEnd = addMinutesToDate(input.eventTime, durationMinutes);
+      const reminderText = reminderBeforeMinutes > 0
+        ? ` Voce recebera um lembrete ${reminderBeforeMinutes} minuto(s) antes.`
+        : "";
+      return `Pausa registrada as ${eventTimeLabel}. Retorno previsto para ${formatNotificationTime(expectedEnd)}.${reminderText}${approvalSuffix}`;
+    }
+
+    if (input.eventType === "break_end") {
+      return `Retorno da pausa registrado as ${eventTimeLabel}.${approvalSuffix}`;
+    }
+
+    if (input.eventType === "clock_out") {
+      return `Saida registrada as ${eventTimeLabel}. Jornada finalizada.${approvalSuffix}`;
+    }
+
+    return `Entrada registrada as ${eventTimeLabel}.${approvalSuffix}`;
+  };
+  const notifyTimeClockManagers = async (
+    orgId: number,
+    payload: Omit<InternalNotificationPayload, "userId" | "sourceModule">,
+  ) => {
+    await notifyOrganizationRoles(orgId, ["admin", "administrativo"], {
+      ...payload,
+      sourceModule: "time_clock",
+      actionUrl: payload.actionUrl ?? buildTimeClockActionUrl({
+        entryId: payload.entityType === "time_clock_entry" ? payload.entityId : null,
+        adjustmentId: payload.entityType === "time_clock_adjustment_request" ? payload.entityId : null,
+        staffId: payload.staffId ?? null,
+      }),
+    });
+  };
+  const getTimeClockSettingsForRequest = async (
+    orgId: number,
+    responseSettings?: EnvironmentSettings,
+  ): Promise<TimeClockSettings> =>
+    responseSettings?.timeClock
+      ?? (await getOrganizationEnvironmentSettings(orgId))?.settings.timeClock
+      ?? DEFAULT_ENVIRONMENT_SETTINGS.timeClock;
+  const getLastTimeClockStateEntry = (
+    entries: Array<{ id?: number; eventType: string; status?: string | null; eventTime: string | Date | null }>,
+  ) =>
+    entries
+      .filter((entry) => entry.status === "valid" || entry.status === "manual_adjusted" || entry.status === "pending_approval")
+      .slice()
+      .sort((left, right) => Number(toDateTime(left.eventTime)?.getTime() ?? 0) - Number(toDateTime(right.eventTime)?.getTime() ?? 0))
+      .at(-1) ?? null;
+  const scheduleBreakNotifications = async (input: {
+    orgId: number;
+    sessionUser: SessionUser | undefined;
+    staffId: number;
+    staffName: string;
+    breakEntryId: number;
+    breakStart: Date;
+    settings: TimeClockSettings;
+  }) => {
+    if (!input.sessionUser?.id) return;
+    const durationMinutes = Math.max(0, Math.round(input.settings.breakDurationMinutes));
+    if (durationMinutes <= 0) return;
+
+    const reminderBeforeMinutes = Math.max(0, Math.round(input.settings.breakReminderBeforeMinutes));
+    const expectedEnd = addMinutesToDate(input.breakStart, durationMinutes);
+    const reminderAt = addMinutesToDate(expectedEnd, -reminderBeforeMinutes);
+    const staffUserIds = [
+      input.sessionUser.id,
+      ...(await resolveNotificationUserIdsForStaff(input.orgId, input.staffId)),
+    ];
+    const payloads: Array<Omit<InternalNotificationPayload, "userId">> = [];
+
+    if (reminderBeforeMinutes > 0 && reminderAt.getTime() > Date.now()) {
+      payloads.push({
+        staffId: input.staffId,
+        type: "time_clock_break_reminder",
+        severity: "warning",
+        sourceModule: "time_clock",
+        title: "Pausa terminando",
+        message: `Sua pausa termina em ${reminderBeforeMinutes} minuto(s). Retorno previsto para ${formatNotificationDateTime(expectedEnd)}.`,
+        actionUrl: buildTimeClockActionUrl({
+          entryId: input.breakEntryId,
+          staffId: input.staffId,
+          month: getTimeClockReferenceMonth(input.breakStart),
+        }),
+        entityType: "time_clock_entry",
+        entityId: input.breakEntryId,
+        scheduledFor: reminderAt,
+        metadata: {
+          breakStart: input.breakStart.toISOString(),
+          expectedEnd: expectedEnd.toISOString(),
+          durationMinutes,
+          reminderBeforeMinutes,
+        },
+      });
+    }
+
+    payloads.push({
+      staffId: input.staffId,
+      type: "time_clock_break_overdue",
+      severity: "error",
+      sourceModule: "time_clock",
+      title: "Pausa passou do horario",
+      message: `A pausa de ${input.staffName} passou do horario previsto de retorno (${formatNotificationDateTime(expectedEnd)}).`,
+      actionUrl: buildTimeClockActionUrl({
+        entryId: input.breakEntryId,
+        staffId: input.staffId,
+        month: getTimeClockReferenceMonth(input.breakStart),
+      }),
+      entityType: "time_clock_entry",
+      entityId: input.breakEntryId,
+      scheduledFor: expectedEnd,
+      metadata: {
+        breakStart: input.breakStart.toISOString(),
+        expectedEnd: expectedEnd.toISOString(),
+        durationMinutes,
+      },
+    });
+
+    await safeCreateInternalNotifications(
+      input.orgId,
+      payloads.flatMap((payload) =>
+        Array.from(new Set(staffUserIds)).map((userId) => ({ ...payload, userId })),
+      ),
+    );
+    await notifyTimeClockManagers(input.orgId, {
+      staffId: input.staffId,
+      type: "time_clock_break_overdue",
+      severity: "error",
+      title: "Pausa passou do horario",
+      message: `${input.staffName} nao registrou retorno da pausa ate ${formatNotificationDateTime(expectedEnd)}.`,
+      actionUrl: buildTimeClockActionUrl({
+        entryId: input.breakEntryId,
+        staffId: input.staffId,
+        month: getTimeClockReferenceMonth(input.breakStart),
+      }),
+      entityType: "time_clock_entry",
+      entityId: input.breakEntryId,
+      scheduledFor: expectedEnd,
+      metadata: {
+        breakStart: input.breakStart.toISOString(),
+        expectedEnd: expectedEnd.toISOString(),
+        durationMinutes,
+      },
+    });
+  };
+  const cancelBreakNotifications = async (orgId: number, breakEntryId?: number | null) => {
+    if (!breakEntryId) return;
+    await storage.cancelScheduledNotifications(orgId, {
+      types: [...BREAK_NOTIFICATION_TYPES],
+      entityType: "time_clock_entry",
+      entityId: breakEntryId,
+      futureOnly: false,
+    });
+  };
+  const findShiftForClockOutAlert = (
+    shifts: Array<{ id?: number; startTime: string | Date | null; endTime: string | Date | null }>,
+    eventTime: Date,
+  ) => {
+    const candidates: Array<{ id?: number; start: Date; end: Date }> = [];
+    shifts.forEach((shift) => {
+      const start = toDateTime(shift.startTime);
+      const end = toDateTime(shift.endTime);
+      if (!start || !end || end.getTime() <= eventTime.getTime()) return;
+      candidates.push({ id: shift.id, start, end });
+    });
+    candidates.sort((left, right) => left.end.getTime() - right.end.getTime());
+    const activeShift = candidates.find((shift) =>
+      shift.start.getTime() <= eventTime.getTime() && shift.end.getTime() >= eventTime.getTime(),
+    );
+    return activeShift ?? candidates[0] ?? null;
+  };
+  const cancelClockOutMissingNotifications = async (orgId: number, staffId: number) => {
+    await storage.cancelScheduledNotifications(orgId, {
+      types: [...CLOCK_OUT_NOTIFICATION_TYPES],
+      staffId,
+      futureOnly: false,
+    });
+  };
+  const scheduleClockOutMissingNotifications = async (input: {
+    orgId: number;
+    sessionUser: SessionUser | undefined;
+    staffId: number;
+    staffName: string;
+    triggerEntryId: number;
+    eventTime: Date;
+    shifts: Array<{ id?: number; startTime: string | Date | null; endTime: string | Date | null }>;
+    settings: TimeClockSettings;
+  }) => {
+    const targetShift = findShiftForClockOutAlert(input.shifts, input.eventTime);
+    if (!targetShift) return;
+    const toleranceMinutes = Math.max(0, Math.round(input.settings.overtimeToleranceMinutes));
+    const scheduledFor = addMinutesToDate(targetShift.end, toleranceMinutes);
+    if (scheduledFor.getTime() <= Date.now()) return;
+
+    await cancelClockOutMissingNotifications(input.orgId, input.staffId);
+
+    const staffUserIds = [
+      input.sessionUser?.id,
+      ...(await resolveNotificationUserIdsForStaff(input.orgId, input.staffId)),
+    ];
+    await notifyUsers(input.orgId, staffUserIds, {
+      staffId: input.staffId,
+      type: "time_clock_clock_out_missing",
+      severity: "warning",
+      sourceModule: "time_clock",
+      title: "Saida pendente",
+      message: `Sua escala terminou as ${formatNotificationDateTime(targetShift.end)}. Registre a saida se a jornada foi finalizada.`,
+      actionUrl: buildTimeClockActionUrl({
+        entryId: input.triggerEntryId,
+        staffId: input.staffId,
+        month: getTimeClockReferenceMonth(input.eventTime),
+      }),
+      entityType: "time_clock_entry",
+      entityId: input.triggerEntryId,
+      scheduledFor,
+      metadata: {
+        shiftId: targetShift.id ?? null,
+        expectedEnd: targetShift.end.toISOString(),
+        toleranceMinutes,
+      },
+    });
+    await notifyTimeClockManagers(input.orgId, {
+      staffId: input.staffId,
+      type: "time_clock_clock_out_missing",
+      severity: "warning",
+      title: "Saida nao registrada",
+      message: `${input.staffName} esta com jornada aberta apos o fim previsto da escala (${formatNotificationDateTime(targetShift.end)}).`,
+      actionUrl: buildTimeClockActionUrl({
+        entryId: input.triggerEntryId,
+        staffId: input.staffId,
+        month: getTimeClockReferenceMonth(input.eventTime),
+      }),
+      entityType: "time_clock_entry",
+      entityId: input.triggerEntryId,
+      scheduledFor,
+      metadata: {
+        shiftId: targetShift.id ?? null,
+        expectedEnd: targetShift.end.toISOString(),
+        toleranceMinutes,
+      },
+    });
+  };
+  const timeClockPunchInputSchema = z.object({
+    eventType: z.enum(TIME_CLOCK_EVENT_TYPES),
+    latitude: z.coerce.number().min(-90).max(90),
+    longitude: z.coerce.number().min(-180).max(180),
+    accuracy: z.coerce.number().optional().nullable(),
+    notes: z.string().optional().nullable(),
+  });
+  const timeClockLocationInputSchema = z.object({
+    name: z.string().trim().min(2, "Nome obrigatorio."),
+    address: z.string().trim().optional().nullable(),
+    latitude: z.coerce.number().min(-90).max(90),
+    longitude: z.coerce.number().min(-180).max(180),
+    radiusMeters: z.coerce.number().int().min(25).max(5000).default(200),
+    active: z.boolean().optional().default(true),
+  });
+  const timeClockCoordinateInputSchema = z.object({
+    latitude: z.coerce.number().min(-90).max(90),
+    longitude: z.coerce.number().min(-180).max(180),
+  });
+  const timeClockAddressInputSchema = z.object({
+    address: z.string().trim().optional().nullable(),
+    cep: z.string().trim().optional().nullable(),
+    number: z.string().trim().optional().nullable(),
+  }).refine((value) => Boolean(value.address?.trim() || value.cep?.trim()), {
+    message: "Informe um endereco ou CEP.",
+  });
+  const timeClockAdjustmentInputSchema = z.object({
+    staffId: z.coerce.number().int().positive().optional().nullable(),
+    entryId: z.coerce.number().int().positive().optional().nullable(),
+    eventType: z.enum(TIME_CLOCK_EVENT_TYPES),
+    requestedEventTime: z.coerce.date(),
+    reason: z.string().trim().min(3, "Justificativa obrigatoria."),
+    notes: z.string().trim().optional().nullable(),
+  });
+  const timeClockAdjustmentReviewSchema = z.object({
+    status: z.enum(["approved", "rejected"]),
+    reviewerNotes: z.string().trim().optional().nullable(),
+  });
+  const timeClockEntryReviewSchema = z.object({
+    status: z.enum(["approved", "rejected"]),
+    reviewerNotes: z.string().trim().optional().nullable(),
+  });
+  const timeClockClosureInputSchema = z.object({
+    month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Mes invalido. Use YYYY-MM."),
+    action: z.enum(["close", "reopen"]),
+    notes: z.string().trim().optional().nullable(),
+  });
+  const timeClockMonthSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Mes invalido. Use YYYY-MM.");
+
+  const getTimeClockMonthRange = (month: string) => {
+    const [year, monthNumber] = month.split("-").map(Number);
+    return {
+      start: new Date(year, monthNumber - 1, 1, 0, 0, 0, 0),
+      end: new Date(year, monthNumber, 0, 23, 59, 59, 999),
+    };
+  };
+  const toDateTime = (value: string | Date | null | undefined): Date | null => {
+    if (!value) return null;
+    const date = value instanceof Date ? new Date(value) : new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  };
+  const minutesBetween = (start: Date, end: Date) =>
+    Math.max(0, Math.round((end.getTime() - start.getTime()) / 60000));
+  const parseClockMinutes = (value: string | null | undefined, fallback: string) => {
+    const raw = typeof value === "string" && value.trim() ? value.trim() : fallback;
+    const match = raw.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+    if (!match) {
+      const fallbackMatch = fallback.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+      return fallbackMatch ? Number(fallbackMatch[1]) * 60 + Number(fallbackMatch[2]) : 0;
+    }
+    return Number(match[1]) * 60 + Number(match[2]);
+  };
+  const setDateMinutes = (date: Date, minutes: number) => {
+    const next = new Date(date);
+    next.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
+    return next;
+  };
+  const nightMinutesBetween = (start: Date, end: Date, settings: TimeClockSettings = DEFAULT_ENVIRONMENT_SETTINGS.timeClock) => {
+    if (end.getTime() <= start.getTime()) return 0;
+    let total = 0;
+    const nightStartMinutes = parseClockMinutes(settings.nightStartTime, DEFAULT_ENVIRONMENT_SETTINGS.timeClock.nightStartTime);
+    const nightEndMinutes = parseClockMinutes(settings.nightEndTime, DEFAULT_ENVIRONMENT_SETTINGS.timeClock.nightEndTime);
+    const crossesMidnight = nightEndMinutes <= nightStartMinutes;
+    const cursor = new Date(start);
+    cursor.setHours(0, 0, 0, 0);
+    if (crossesMidnight) cursor.setDate(cursor.getDate() - 1);
+    const finalDay = new Date(end);
+    finalDay.setHours(0, 0, 0, 0);
+    while (cursor.getTime() <= finalDay.getTime()) {
+      const nightStart = setDateMinutes(cursor, nightStartMinutes);
+      const nightEnd = setDateMinutes(cursor, nightEndMinutes);
+      if (crossesMidnight) nightEnd.setDate(nightEnd.getDate() + 1);
+      const overlapStart = new Date(Math.max(start.getTime(), nightStart.getTime()));
+      const overlapEnd = new Date(Math.min(end.getTime(), nightEnd.getTime()));
+      if (overlapEnd.getTime() > overlapStart.getTime()) {
+        total += minutesBetween(overlapStart, overlapEnd);
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    return total;
+  };
+  const haversineDistanceMeters = (
+    latitudeA: number,
+    longitudeA: number,
+    latitudeB: number,
+    longitudeB: number,
+  ) => {
+    const earthRadiusMeters = 6371000;
+    const toRadians = (value: number) => (value * Math.PI) / 180;
+    const deltaLatitude = toRadians(latitudeB - latitudeA);
+    const deltaLongitude = toRadians(longitudeB - longitudeA);
+    const latA = toRadians(latitudeA);
+    const latB = toRadians(latitudeB);
+    const haversine =
+      Math.sin(deltaLatitude / 2) ** 2
+      + Math.cos(latA) * Math.cos(latB) * Math.sin(deltaLongitude / 2) ** 2;
+    return 2 * earthRadiusMeters * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+  };
+  const getNearestTimeClockLocation = (
+    locations: Array<{ id: number; name: string; latitude: number; longitude: number; radiusMeters: number; active?: boolean | null }>,
+    latitude: number,
+    longitude: number,
+  ) => {
+    const activeLocations = locations.filter((location) => location.active !== false);
+    let nearest: (typeof activeLocations)[number] | null = null;
+    let distanceMeters = Number.POSITIVE_INFINITY;
+    for (const location of activeLocations) {
+      const distance = haversineDistanceMeters(latitude, longitude, Number(location.latitude), Number(location.longitude));
+      if (distance < distanceMeters) {
+        nearest = location;
+        distanceMeters = distance;
+      }
+    }
+    return nearest ? { location: nearest, distanceMeters } : null;
+  };
+  const getTimeClockStateWindowStart = (
+    dayStart: Date,
+    shifts: Array<{ startTime: string | Date | null }>,
+  ) => {
+    const shiftStarts = shifts
+      .map((shift) => toDateTime(shift.startTime))
+      .filter((date): date is Date => Boolean(date));
+    if (shiftStarts.length === 0) return dayStart;
+    return new Date(Math.min(dayStart.getTime(), ...shiftStarts.map((date) => date.getTime())));
+  };
+  const getTimeClockState = (
+    entries: Array<{ eventType: string; status?: string | null; eventTime: string | Date | null }>,
+    shifts: Array<{ startTime: string | Date | null; endTime: string | Date | null }> = [],
+  ): TimeClockState => {
+    const validEntries = entries
+      .filter((entry) => entry.status === "valid" || entry.status === "manual_adjusted" || entry.status === "pending_approval")
+      .slice()
+      .sort((left, right) => Number(toDateTime(left.eventTime)?.getTime() ?? 0) - Number(toDateTime(right.eventTime)?.getTime() ?? 0));
+    const lastEntry = validEntries[validEntries.length - 1];
+    const clockInCount = validEntries.filter((entry) => entry.eventType === "clock_in").length;
+    const scheduledShiftCount = shifts.filter((shift) => toDateTime(shift.startTime) && toDateTime(shift.endTime)).length;
+    const canStartShift = !lastEntry
+      || (scheduledShiftCount === 0 ? true : clockInCount < scheduledShiftCount);
+    if (!lastEntry) {
+      return { state: "closed", nextActions: ["clock_in"] };
+    }
+    if (lastEntry.eventType === "clock_out") {
+      return canStartShift
+        ? { state: "closed", nextActions: ["clock_in"] }
+        : {
+          state: "closed",
+          nextActions: [],
+          message: "Jornada do dia concluida. Nova entrada apenas com outra escala prevista.",
+        };
+    }
+    if (lastEntry.eventType === "break_start") {
+      return { state: "on_break", nextActions: ["break_end"] };
+    }
+    if (lastEntry.eventType === "clock_in" || lastEntry.eventType === "break_end") {
+      return { state: "working", nextActions: ["break_start", "clock_out"] };
+    }
+    return { state: "closed", nextActions: ["clock_in"] };
+  };
+  const summarizeTimeClockEntries = (
+    entries: Array<any>,
+    shifts: Array<any>,
+    monthStart: Date,
+    monthEnd: Date,
+    settings: TimeClockSettings = DEFAULT_ENVIRONMENT_SETTINGS.timeClock,
+  ) => {
+    type DailySummary = {
+      key: string;
+      date: string;
+      staffId: number;
+      staffName: string | null;
+      expectedMinutes: number;
+      workedMinutes: number;
+      balanceMinutes: number;
+      lateMinutes: number;
+      overtimeMinutes: number;
+      nightMinutes: number;
+      absence: boolean;
+      incomplete: boolean;
+      expectedStart: Date | null;
+      expectedEnd: Date | null;
+      firstClockIn: Date | null;
+      lastClockOut: Date | null;
+    };
+    const summaries = new Map<string, DailySummary>();
+    const ensureSummary = (staffId: number, date: string, staffName?: string | null) => {
+      const key = `${staffId}:${date}`;
+      const existing = summaries.get(key);
+      if (existing) {
+        if (!existing.staffName && staffName) existing.staffName = staffName;
+        return existing;
+      }
+      const created: DailySummary = {
+        key,
+        date,
+        staffId,
+        staffName: staffName ?? null,
+        expectedMinutes: 0,
+        workedMinutes: 0,
+        balanceMinutes: 0,
+        lateMinutes: 0,
+        overtimeMinutes: 0,
+        nightMinutes: 0,
+        absence: false,
+        incomplete: false,
+        expectedStart: null,
+        expectedEnd: null,
+        firstClockIn: null,
+        lastClockOut: null,
+      };
+      summaries.set(key, created);
+      return created;
+    };
+
+    for (const shift of shifts) {
+      const shiftStart = toDateTime(shift.startTime);
+      const shiftEnd = toDateTime(shift.endTime);
+      if (!shiftStart || !shiftEnd) continue;
+      const cursor = new Date(Math.max(shiftStart.getTime(), monthStart.getTime()));
+      cursor.setHours(0, 0, 0, 0);
+      const finalDay = new Date(Math.min(shiftEnd.getTime(), monthEnd.getTime()));
+      finalDay.setHours(0, 0, 0, 0);
+      while (cursor.getTime() <= finalDay.getTime()) {
+        const dayStart = new Date(cursor);
+        const dayEnd = new Date(cursor);
+        dayEnd.setHours(23, 59, 59, 999);
+        const overlapStart = new Date(Math.max(shiftStart.getTime(), dayStart.getTime(), monthStart.getTime()));
+        const overlapEnd = new Date(Math.min(shiftEnd.getTime(), dayEnd.getTime(), monthEnd.getTime()));
+        if (overlapEnd.getTime() > overlapStart.getTime()) {
+          const summary = ensureSummary(shift.staffId, toDateOnly(dayStart), shift.staffName);
+          summary.expectedMinutes += minutesBetween(overlapStart, overlapEnd);
+          if (!summary.expectedStart || overlapStart.getTime() < summary.expectedStart.getTime()) {
+            summary.expectedStart = overlapStart;
+          }
+          if (!summary.expectedEnd || overlapEnd.getTime() > summary.expectedEnd.getTime()) {
+            summary.expectedEnd = overlapEnd;
+          }
+        }
+        cursor.setDate(cursor.getDate() + 1);
+      }
+    }
+
+    const entryGroups = new Map<string, any[]>();
+    entries.forEach((entry) => {
+      const eventTime = toDateTime(entry.eventTime);
+      if (!eventTime) return;
+      const date = toDateOnly(eventTime);
+      const key = `${entry.staffId}:${date}`;
+      const group = entryGroups.get(key) ?? [];
+      group.push(entry);
+      entryGroups.set(key, group);
+      ensureSummary(entry.staffId, date, entry.staffName);
+    });
+
+    Array.from(entryGroups.entries()).forEach(([key, group]) => {
+      const summary = summaries.get(key);
+      if (!summary) return;
+      const sorted = group
+        .filter((entry: any) => entry.status === "valid" || entry.status === "manual_adjusted")
+        .sort((left: any, right: any) => Number(toDateTime(left.eventTime)?.getTime() ?? 0) - Number(toDateTime(right.eventTime)?.getTime() ?? 0));
+      let activeStart: Date | null = null;
+      for (const entry of sorted) {
+        const eventTime = toDateTime(entry.eventTime);
+        if (!eventTime) continue;
+        if (entry.eventType === "clock_in" || entry.eventType === "break_end") {
+          if (entry.eventType === "clock_in" && (!summary.firstClockIn || eventTime.getTime() < summary.firstClockIn.getTime())) {
+            summary.firstClockIn = eventTime;
+          }
+          if (!activeStart) activeStart = eventTime;
+        } else if ((entry.eventType === "break_start" || entry.eventType === "clock_out") && activeStart) {
+          summary.workedMinutes += minutesBetween(activeStart, eventTime);
+          summary.nightMinutes += nightMinutesBetween(activeStart, eventTime, settings);
+          if (entry.eventType === "clock_out" && (!summary.lastClockOut || eventTime.getTime() > summary.lastClockOut.getTime())) {
+            summary.lastClockOut = eventTime;
+          }
+          activeStart = null;
+        }
+      }
+      if (activeStart) {
+        const dayEnd = parseDateOnly(summary.date, true) ?? monthEnd;
+        const now = new Date();
+        const cappedEnd = new Date(Math.min(now.getTime(), dayEnd.getTime()));
+        summary.workedMinutes += minutesBetween(activeStart, cappedEnd);
+        summary.nightMinutes += nightMinutesBetween(activeStart, cappedEnd, settings);
+        summary.incomplete = true;
+      }
+    });
+
+    const todayKey = toDateOnly(new Date());
+
+    const dailySummaries = Array.from(summaries.values())
+      .map((summary) => {
+        const lateMinutes = summary.expectedStart && summary.firstClockIn
+          ? Math.max(0, minutesBetween(summary.expectedStart, summary.firstClockIn) - settings.lateToleranceMinutes)
+          : 0;
+        const absence = summary.expectedMinutes > 0
+          && summary.workedMinutes === 0
+          && summary.date < todayKey;
+        const balanceMinutes = summary.workedMinutes - summary.expectedMinutes;
+        return {
+          ...summary,
+          balanceMinutes,
+          lateMinutes,
+          overtimeMinutes: Math.max(0, balanceMinutes - settings.overtimeToleranceMinutes),
+          absence,
+          expectedStart: summary.expectedStart?.toISOString() ?? null,
+          expectedEnd: summary.expectedEnd?.toISOString() ?? null,
+          firstClockIn: summary.firstClockIn?.toISOString() ?? null,
+          lastClockOut: summary.lastClockOut?.toISOString() ?? null,
+        };
+      })
+      .sort((left, right) => {
+        if (left.date !== right.date) return right.date.localeCompare(left.date);
+        return String(left.staffName ?? "").localeCompare(String(right.staffName ?? ""), "pt-BR");
+      });
+    const monthSummary = dailySummaries.reduce(
+      (acc, summary) => {
+        acc.expectedMinutes += summary.expectedMinutes;
+        acc.workedMinutes += summary.workedMinutes;
+        acc.balanceMinutes += summary.balanceMinutes;
+        acc.lateMinutes += summary.lateMinutes;
+        acc.overtimeMinutes += summary.overtimeMinutes;
+        acc.nightMinutes += summary.nightMinutes;
+        if (summary.absence) acc.absences += 1;
+        if (summary.incomplete) acc.incompleteDays += 1;
+        return acc;
+      },
+      { expectedMinutes: 0, workedMinutes: 0, balanceMinutes: 0, incompleteDays: 0, lateMinutes: 0, overtimeMinutes: 0, nightMinutes: 0, absences: 0 },
+    );
+    return { dailySummaries, monthSummary };
+  };
+  const resolveTimeClockStaffId = async (orgId: number, sessionUser: SessionUser | undefined, requestedStaffId?: number | null) => {
+    if (!sessionUser) throw new Error("Nao autorizado.");
+    if (sessionUser.role === "admin" || sessionUser.role === "administrativo") {
+      return requestedStaffId ?? null;
+    }
+    const linkedStaff = await resolveLinkedStaffForSessionUser(orgId, sessionUser);
+    if (!linkedStaff || linkedStaff.active === false) {
+      throw new Error("Seu usuario nao esta vinculado a um colaborador ativo.");
+    }
+    if (requestedStaffId && requestedStaffId !== linkedStaff.id) {
+      throw new Error("Voce so pode consultar o proprio ponto.");
+    }
+    return linkedStaff.id;
+  };
+  const isTimeClockManager = (sessionUser: SessionUser | undefined) =>
+    sessionUser?.role === "admin" || sessionUser?.role === "administrativo" || sessionUser?.isSuperAdmin === true;
+  const getTimeClockReferenceMonth = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+  const getTimeClockClosureStatus = async (orgId: number, month: string) => {
+    const closure = await storage.getTimeClockClosure(orgId, month);
+    return {
+      closure,
+      closed: closure?.status === "closed",
+    };
+  };
+  const ensureTimeClockMonthOpen = async (orgId: number, month: string) => {
+    const { closed } = await getTimeClockClosureStatus(orgId, month);
+    if (closed) {
+      throw new Error("Competencia de ponto ja fechada. Reabra o mes para alterar registros.");
+    }
+  };
+  const createTimeClockAuditLog = async (input: {
+    orgId: number;
+    staffId?: number | null;
+    entityType: string;
+    entityId?: number | null;
+    action: string;
+    performedByUserId?: number | null;
+    previousValue?: unknown;
+    newValue?: unknown;
+    reason?: string | null;
+  }) => {
+    await storage.createTimeClockAuditLog({
+      organizationId: input.orgId,
+      staffId: input.staffId ?? null,
+      entityType: input.entityType,
+      entityId: input.entityId ?? null,
+      action: input.action,
+      performedByUserId: input.performedByUserId ?? null,
+      previousValue: input.previousValue === undefined ? null : JSON.stringify(input.previousValue),
+      newValue: input.newValue === undefined ? null : JSON.stringify(input.newValue),
+      reason: input.reason ?? null,
+    });
+  };
+  const reverseGeocodeTimeClockLocation = async (latitude: number, longitude: number) => {
+    const params = new URLSearchParams({
+      format: "jsonv2",
+      lat: String(latitude),
+      lon: String(longitude),
+      addressdetails: "1",
+      zoom: "18",
+    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6000);
+    try {
+      const response = await fetch(`https://nominatim.openstreetmap.org/reverse?${params.toString()}`, {
+        signal: controller.signal,
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "EasyCare/1.0 reverse-geocoding",
+        },
+      });
+      if (!response.ok) return null;
+      const data = await response.json() as {
+        name?: string;
+        display_name?: string;
+        address?: Record<string, string | undefined>;
+      };
+      const address = data.address ?? {};
+      const city = address.city || address.town || address.village || address.municipality;
+      const street = address.road || address.pedestrian || address.footway;
+      const streetAddress = [
+        street && address.house_number ? `${street}, ${address.house_number}` : street,
+        address.suburb || address.neighbourhood,
+        city,
+        address.state,
+        address.postcode,
+      ].filter(Boolean).join(" - ");
+      const name = [
+        data.name,
+        address.building,
+        address.amenity,
+        address.office,
+        address.healthcare,
+        address.shop,
+        address.road,
+        address.suburb,
+        address.neighbourhood,
+        address.city,
+      ].find((value) => typeof value === "string" && value.trim().length > 0)?.trim();
+      const displayName = typeof data.display_name === "string" ? data.display_name.trim() : "";
+      return {
+        name: name || displayName.split(",")[0]?.trim() || null,
+        displayName: displayName || null,
+        address: streetAddress || displayName || null,
+      };
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+  const fetchJsonWithTimeout = async <T>(url: string, init?: RequestInit, timeoutMs = 7000): Promise<T | null> => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, {
+        ...init,
+        signal: controller.signal,
+      });
+      if (!response.ok) return null;
+      return await response.json() as T;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+  const lookupCepAddress = async (cep: string) => {
+    const normalizedCep = cep.replace(/\D/g, "");
+    if (normalizedCep.length !== 8) return null;
+    type CepLookupResult = {
+      erro?: boolean;
+      cep?: string;
+      logradouro?: string;
+      bairro?: string;
+      localidade?: string;
+      uf?: string;
+    };
+    const normalizeCepResult = (data: CepLookupResult | null): CepLookupResult | null => {
+      if (!data || data.erro) return null;
+      if (!data.logradouro && !data.localidade && !data.uf) return null;
+      return {
+        cep: data.cep || normalizedCep,
+        logradouro: data.logradouro || "",
+        bairro: data.bairro || "",
+        localidade: data.localidade || "",
+        uf: data.uf || "",
+      };
+    };
+    const viaCep = normalizeCepResult(await fetchJsonWithTimeout<CepLookupResult>(
+      `https://viacep.com.br/ws/${normalizedCep}/json/`,
+    ));
+    if (viaCep) return viaCep;
+    return normalizeCepResult(await fetchJsonWithTimeout<CepLookupResult>(
+      `https://opencep.com/v1/${normalizedCep}.json`,
+    ));
+  };
+  const formatTimeClockCepAddress = (cepAddress: NonNullable<Awaited<ReturnType<typeof lookupCepAddress>>>, number?: string | null) => {
+    const trimmedNumber = number?.trim();
+    const street = cepAddress.logradouro?.trim();
+    const streetLine = street && trimmedNumber ? `${street}, ${trimmedNumber}` : street;
+    return [
+      streetLine,
+      cepAddress.bairro,
+      [cepAddress.localidade, cepAddress.uf].filter(Boolean).join("/"),
+      cepAddress.cep,
+    ].filter((part) => typeof part === "string" && part.trim().length > 0).join(" - ");
+  };
+  const geocodeTimeClockAddress = async (input: z.infer<typeof timeClockAddressInputSchema>) => {
+    const cepAddress = input.cep ? await lookupCepAddress(input.cep) : null;
+    const number = input.number?.trim();
+    const typedAddress = input.address?.trim();
+    const cepStreet = cepAddress?.logradouro?.trim();
+    const addressLine = cepStreet
+      ? `${cepStreet}${number ? `, ${number}` : ""}`
+      : [typedAddress, number].filter(Boolean).join(", ");
+    const cityState = [
+      cepAddress?.bairro,
+      cepAddress?.localidade,
+      cepAddress?.uf,
+    ].filter(Boolean).join(" - ");
+    const fullAddress = cepAddress
+      ? formatTimeClockCepAddress(cepAddress, number)
+      : [
+        addressLine,
+        cityState,
+        input.cep,
+      ].filter((part) => typeof part === "string" && part.trim().length > 0).join(" - ");
+    const query = [
+      addressLine || typedAddress,
+      cepAddress?.bairro,
+      cepAddress?.localidade,
+      cepAddress?.uf,
+      "Brasil",
+    ].filter((part) => typeof part === "string" && part.trim().length > 0).join(", ");
+    const params = new URLSearchParams({
+      format: "jsonv2",
+      addressdetails: "1",
+      limit: "1",
+      countrycodes: "br",
+      q: query,
+    });
+    const results = await fetchJsonWithTimeout<Array<{
+      lat?: string;
+      lon?: string;
+      name?: string;
+      display_name?: string;
+      address?: Record<string, string | undefined>;
+    }>>(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "EasyCare/1.0 address-geocoding",
+      },
+    });
+    const first = results?.[0];
+    const latitude = first?.lat ? Number(first.lat) : NaN;
+    const longitude = first?.lon ? Number(first.lon) : NaN;
+    if (!first || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+
+    const foundAddress = first.address ?? {};
+    const foundCity = foundAddress.city || foundAddress.town || foundAddress.village || foundAddress.municipality;
+    const foundStreet = foundAddress.road || foundAddress.pedestrian || foundAddress.footway;
+    const resolvedAddress = [
+      foundStreet && foundAddress.house_number ? `${foundStreet}, ${foundAddress.house_number}` : foundStreet,
+      foundAddress.suburb || foundAddress.neighbourhood,
+      foundCity,
+      foundAddress.state,
+      foundAddress.postcode,
+    ].filter(Boolean).join(" - ");
+    const displayName = typeof first.display_name === "string" ? first.display_name.trim() : "";
+    const name = [
+      first.name,
+      foundAddress.building,
+      foundAddress.amenity,
+      foundAddress.office,
+      foundStreet,
+      foundAddress.suburb,
+    ].find((value) => typeof value === "string" && value.trim().length > 0)?.trim();
+    return {
+      latitude,
+      longitude,
+      name: name || addressLine || displayName.split(",")[0]?.trim() || null,
+      address: resolvedAddress || fullAddress || displayName || null,
+      displayName: displayName || null,
+    };
+  };
+
+  app.get("/api/time-clock/lookup-cep", requireAuth, requireRole("admin"), async (req, res, next) => {
+    try {
+      if (!req.session.user?.isSuperAdmin && req.session.user?.role !== "admin") {
+        return res.status(403).json({ message: "Apenas admin pode consultar CEP de local." });
+      }
+      const cep = String(req.query.cep || "");
+      const number = typeof req.query.number === "string" ? req.query.number : "";
+      const result = await lookupCepAddress(cep);
+      if (!result) return res.status(404).json({ message: "CEP nao encontrado." });
+      res.json({
+        cep: result.cep ?? cep.replace(/\D/g, ""),
+        street: result.logradouro || null,
+        district: result.bairro || null,
+        city: result.localidade || null,
+        state: result.uf || null,
+        address: formatTimeClockCepAddress(result, number),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/time-clock/geocode-address", requireAuth, requireRole("admin"), async (req, res, next) => {
+    try {
+      if (!req.session.user?.isSuperAdmin && req.session.user?.role !== "admin") {
+        return res.status(403).json({ message: "Apenas admin pode buscar endereco de local." });
+      }
+      const input = timeClockAddressInputSchema.parse(req.query);
+      const result = await geocodeTimeClockAddress(input);
+      if (!result) {
+        return res.status(404).json({ message: "Nao foi possivel localizar este endereco." });
+      }
+      res.json(result);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Endereco invalido." });
+      }
+      next(error);
+    }
+  });
+
+  app.get("/api/time-clock/reverse-geocode", requireAuth, requireRole("admin"), async (req, res, next) => {
+    try {
+      if (!req.session.user?.isSuperAdmin && req.session.user?.role !== "admin") {
+        return res.status(403).json({ message: "Apenas admin pode buscar nome de local." });
+      }
+      const input = timeClockCoordinateInputSchema.parse(req.query);
+      const result = await reverseGeocodeTimeClockLocation(input.latitude, input.longitude);
+      res.json({
+        latitude: input.latitude,
+        longitude: input.longitude,
+        name: result?.name ?? null,
+        address: result?.address ?? null,
+        displayName: result?.displayName ?? null,
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Coordenada invalida." });
+      }
+      next(error);
+    }
+  });
+
+  app.get("/api/time-clock/locations", requireAuth, requireRole(...TIME_CLOCK_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      res.json(await storage.getTimeClockLocations(orgId));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/time-clock/locations", requireAuth, requireRole("admin"), async (req, res, next) => {
+    try {
+      if (!req.session.user?.isSuperAdmin && req.session.user?.role !== "admin") {
+        return res.status(403).json({ message: "Apenas admin pode configurar locais de ponto." });
+      }
+      const orgId = getOrgId(req);
+      const input = timeClockLocationInputSchema.parse(req.body);
+      const created = await storage.createTimeClockLocation({
+        ...input,
+        address: input.address?.trim() || null,
+        organizationId: orgId,
+      });
+      res.status(201).json(created);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+      }
+      next(error);
+    }
+  });
+
+  app.put("/api/time-clock/locations/:id", requireAuth, requireRole("admin"), async (req, res, next) => {
+    try {
+      if (!req.session.user?.isSuperAdmin && req.session.user?.role !== "admin") {
+        return res.status(403).json({ message: "Apenas admin pode configurar locais de ponto." });
+      }
+      const orgId = getOrgId(req);
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Local invalido." });
+      const input = timeClockLocationInputSchema.partial().parse(req.body);
+      const updated = await storage.updateTimeClockLocation(orgId, id, {
+        ...input,
+        ...(input.address !== undefined ? { address: input.address?.trim() || null } : {}),
+      });
+      if (!updated) return res.status(404).json({ message: "Local nao encontrado." });
+      res.json(updated);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+      }
+      next(error);
+    }
+  });
+
+  app.get("/api/time-clock/status", requireAuth, requireRole(...TIME_CLOCK_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      const sessionUser = req.session.user;
+      const linkedStaff = await resolveLinkedStaffForSessionUser(orgId, sessionUser);
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const todayEnd = new Date(todayStart);
+      todayEnd.setHours(23, 59, 59, 999);
+      const todayShifts = linkedStaff
+        ? await storage.getShiftAssignments(orgId, { staffId: linkedStaff.id, start: todayStart, end: todayEnd })
+        : [];
+      const stateStart = getTimeClockStateWindowStart(todayStart, todayShifts);
+      const stateEntries = linkedStaff
+        ? await storage.getTimeClockEntries(orgId, { staffId: linkedStaff.id, start: stateStart, end: todayEnd })
+        : [];
+      const todayEntries = stateEntries.filter((entry) => {
+        const eventTime = toDateTime(entry.eventTime);
+        return eventTime && eventTime.getTime() >= todayStart.getTime() && eventTime.getTime() <= todayEnd.getTime();
+      });
+      res.json({
+        staff: linkedStaff
+          ? { id: linkedStaff.id, name: linkedStaff.name, role: linkedStaff.role }
+          : null,
+        current: getTimeClockState(stateEntries, todayShifts),
+        todayEntries,
+        hasShiftToday: todayShifts.length > 0,
+        shiftCountToday: todayShifts.length,
+        locations: await storage.getTimeClockLocations(orgId),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/time-clock/entries", requireAuth, requireRole(...TIME_CLOCK_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      const month = timeClockMonthSchema.parse(String(req.query.month || toDateOnly(new Date()).slice(0, 7)));
+      const staffId = req.query.staffId ? Number(req.query.staffId) : null;
+      if (staffId !== null && (!Number.isInteger(staffId) || staffId <= 0)) {
+        return res.status(400).json({ message: "Colaborador invalido." });
+      }
+      const effectiveStaffId = await resolveTimeClockStaffId(orgId, req.session.user, staffId);
+      const environmentSettings = (res.locals.environmentSettings as EnvironmentSettings | undefined)
+        ?? (await getOrganizationEnvironmentSettings(orgId))?.settings
+        ?? DEFAULT_ENVIRONMENT_SETTINGS;
+      const range = getTimeClockMonthRange(month);
+      const [entries, shifts] = await Promise.all([
+        storage.getTimeClockEntries(orgId, { staffId: effectiveStaffId ?? undefined, start: range.start, end: range.end }),
+        storage.getShiftAssignments(orgId, { staffId: effectiveStaffId ?? undefined, start: range.start, end: range.end }),
+      ]);
+      const summary = summarizeTimeClockEntries(entries, shifts, range.start, range.end, environmentSettings.timeClock);
+      const closure = await storage.getTimeClockClosure(orgId, month);
+      res.json({ month, entries, closure: closure ?? null, settings: environmentSettings.timeClock, ...summary });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+      }
+      if (error instanceof Error) {
+        return res.status(400).json({ message: error.message });
+      }
+      next(error);
+    }
+  });
+
+  app.patch("/api/time-clock/entries/:id/review", requireAuth, requireRole("admin", "administrativo"), async (req, res, next) => {
+    try {
+      if (!isTimeClockManager(req.session.user)) {
+        return res.status(403).json({ message: "Apenas gestor pode revisar batidas pendentes." });
+      }
+      const orgId = getOrgId(req);
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Batida invalida." });
+      const input = timeClockEntryReviewSchema.parse(req.body);
+      const current = await storage.getTimeClockEntry(orgId, id);
+      if (!current) return res.status(404).json({ message: "Batida nao encontrada." });
+      if (current.status !== "pending_approval") {
+        return res.status(400).json({ message: "Batida nao esta pendente de aprovacao." });
+      }
+      await ensureTimeClockMonthOpen(orgId, getTimeClockReferenceMonth(new Date(current.eventTime)));
+      const reviewNote = input.reviewerNotes?.trim() || null;
+      const updated = await storage.updateTimeClockEntry(orgId, id, {
+        status: input.status === "approved" ? "valid" : "rejected",
+        notes: [
+          current.notes,
+          input.status === "approved" ? "Aprovado pelo gestor." : "Reprovado pelo gestor.",
+          reviewNote,
+        ].filter(Boolean).join(" | ") || null,
+      });
+      await createTimeClockAuditLog({
+        orgId,
+        staffId: current.staffId,
+        entityType: "time_clock_entry",
+        entityId: id,
+        action: input.status === "approved" ? "approved" : "rejected",
+        performedByUserId: req.session.user?.id ?? null,
+        previousValue: current,
+        newValue: updated,
+        reason: reviewNote,
+      });
+      const reviewedEventLabel = TIME_CLOCK_EVENT_LABELS[current.eventType as TimeClockEventType] ?? "Batida";
+      const reviewStatusLabel = input.status === "approved" ? "aprovada" : "reprovada";
+      await notifyUsers(
+        orgId,
+        [
+          current.userId,
+          ...(await resolveNotificationUserIdsForStaff(orgId, current.staffId)),
+        ],
+        {
+          staffId: current.staffId,
+          type: "time_clock_entry_reviewed",
+          severity: input.status === "approved" ? "success" : "warning",
+          sourceModule: "time_clock",
+          title: `Batida ${reviewStatusLabel}`,
+          message: `${reviewedEventLabel} de ${formatNotificationDateTime(new Date(current.eventTime))} foi ${reviewStatusLabel} pelo gestor.`,
+          actionUrl: buildTimeClockActionUrl({
+            entryId: id,
+            staffId: current.staffId,
+            month: getTimeClockReferenceMonth(new Date(current.eventTime)),
+          }),
+          entityType: "time_clock_entry",
+          entityId: id,
+          metadata: { eventType: current.eventType, status: input.status, reviewerNotes: reviewNote },
+        },
+      );
+      res.json(updated);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+      }
+      if (error instanceof Error) return res.status(400).json({ message: error.message });
+      next(error);
+    }
+  });
+
+  app.get("/api/time-clock/adjustments", requireAuth, requireRole(...TIME_CLOCK_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      const month = timeClockMonthSchema.parse(String(req.query.month || toDateOnly(new Date()).slice(0, 7)));
+      const requestedStaffId = req.query.staffId ? Number(req.query.staffId) : null;
+      if (requestedStaffId !== null && (!Number.isInteger(requestedStaffId) || requestedStaffId <= 0)) {
+        return res.status(400).json({ message: "Colaborador invalido." });
+      }
+      const effectiveStaffId = await resolveTimeClockStaffId(orgId, req.session.user, requestedStaffId);
+      const range = getTimeClockMonthRange(month);
+      const status = typeof req.query.status === "string" && req.query.status !== "all" ? req.query.status : undefined;
+      const adjustments = await storage.getTimeClockAdjustmentRequests(orgId, {
+        staffId: effectiveStaffId ?? undefined,
+        status,
+        start: range.start,
+        end: range.end,
+      });
+      res.json(adjustments);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+      }
+      if (error instanceof Error) return res.status(400).json({ message: error.message });
+      next(error);
+    }
+  });
+
+  app.post("/api/time-clock/adjustments", requireAuth, requireRole(...TIME_CLOCK_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      const sessionUser = req.session.user;
+      const input = timeClockAdjustmentInputSchema.parse(req.body);
+      const effectiveStaffId = await resolveTimeClockStaffId(orgId, sessionUser, input.staffId ?? null);
+      if (!effectiveStaffId) {
+        return res.status(400).json({ message: "Selecione o colaborador do ajuste." });
+      }
+      await ensureTimeClockMonthOpen(orgId, getTimeClockReferenceMonth(input.requestedEventTime));
+      const created = await storage.createTimeClockAdjustmentRequest({
+        organizationId: orgId,
+        staffId: effectiveStaffId,
+        requestedByUserId: sessionUser?.id ?? null,
+        entryId: input.entryId ?? null,
+        eventType: input.eventType,
+        requestedEventTime: input.requestedEventTime,
+        reason: input.reason,
+        notes: input.notes?.trim() || null,
+        status: "pending",
+        reviewedByUserId: null,
+        reviewedAt: null,
+        reviewerNotes: null,
+        appliedEntryId: null,
+      });
+      await createTimeClockAuditLog({
+        orgId,
+        staffId: effectiveStaffId,
+        entityType: "time_clock_adjustment_request",
+        entityId: created.id,
+        action: "requested",
+        performedByUserId: sessionUser?.id ?? null,
+        newValue: created,
+        reason: input.reason,
+      });
+      const adjustedStaff = await storage.getStaffMember(orgId, effectiveStaffId);
+      const requestedEventLabel = TIME_CLOCK_EVENT_LABELS[input.eventType] ?? "Batida";
+      await notifyTimeClockManagers(orgId, {
+        staffId: effectiveStaffId,
+        type: "time_clock_adjustment_pending",
+        severity: "warning",
+        title: "Ajuste de ponto solicitado",
+        message: `${adjustedStaff?.name ?? "Colaborador"} solicitou ajuste de ${requestedEventLabel.toLowerCase()} em ${formatNotificationDateTime(input.requestedEventTime)}.`,
+        actionUrl: buildTimeClockActionUrl({
+          adjustmentId: created.id,
+          staffId: effectiveStaffId,
+          month: getTimeClockReferenceMonth(input.requestedEventTime),
+        }),
+        entityType: "time_clock_adjustment_request",
+        entityId: created.id,
+        metadata: { eventType: input.eventType, reason: input.reason },
+      });
+      res.status(201).json(created);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+      }
+      if (error instanceof Error) return res.status(400).json({ message: error.message });
+      next(error);
+    }
+  });
+
+  app.patch("/api/time-clock/adjustments/:id/review", requireAuth, requireRole("admin", "administrativo"), async (req, res, next) => {
+    try {
+      if (!isTimeClockManager(req.session.user)) {
+        return res.status(403).json({ message: "Apenas gestor pode revisar ajustes." });
+      }
+      const orgId = getOrgId(req);
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Solicitacao invalida." });
+      const input = timeClockAdjustmentReviewSchema.parse(req.body);
+      const current = await storage.getTimeClockAdjustmentRequest(orgId, id);
+      if (!current) return res.status(404).json({ message: "Solicitacao nao encontrada." });
+      if (current.status !== "pending") return res.status(400).json({ message: "Solicitacao ja revisada." });
+      await ensureTimeClockMonthOpen(orgId, getTimeClockReferenceMonth(new Date(current.requestedEventTime)));
+
+      const sourceEntry = current.entryId
+        ? await storage.getTimeClockEntry(orgId, current.entryId)
+        : null;
+      if (current.entryId && !sourceEntry) {
+        return res.status(404).json({ message: "Batida original da correcao nao encontrada." });
+      }
+      if (sourceEntry && sourceEntry.staffId !== current.staffId) {
+        return res.status(400).json({ message: "Batida original pertence a outro colaborador." });
+      }
+
+      let appliedEntryId: number | null = null;
+      if (input.status === "approved") {
+        if (sourceEntry) {
+          const replacedSourceEntry = await storage.updateTimeClockEntry(orgId, sourceEntry.id, {
+            status: "rejected",
+            notes: `${sourceEntry.notes ? `${sourceEntry.notes}\n` : ""}Substituida pelo ajuste aprovado #${current.id}.`,
+          });
+          await createTimeClockAuditLog({
+            orgId,
+            staffId: current.staffId,
+            entityType: "time_clock_entry",
+            entityId: sourceEntry.id,
+            action: "replaced_by_adjustment",
+            performedByUserId: req.session.user?.id ?? null,
+            previousValue: sourceEntry,
+            newValue: replacedSourceEntry,
+            reason: input.reviewerNotes || current.reason,
+          });
+        }
+
+        const entry = await storage.createTimeClockEntry({
+          organizationId: orgId,
+          staffId: current.staffId,
+          userId: req.session.user?.id ?? null,
+          locationId: null,
+          eventType: current.eventType,
+          eventTime: new Date(current.requestedEventTime),
+          latitude: null,
+          longitude: null,
+          accuracy: null,
+          distanceMeters: null,
+          geofenceRadiusMeters: null,
+          status: "manual_adjusted",
+          notes: `Ajuste aprovado: ${current.reason}${current.notes ? ` | ${current.notes}` : ""}`,
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent") ?? null,
+        });
+        appliedEntryId = entry.id;
+        await createTimeClockAuditLog({
+          orgId,
+          staffId: current.staffId,
+          entityType: "time_clock_entry",
+          entityId: entry.id,
+          action: "manual_entry_created",
+          performedByUserId: req.session.user?.id ?? null,
+          newValue: entry,
+          reason: input.reviewerNotes || current.reason,
+        });
+      }
+
+      const updated = await storage.updateTimeClockAdjustmentRequest(orgId, id, {
+        status: input.status,
+        reviewedByUserId: req.session.user?.id ?? null,
+        reviewedAt: new Date(),
+        reviewerNotes: input.reviewerNotes?.trim() || null,
+        appliedEntryId,
+      });
+      await createTimeClockAuditLog({
+        orgId,
+        staffId: current.staffId,
+        entityType: "time_clock_adjustment_request",
+        entityId: id,
+        action: input.status,
+        performedByUserId: req.session.user?.id ?? null,
+        previousValue: current,
+        newValue: updated,
+        reason: input.reviewerNotes || null,
+      });
+      const adjustmentEventLabel = TIME_CLOCK_EVENT_LABELS[current.eventType as TimeClockEventType] ?? "Batida";
+      const adjustmentStatusLabel = input.status === "approved" ? "aprovado" : "reprovado";
+      await notifyUsers(
+        orgId,
+        [
+          current.requestedByUserId,
+          ...(await resolveNotificationUserIdsForStaff(orgId, current.staffId)),
+        ],
+        {
+          staffId: current.staffId,
+          type: "time_clock_adjustment_reviewed",
+          severity: input.status === "approved" ? "success" : "warning",
+          sourceModule: "time_clock",
+          title: `Ajuste ${adjustmentStatusLabel}`,
+          message: `Seu ajuste de ${adjustmentEventLabel.toLowerCase()} em ${formatNotificationDateTime(new Date(current.requestedEventTime))} foi ${adjustmentStatusLabel}.`,
+          actionUrl: buildTimeClockActionUrl({
+            entryId: appliedEntryId ?? current.entryId ?? null,
+            adjustmentId: id,
+            staffId: current.staffId,
+            month: getTimeClockReferenceMonth(new Date(current.requestedEventTime)),
+          }),
+          entityType: "time_clock_adjustment_request",
+          entityId: id,
+          metadata: { eventType: current.eventType, status: input.status, reviewerNotes: input.reviewerNotes ?? null },
+        },
+      );
+      res.json(updated);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+      }
+      if (error instanceof Error) return res.status(400).json({ message: error.message });
+      next(error);
+    }
+  });
+
+  app.get("/api/time-clock/audit", requireAuth, requireRole("admin", "administrativo"), async (req, res, next) => {
+    try {
+      if (!isTimeClockManager(req.session.user)) {
+        return res.status(403).json({ message: "Apenas gestor pode consultar auditoria." });
+      }
+      const orgId = getOrgId(req);
+      const month = timeClockMonthSchema.parse(String(req.query.month || toDateOnly(new Date()).slice(0, 7)));
+      const staffId = req.query.staffId ? Number(req.query.staffId) : null;
+      if (staffId !== null && (!Number.isInteger(staffId) || staffId <= 0)) {
+        return res.status(400).json({ message: "Colaborador invalido." });
+      }
+      const range = getTimeClockMonthRange(month);
+      const logs = await storage.getTimeClockAuditLogs(orgId, {
+        staffId: staffId ?? undefined,
+        start: range.start,
+        end: range.end,
+      });
+      res.json(logs);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+      }
+      next(error);
+    }
+  });
+
+  app.get("/api/time-clock/closure", requireAuth, requireRole(...TIME_CLOCK_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      const month = timeClockMonthSchema.parse(String(req.query.month || toDateOnly(new Date()).slice(0, 7)));
+      const closure = await storage.getTimeClockClosure(orgId, month);
+      res.json({ month, closure: closure ?? null, closed: closure?.status === "closed" });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Mes invalido." });
+      }
+      next(error);
+    }
+  });
+
+  app.post("/api/time-clock/closures", requireAuth, requireRole("admin", "administrativo"), async (req, res, next) => {
+    try {
+      if (!isTimeClockManager(req.session.user)) {
+        return res.status(403).json({ message: "Apenas gestor pode fechar ponto." });
+      }
+      const orgId = getOrgId(req);
+      const input = timeClockClosureInputSchema.parse(req.body);
+      const current = await storage.getTimeClockClosure(orgId, input.month);
+      let closure;
+      if (input.action === "close") {
+        const range = getTimeClockMonthRange(input.month);
+        const environmentSettings = (res.locals.environmentSettings as EnvironmentSettings | undefined)
+          ?? (await getOrganizationEnvironmentSettings(orgId))?.settings
+          ?? DEFAULT_ENVIRONMENT_SETTINGS;
+        const pendingAdjustments = await storage.getTimeClockAdjustmentRequests(orgId, {
+          status: "pending",
+          start: range.start,
+          end: range.end,
+        });
+        const [entries, shifts, auditLogs] = await Promise.all([
+          storage.getTimeClockEntries(orgId, { start: range.start, end: range.end }),
+          storage.getShiftAssignments(orgId, { start: range.start, end: range.end }),
+          storage.getTimeClockAuditLogs(orgId, { start: range.start, end: range.end }),
+        ]);
+        const summary = summarizeTimeClockEntries(entries, shifts, range.start, range.end, environmentSettings.timeClock);
+        const outOfRangeAttempts = auditLogs.filter((log: any) => log.action === "out_of_range_attempt").length;
+        const pendingApprovalEntries = entries.filter((entry: any) => entry.status === "pending_approval").length;
+        const closureBlockers: string[] = [];
+        if (summary.dailySummaries.length === 0) closureBlockers.push("Nao ha dados de ponto no mes.");
+        if (pendingAdjustments.length > 0) closureBlockers.push("Resolva os ajustes pendentes antes de fechar.");
+        if (pendingApprovalEntries > 0) closureBlockers.push("Existem batidas sem escala aguardando aprovacao.");
+        if (environmentSettings.timeClock.blockCloseWithIncompleteDays && summary.monthSummary.incompleteDays > 0) {
+          closureBlockers.push("Existem jornadas incompletas.");
+        }
+        if (environmentSettings.timeClock.blockCloseWithAbsences && summary.monthSummary.absences > 0) {
+          closureBlockers.push("Existem faltas no periodo.");
+        }
+        if (environmentSettings.timeClock.blockCloseWithOutOfRangeAttempts && outOfRangeAttempts > 0) {
+          closureBlockers.push("Existem tentativas fora do raio no periodo.");
+        }
+        if (closureBlockers.length > 0) {
+          return res.status(400).json({ message: closureBlockers.join(" ") });
+        }
+        closure = current
+          ? await storage.updateTimeClockClosure(orgId, current.id, {
+            status: "closed",
+            notes: input.notes?.trim() || current.notes,
+            closedByUserId: req.session.user?.id ?? null,
+            closedAt: new Date(),
+            reopenedByUserId: null,
+            reopenedAt: null,
+          })
+          : await storage.createTimeClockClosure({
+            organizationId: orgId,
+            referenceMonth: input.month,
+            status: "closed",
+            notes: input.notes?.trim() || null,
+            closedByUserId: req.session.user?.id ?? null,
+            closedAt: new Date(),
+            reopenedByUserId: null,
+            reopenedAt: null,
+          });
+      } else {
+        if (!current) return res.status(404).json({ message: "Competencia ainda nao foi fechada." });
+        closure = await storage.updateTimeClockClosure(orgId, current.id, {
+          status: "reopened",
+          notes: input.notes?.trim() || current.notes,
+          reopenedByUserId: req.session.user?.id ?? null,
+          reopenedAt: new Date(),
+        });
+      }
+      await createTimeClockAuditLog({
+        orgId,
+        entityType: "time_clock_closure",
+        entityId: closure.id,
+        action: input.action === "close" ? "closed" : "reopened",
+        performedByUserId: req.session.user?.id ?? null,
+        previousValue: current ?? null,
+        newValue: closure,
+        reason: input.notes || null,
+      });
+      res.json(closure);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+      }
+      next(error);
+    }
+  });
+
+  app.post("/api/time-clock/punch", requireAuth, requireRole(...TIME_CLOCK_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      const sessionUser = req.session.user;
+      const linkedStaff = await resolveLinkedStaffForSessionUser(orgId, sessionUser);
+      if (!linkedStaff || linkedStaff.active === false) {
+        return res.status(400).json({ message: "Seu usuario nao esta vinculado a um colaborador ativo." });
+      }
+
+      const input = timeClockPunchInputSchema.parse(req.body);
+      const eventTime = new Date();
+      await ensureTimeClockMonthOpen(orgId, getTimeClockReferenceMonth(eventTime));
+      const locations = await storage.getTimeClockLocations(orgId);
+      const nearest = getNearestTimeClockLocation(locations, input.latitude, input.longitude);
+      if (!nearest) {
+        return res.status(400).json({ message: "Nenhum local autorizado ativo configurado para o ponto." });
+      }
+
+      const todayStart = new Date(eventTime);
+      todayStart.setHours(0, 0, 0, 0);
+      const todayEnd = new Date(todayStart);
+      todayEnd.setHours(23, 59, 59, 999);
+      const todayShifts = await storage.getShiftAssignments(orgId, {
+        staffId: linkedStaff.id,
+        start: todayStart,
+        end: todayEnd,
+      });
+      const stateStart = getTimeClockStateWindowStart(todayStart, todayShifts);
+      const stateEntries = await storage.getTimeClockEntries(orgId, {
+        staffId: linkedStaff.id,
+        start: stateStart,
+        end: todayEnd,
+      });
+      const current = getTimeClockState(stateEntries, todayShifts);
+      if (!current.nextActions.includes(input.eventType)) {
+        return res.status(400).json({
+          message: current.message || "Acao de ponto invalida para o estado atual da jornada.",
+        });
+      }
+      const previousStateEntry = getLastTimeClockStateEntry(stateEntries);
+      const openBreakEntry = input.eventType === "break_end" && previousStateEntry?.eventType === "break_start"
+        ? previousStateEntry
+        : null;
+      const shouldLoadTimeClockSettings =
+        input.eventType === "clock_in"
+        || input.eventType === "break_start"
+        || input.eventType === "break_end";
+      const timeClockSettings = shouldLoadTimeClockSettings
+        ? await getTimeClockSettingsForRequest(orgId, res.locals.environmentSettings as EnvironmentSettings | undefined)
+        : null;
+
+      const roundedDistance = Math.round(nearest.distanceMeters);
+      const allowed = nearest.distanceMeters <= nearest.location.radiusMeters;
+      const requiresApproval = todayShifts.length === 0;
+      const entryPayload = {
+        organizationId: orgId,
+        staffId: linkedStaff.id,
+        userId: sessionUser?.id ?? null,
+        locationId: nearest.location.id,
+        eventType: input.eventType,
+        eventTime,
+        latitude: input.latitude,
+        longitude: input.longitude,
+        accuracy: input.accuracy ?? null,
+        distanceMeters: roundedDistance,
+        geofenceRadiusMeters: nearest.location.radiusMeters,
+        status: requiresApproval ? "pending_approval" : "valid",
+        notes: [
+          requiresApproval ? "Pendente de aprovacao: batida registrada sem escala prevista." : null,
+          input.notes?.trim() || null,
+        ].filter(Boolean).join(" | ") || null,
+        ipAddress: req.ip,
+        userAgent: req.get("user-agent") ?? null,
+      };
+      if (!allowed) {
+        await createTimeClockAuditLog({
+          orgId,
+          staffId: linkedStaff.id,
+          entityType: "time_clock_entry",
+          entityId: null,
+          action: "out_of_range_attempt",
+          performedByUserId: sessionUser?.id ?? null,
+          newValue: {
+            eventType: input.eventType,
+            eventTime: eventTime.toISOString(),
+            latitude: input.latitude,
+            longitude: input.longitude,
+            accuracy: input.accuracy ?? null,
+            locationId: nearest.location.id,
+            locationName: nearest.location.name,
+            distanceMeters: roundedDistance,
+            radiusMeters: nearest.location.radiusMeters,
+          },
+          reason: "Tentativa fora do raio permitido.",
+        });
+        return res.status(403).json({
+          message: `Fora do raio permitido (${roundedDistance}m de distancia).`,
+          location: nearest.location,
+          distanceMeters: roundedDistance,
+        });
+      }
+
+      const entry = await storage.createTimeClockEntry(entryPayload);
+      if (requiresApproval) {
+        await createTimeClockAuditLog({
+          orgId,
+          staffId: linkedStaff.id,
+          entityType: "time_clock_entry",
+          entityId: entry.id,
+          action: "pending_approval_created",
+          performedByUserId: sessionUser?.id ?? null,
+          newValue: entry,
+          reason: "Batida registrada sem escala prevista.",
+        });
+      }
+      const punchEventLabel = TIME_CLOCK_EVENT_LABELS[input.eventType];
+      const punchNotificationMessage = buildPunchNotificationMessage({
+        eventType: input.eventType,
+        eventTime,
+        requiresApproval,
+        settings: timeClockSettings,
+      });
+      await notifyUsers(orgId, [sessionUser?.id], {
+        staffId: linkedStaff.id,
+        type: "time_clock_punch_registered",
+        severity: requiresApproval ? "warning" : "success",
+        sourceModule: "time_clock",
+        title: "Ponto registrado",
+        message: punchNotificationMessage,
+        actionUrl: buildTimeClockActionUrl({
+          entryId: entry.id,
+          staffId: linkedStaff.id,
+          month: getTimeClockReferenceMonth(eventTime),
+        }),
+        entityType: "time_clock_entry",
+        entityId: entry.id,
+        metadata: {
+          eventType: input.eventType,
+          status: entry.status,
+          locationId: nearest.location.id,
+          locationName: nearest.location.name,
+          distanceMeters: roundedDistance,
+        },
+      });
+      if (requiresApproval) {
+        await notifyTimeClockManagers(orgId, {
+          staffId: linkedStaff.id,
+          type: "time_clock_entry_pending_approval",
+          severity: "warning",
+          title: "Batida sem escala para revisar",
+          message: `${linkedStaff.name} registrou ${punchEventLabel.toLowerCase()} sem escala prevista em ${formatNotificationDateTime(eventTime)}.`,
+          actionUrl: buildTimeClockActionUrl({
+            entryId: entry.id,
+            staffId: linkedStaff.id,
+            month: getTimeClockReferenceMonth(eventTime),
+          }),
+          entityType: "time_clock_entry",
+          entityId: entry.id,
+          metadata: {
+            eventType: input.eventType,
+            status: entry.status,
+            locationId: nearest.location.id,
+            locationName: nearest.location.name,
+            distanceMeters: roundedDistance,
+          },
+        });
+      }
+      try {
+        if (input.eventType === "break_start" && timeClockSettings) {
+          await scheduleBreakNotifications({
+            orgId,
+            sessionUser,
+            staffId: linkedStaff.id,
+            staffName: linkedStaff.name,
+            breakEntryId: entry.id,
+            breakStart: eventTime,
+            settings: timeClockSettings,
+          });
+        }
+        if (input.eventType === "break_end") {
+          await cancelBreakNotifications(orgId, openBreakEntry?.id ?? null);
+        }
+        if ((input.eventType === "clock_in" || input.eventType === "break_end") && timeClockSettings) {
+          await scheduleClockOutMissingNotifications({
+            orgId,
+            sessionUser,
+            staffId: linkedStaff.id,
+            staffName: linkedStaff.name,
+            triggerEntryId: entry.id,
+            eventTime,
+            shifts: todayShifts,
+            settings: timeClockSettings,
+          });
+        }
+        if (input.eventType === "clock_out") {
+          await cancelClockOutMissingNotifications(orgId, linkedStaff.id);
+        }
+      } catch (notificationError) {
+        console.error("[notifications] erro ao agendar/cancelar alertas de pausa", notificationError);
+      }
+      const nextEntries = [...stateEntries, entry];
+      res.status(201).json({
+        entry,
+        current: getTimeClockState(nextEntries, todayShifts),
+        location: nearest.location,
+        distanceMeters: roundedDistance,
+        message: punchNotificationMessage,
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados invalidos." });
+      }
+      if (error instanceof Error) {
+        return res.status(400).json({ message: error.message });
+      }
+      next(error);
+    }
   });
 
   // ===== CONTRACTS =====
@@ -3442,6 +5639,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     amount: z.coerce.number().min(0).optional().default(0),
     expectedCloseDate: z.string().trim().optional().nullable(),
     ownerId: z.coerce.number().int().positive().optional().nullable(),
+    ownerStaffId: z.coerce.number().int().positive().optional().nullable(),
     notes: z.string().trim().optional().nullable(),
     followUpTasks: z.array(crmFollowUpTaskSchema).optional().default([]),
     lostReason: z.string().trim().optional().nullable(),
@@ -3479,6 +5677,45 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     organizationId: z.coerce.number().int().positive().optional(),
     followUpTasks: z.array(crmFollowUpTaskSchema).max(100),
   });
+  const crmDateKeySchema = z.string().regex(CRM_FOLLOW_UP_DATE_REGEX, "Data invalida. Use YYYY-MM-DD.");
+  const optionalCrmQueryText = (max = 120) =>
+    z.preprocess(
+      (value) => {
+        if (Array.isArray(value)) value = value[0];
+        if (typeof value !== "string") return undefined;
+        const trimmed = value.trim();
+        return trimmed.length > 0 ? trimmed : undefined;
+      },
+      z.string().max(max).optional(),
+    );
+  const crmOpportunitiesQuerySchema = z.object({
+    organizationId: z.coerce.number().int().positive().optional(),
+    stage: crmStageSchema.optional(),
+    search: optionalCrmQueryText(140),
+    source: optionalCrmQueryText(120),
+    ownerId: z.coerce.number().int().positive().optional(),
+    ownerStaffId: z.coerce.number().int().positive().optional(),
+    expectedCloseFrom: z.preprocess(
+      (value) => (typeof value === "string" && value.trim() ? value.trim() : undefined),
+      crmDateKeySchema.optional(),
+    ),
+    expectedCloseTo: z.preprocess(
+      (value) => (typeof value === "string" && value.trim() ? value.trim() : undefined),
+      crmDateKeySchema.optional(),
+    ),
+    followUpStatus: z.enum(["pending", "overdue", "today", "none"]).optional(),
+    page: z.coerce.number().int().min(1).optional(),
+    pageSize: z.coerce.number().int().min(1).max(100).optional(),
+  });
+  const assertCrmOwnerStaff = async (orgId: number, ownerStaffId?: number | null) => {
+    if (!ownerStaffId) return;
+    const member = await storage.getStaffMember(orgId, ownerStaffId);
+    if (!member || member.active === false) {
+      const error = new Error("Responsavel da equipe invalido.");
+      (error as Error & { status?: number }).status = 400;
+      throw error;
+    }
+  };
 
   app.get("/api/crm/stages", requireAuth, requireRole(...CRM_ROLES), async (req, res, next) => {
     try {
@@ -3527,23 +5764,56 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.get("/api/crm/opportunities", requireAuth, requireRole(...CRM_ROLES), async (req, res, next) => {
+  const crmResponsiblesHandler = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const orgId = await resolveOrgIdForCrm(req, req.query.organizationId);
+      const teamMembers = await storage.getStaff(orgId);
+      res.json(
+        teamMembers
+          .filter((item) => item.active !== false)
+          .map((item) => ({
+            id: item.id,
+            name: item.name,
+            role: item.role,
+            active: item.active,
+          })),
+      );
+    } catch (error) {
+      next(error);
+    }
+  };
+  app.get("/api/crm/responsibles", requireAuth, requireRole(...CRM_ROLES), crmResponsiblesHandler);
+  app.get("/api/crm/users", requireAuth, requireRole(...CRM_ROLES), crmResponsiblesHandler);
+
+  app.get("/api/crm/opportunities", requireAuth, requireRole(...CRM_ROLES), async (req, res, next) => {
+    try {
+      const parsedQuery = crmOpportunitiesQuerySchema.parse(req.query);
+      const orgId = await resolveOrgIdForCrm(req, parsedQuery.organizationId);
       const settingsResult = await loadEnvironmentSettingsForOrg(orgId);
       const allowedStages = getCrmStageValuesFromSettings(settingsResult.settings);
-      const stageRaw = typeof req.query.stage === "string" ? req.query.stage : undefined;
-      const stage = stageRaw ? String(normalizeLegacyCrmStage(stageRaw)) : undefined;
-      if (stage && !allowedStages.includes(stage)) {
+      if (parsedQuery.stage && !allowedStages.includes(parsedQuery.stage)) {
         return res.status(400).json({ message: "Etapa invalida para esta organizacao." });
       }
-      const search = typeof req.query.search === "string" ? req.query.search : undefined;
-      const ownerId = req.query.ownerId ? Number(req.query.ownerId) : undefined;
-      const opportunities = await storage.getCrmOpportunities(orgId, {
-        stage,
-        search,
-        ownerId: Number.isInteger(ownerId) ? ownerId : undefined,
-      });
+      const filters = {
+        stage: parsedQuery.stage,
+        search: parsedQuery.search,
+        ownerId: parsedQuery.ownerId,
+        ownerStaffId: parsedQuery.ownerStaffId,
+        source: parsedQuery.source,
+        expectedCloseFrom: parsedQuery.expectedCloseFrom,
+        expectedCloseTo: parsedQuery.expectedCloseTo,
+        followUpStatus: parsedQuery.followUpStatus,
+      };
+      const wantsPagination = parsedQuery.page !== undefined || parsedQuery.pageSize !== undefined;
+      if (wantsPagination) {
+        const pageResult = await storage.getCrmOpportunitiesPaginated(orgId, {
+          ...filters,
+          page: parsedQuery.page,
+          pageSize: parsedQuery.pageSize,
+        });
+        return res.json(pageResult);
+      }
+      const opportunities = await storage.getCrmOpportunities(orgId, filters);
       res.json(opportunities);
     } catch (error) {
       next(error);
@@ -3577,6 +5847,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!resolvedStage || !allowedStages.includes(resolvedStage)) {
         return res.status(400).json({ message: "Etapa invalida para esta organizacao." });
       }
+      await assertCrmOwnerStaff(orgId, parsed.ownerStaffId);
       const created = await storage.createCrmOpportunity({
         organizationId: orgId,
         title: parsed.title,
@@ -3588,6 +5859,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         amount: parsed.amount,
         expectedCloseDate: parsed.expectedCloseDate || null,
         ownerId: parsed.ownerId ?? null,
+        ownerStaffId: parsed.ownerStaffId ?? null,
         notes: parsed.notes || null,
         followUpTasks: normalizeCrmFollowUpTasks(parsed.followUpTasks),
         lostReason: stageUsesLostReason(resolvedStage) ? (parsed.lostReason || null) : null,
@@ -3613,6 +5885,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (parsed.stage && !allowedStages.includes(parsed.stage)) {
         return res.status(400).json({ message: "Etapa invalida para esta organizacao." });
       }
+      await assertCrmOwnerStaff(orgId, parsed.ownerStaffId);
       const updated = await storage.updateCrmOpportunity(orgId, opportunityId, {
         ...parsed,
         contactName: parsed.contactName === undefined ? undefined : (parsed.contactName || null),
@@ -3621,6 +5894,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         source: parsed.source === undefined ? undefined : (parsed.source || null),
         expectedCloseDate: parsed.expectedCloseDate === undefined ? undefined : (parsed.expectedCloseDate || null),
         ownerId: parsed.ownerId === undefined ? undefined : (parsed.ownerId ?? null),
+        ownerStaffId: parsed.ownerStaffId === undefined ? undefined : (parsed.ownerStaffId ?? null),
         notes: parsed.notes === undefined ? undefined : (parsed.notes || null),
         followUpTasks: parsed.followUpTasks === undefined
           ? undefined

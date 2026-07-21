@@ -4,7 +4,7 @@ import { useResidents } from "@/hooks/use-residents";
 import { useQuery } from "@tanstack/react-query";
 import {
   Users, BedDouble, Pill, AlertCircle, Calendar, TrendingUp,
-  Activity, ArrowRight, ChevronRight, Download, BarChart2, PieChartIcon,
+  Activity, ArrowRight, ChevronRight, Download, BarChart2, PieChartIcon, Clock3,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -145,6 +145,11 @@ export default function Dashboard() {
   const activeShifts = shifts.filter((s: any) => now >= new Date(s.startTime) && now <= new Date(s.endTime));
   const hour = now.getHours();
   const greeting = hour < 12 ? "Bom dia" : hour < 18 ? "Boa tarde" : "Boa noite";
+  const timeClockPendingTotal =
+    (stats?.timeClockPendingApprovals ?? 0)
+    + (stats?.timeClockPendingAdjustments ?? 0)
+    + (stats?.timeClockIncompleteToday ?? 0)
+    + (stats?.timeClockOutOfRangeToday ?? 0);
 
   // ── Chart data ──────────────────────────────────────────────────────────────
 
@@ -231,8 +236,8 @@ export default function Dashboard() {
     return (
       <div className="space-y-6 animate-pulse">
         <div className="h-10 w-full max-w-72 bg-muted rounded-xl" />
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-          {[1, 2, 3, 4].map((i) => <div key={i} className="h-36 bg-muted rounded-2xl" />)}
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+          {[1, 2, 3, 4, 5].map((i) => <div key={i} className="h-36 bg-muted rounded-2xl" />)}
         </div>
         <div className="grid gap-4 lg:grid-cols-3">
           <div className="h-56 bg-muted rounded-2xl lg:col-span-2" />
@@ -289,12 +294,34 @@ export default function Dashboard() {
       </div>
 
       {/* KPI Cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <KpiCard title="Residentes Ativos" value={stats.totalResidents} desc="Cadastrados no sistema" icon={Users} color={BRAND.blue} gradient={BRAND.cyan} to="/residents" />
         <KpiCard title="Taxa de Ocupação" value={`${stats.occupancyRate}%`} desc={`${stats.totalResidents} de ${stats.capacity} vagas ocupadas`} icon={BedDouble} color={BRAND.cyan} gradient={BRAND.blue} to="/residents" />
         <KpiCard title="Medicações Ativas" value={stats.activeMedications} desc="Prescrições vigentes" icon={Pill} color={BRAND.green} gradient={BRAND.cyan} to="/residents" />
+        <KpiCard title="Doses em Atraso" value={stats.overdueMedicationDoses} desc="Pendentes ate agora" icon={AlertCircle} color={BRAND.red} gradient={BRAND.yellow} to="/prontuario" />
+        <KpiCard title="Pendencias de Ponto" value={timeClockPendingTotal} desc="Acoes para revisar" icon={Clock3} color={timeClockPendingTotal > 0 ? BRAND.red : BRAND.green} gradient={BRAND.yellow} to="/ponto-eletronico" />
         <KpiCard title="Plantões Agora" value={activeShifts.length} desc="Em andamento agora" icon={Activity} color={BRAND.purple} gradient={BRAND.blue} to="/escalas" />
       </div>
+
+      {timeClockPendingTotal > 0 && (
+        <button
+          type="button"
+          onClick={() => navigate("/ponto-eletronico")}
+          className="flex w-full flex-col gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-left text-amber-800 shadow-sm transition hover:border-amber-300 hover:shadow-md sm:flex-row sm:items-center sm:justify-between"
+          data-testid="alert-time-clock-pending"
+        >
+          <div className="flex min-w-0 items-start gap-2">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold">Pendencias de ponto aguardando acao</p>
+              <p className="mt-0.5 text-xs">
+                {(stats.timeClockPendingApprovals ?? 0)} batida(s) sem escala, {(stats.timeClockPendingAdjustments ?? 0)} ajuste(s), {(stats.timeClockIncompleteToday ?? 0)} jornada(s) incompleta(s) hoje e {(stats.timeClockOutOfRangeToday ?? 0)} tentativa(s) fora do raio hoje.
+              </p>
+            </div>
+          </div>
+          <span className="text-xs font-semibold">Abrir ponto</span>
+        </button>
+      )}
 
       {/* Charts Row */}
       <div className="grid gap-4 lg:grid-cols-3">
@@ -471,7 +498,9 @@ export default function Dashboard() {
                 {[
                   { label: "Residentes", val: `${stats.totalResidents} / ${stats.capacity}`, color: BRAND.blue, to: "/residents" },
                   { label: "Medicações", val: stats.activeMedications, color: BRAND.green, to: "/residents" },
+                  { label: "Doses atrasadas", val: stats.overdueMedicationDoses, color: BRAND.red, to: "/prontuario" },
                   { label: "Plantões ativos", val: activeShifts.length, color: BRAND.cyan, to: "/escalas" },
+                  { label: "Pendencias de ponto", val: timeClockPendingTotal, color: timeClockPendingTotal > 0 ? BRAND.red : BRAND.green, to: "/ponto-eletronico" },
                   { label: "Ocorrências abertas", val: stats.pendingOccurrences, color: BRAND.yellow, to: "/residents" },
                   { label: "Mensalidades vencidas", val: stats.overdueFeesCount, color: BRAND.red, to: "/financeiro" },
                 ].map((item) => (

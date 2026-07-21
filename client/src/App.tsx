@@ -16,9 +16,11 @@ import Staff from "@/pages/Staff";
 import Escalas from "@/pages/Escalas";
 import Admin from "@/pages/Admin";
 import Prontuario from "@/pages/Prontuario";
+import PontoEletronico from "@/pages/PontoEletronico";
 import Financeiro from "@/pages/Financeiro";
 import Crm from "@/pages/Crm";
 import EnvironmentSettings from "@/pages/EnvironmentSettings";
+import Notificacoes from "@/pages/Notificacoes";
 import FamilyPortalLogin from "@/pages/FamilyPortalLogin";
 import FamilyPortalHome from "@/pages/FamilyPortalHome";
 import NotFound from "@/pages/not-found";
@@ -71,7 +73,7 @@ function PrivateRoute({ component: Component, superAdminOnly = false, allowSuper
   // Verificação de permissão por papel
   if (!user.isSuperAdmin && !superAdminOnly && route && !canAccessRoute(user.role, route, environmentSettings?.roleRoutes)) {
     return (
-      <div className="min-h-screen bg-background flex">
+      <div className="min-h-screen bg-background md:flex">
         <Sidebar />
         <main className="flex-1 md:pl-64">
           <div className="p-3 sm:p-4 lg:p-6 h-full overflow-y-auto">
@@ -83,7 +85,7 @@ function PrivateRoute({ component: Component, superAdminOnly = false, allowSuper
   }
 
   return (
-    <div className="min-h-screen bg-background flex">
+    <div className="min-h-screen bg-background md:flex">
       <Sidebar />
       <main className="flex-1 md:pl-64">
         <div className="p-3 sm:p-4 lg:p-6 h-full overflow-y-auto">
@@ -114,6 +116,9 @@ function Router() {
       <Route path="/escalas">
         <PrivateRoute component={Escalas} route="/escalas" />
       </Route>
+      <Route path="/ponto-eletronico">
+        <PrivateRoute component={PontoEletronico} route="/ponto-eletronico" />
+      </Route>
       <Route path="/occurrences">
         <Redirect to="/residents" />
       </Route>
@@ -128,6 +133,9 @@ function Router() {
       </Route>
       <Route path="/environment">
         <PrivateRoute component={EnvironmentSettings} route="/environment" />
+      </Route>
+      <Route path="/notificacoes">
+        <PrivateRoute component={Notificacoes} />
       </Route>
       <Route path="/admin">
         <PrivateRoute component={Admin} superAdminOnly />

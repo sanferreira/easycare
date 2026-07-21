@@ -12,10 +12,12 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useResidents } from "@/hooks/use-residents";
 import { useStaff } from "@/hooks/use-staff";
+import { toDateInputValue, toMonthInputValue } from "@/lib/date";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import {
@@ -30,7 +32,7 @@ import {
 } from "recharts";
 import {
   DollarSign, FileText, Plus, TrendingUp, AlertCircle, CheckCircle2,
-  Clock, User, Trash2, Pencil, Wallet, Download
+  Clock, User, Trash2, Pencil, Wallet, Download, ChevronLeft, ChevronRight
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { AccountPayable, Contract, MonthlyFee } from "@shared/schema";
@@ -131,6 +133,8 @@ const feeSchema = z.object({
   fine: z.coerce.number().default(0),
   status: z.enum(["pending", "paid", "overdue", "cancelled"]).default("pending"),
   notes: z.string().optional(),
+  recurrenceEnabled: z.boolean().default(false),
+  recurrenceMonths: z.coerce.number().int().min(1).max(60).default(1),
 });
 
 const payableSchema = z.object({
@@ -149,6 +153,15 @@ const payableSchema = z.object({
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
+}
+
+function escapeHtml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 function parseDateOnly(value: string | Date | null | undefined): Date | null {
@@ -172,6 +185,68 @@ function monthKeyFromDate(value: string | Date | null | undefined): string | nul
   const date = parseDateOnly(value);
   if (!date) return null;
   return format(date, "yyyy-MM");
+}
+
+function formatDateForDocument(value: string | Date | null | undefined): string {
+  const parsed = parseDateOnly(value);
+  return parsed ? format(parsed, "dd/MM/yyyy", { locale: ptBR }) : "-";
+}
+
+function addMonthsToMonthKey(monthKey: string, monthsToAdd: number): string {
+  const [yearRaw, monthRaw] = monthKey.split("-").map(Number);
+  const date = new Date(yearRaw, (monthRaw || 1) - 1 + monthsToAdd, 1);
+  return format(date, "yyyy-MM");
+}
+
+function dueDateForReferenceMonth(referenceMonth: string, dueDay: number): string {
+  const [year, month] = referenceMonth.split("-").map(Number);
+  const lastDay = new Date(year, month, 0).getDate();
+  const day = Math.min(Math.max(1, dueDay), lastDay);
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function MonthStepper({
+  value,
+  onChange,
+  inputTestId,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  inputTestId: string;
+}) {
+  const safeValue = /^\d{4}-(0[1-9]|1[0-2])$/.test(value) ? value : toMonthInputValue();
+
+  return (
+    <div className="flex items-center gap-1">
+      <Button
+        type="button"
+        variant="outline"
+        size="icon"
+        className="h-9 w-8 shrink-0"
+        onClick={() => onChange(addMonthsToMonthKey(safeValue, -1))}
+        aria-label="Mes anterior"
+      >
+        <ChevronLeft className="h-4 w-4" />
+      </Button>
+      <Input
+        type="month"
+        value={safeValue}
+        onChange={(event) => onChange(event.target.value || toMonthInputValue())}
+        className="h-9 w-[150px] max-w-full pr-1 text-sm"
+        data-testid={inputTestId}
+      />
+      <Button
+        type="button"
+        variant="outline"
+        size="icon"
+        className="h-9 w-8 shrink-0"
+        onClick={() => onChange(addMonthsToMonthKey(safeValue, 1))}
+        aria-label="Proximo mes"
+      >
+        <ChevronRight className="h-4 w-4" />
+      </Button>
+    </div>
+  );
 }
 
 function parseNumberInput(value: string): number {
@@ -225,21 +300,21 @@ async function parseApiJson<T>(res: Response, fallbackMessage: string): Promise<
 
 function KpiCard({ title, value, sub, icon: Icon, color }: any) {
   return (
-    <div className="bg-card rounded-2xl border border-border/60 shadow-sm p-5">
-      <div className="flex items-center justify-between mb-3">
-        <p className="text-sm font-medium text-muted-foreground">{title}</p>
-        <div className="h-9 w-9 rounded-xl flex items-center justify-center" style={{ background: `${color}18` }}>
-          <Icon className="h-4 w-4" style={{ color }} />
+    <div className="rounded-lg border border-border/70 bg-card px-4 py-3 shadow-sm">
+      <div className="flex items-center gap-2">
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md" style={{ background: `${color}14` }}>
+          <Icon className="h-3.5 w-3.5" style={{ color }} />
         </div>
+        <p className="min-w-0 truncate text-xs font-medium text-muted-foreground">{title}</p>
       </div>
-      <p className="text-2xl font-bold text-foreground" style={{ fontFamily: "var(--font-display)" }}>{value}</p>
-      {sub && <p className="text-xs text-muted-foreground mt-1">{sub}</p>}
+      <p className="mt-2 text-xl font-semibold leading-tight text-foreground" style={{ fontFamily: "var(--font-display)" }}>{value}</p>
+      {sub && <p className="mt-1 truncate text-xs text-muted-foreground">{sub}</p>}
     </div>
   );
 }
 
 export default function Financeiro() {
-  const defaultReturnMonth = new Date().toISOString().slice(0, 7);
+  const defaultReturnMonth = toMonthInputValue();
   const [contractOpen, setContractOpen] = useState(false);
   const [feeOpen, setFeeOpen] = useState(false);
   const [payableOpen, setPayableOpen] = useState(false);
@@ -313,17 +388,6 @@ export default function Financeiro() {
     return item.status;
   }
 
-  const totalPendingFees = fees.filter(f => effectiveStatus(f) === "pending").reduce((acc, f) => acc + (f.amount ?? 0), 0);
-  const totalOverdue = fees.filter(f => effectiveStatus(f) === "overdue").reduce((acc, f) => acc + (f.amount ?? 0), 0);
-  const totalReceived = fees.filter(f => f.status === "paid").reduce((acc, f) => acc + (f.amount ?? 0), 0);
-  const activeContracts = contracts.filter(c => c.status === "active").length;
-  const totalPendingPayables = accountsPayable
-    .filter((item) => effectivePayableStatus(item) === "pending")
-    .reduce((acc, item) => acc + (item.amount ?? 0) + (item.extra ?? 0) - (item.discount ?? 0), 0);
-  const totalOverduePayables = accountsPayable
-    .filter((item) => effectivePayableStatus(item) === "overdue")
-    .reduce((acc, item) => acc + (item.amount ?? 0) + (item.extra ?? 0) - (item.discount ?? 0), 0);
-
   const extraServicesRevenue = parseNumberInput(extraServicesRevenueInput);
   const extraOperationalExpense = parseNumberInput(extraOperationalExpenseInput);
   const expectedDelinquency = parseNumberInput(expectedDelinquencyInput);
@@ -362,6 +426,23 @@ export default function Financeiro() {
       return startsBeforeMonthEnd && endsAfterMonthStart;
     });
   }, [contracts, returnMonth]);
+
+  const totalPendingFees = feesForReturnMonth
+    .filter((fee) => effectiveStatus(fee) === "pending")
+    .reduce((acc, fee) => acc + toCurrencyNumber(fee.amount) + toCurrencyNumber(fee.fine) - toCurrencyNumber(fee.discount), 0);
+  const totalOverdue = feesForReturnMonth
+    .filter((fee) => effectiveStatus(fee) === "overdue")
+    .reduce((acc, fee) => acc + toCurrencyNumber(fee.amount) + toCurrencyNumber(fee.fine) - toCurrencyNumber(fee.discount), 0);
+  const totalReceived = feesForReturnMonth
+    .filter((fee) => fee.status === "paid")
+    .reduce((acc, fee) => acc + toCurrencyNumber(fee.amount) + toCurrencyNumber(fee.fine) - toCurrencyNumber(fee.discount), 0);
+  const activeContracts = contractsForReturnMonth.length;
+  const totalPendingPayables = payablesForReturnMonth
+    .filter((item) => effectivePayableStatus(item) === "pending")
+    .reduce((acc, item) => acc + toCurrencyNumber(item.amount) + toCurrencyNumber(item.extra) - toCurrencyNumber(item.discount), 0);
+  const totalOverduePayables = payablesForReturnMonth
+    .filter((item) => effectivePayableStatus(item) === "overdue")
+    .reduce((acc, item) => acc + toCurrencyNumber(item.amount) + toCurrencyNumber(item.extra) - toCurrencyNumber(item.discount), 0);
 
   const contractualRevenueExpected = feesForReturnMonth
     .filter((fee) => fee.status !== "cancelled")
@@ -652,6 +733,83 @@ export default function Financeiro() {
     printWindow.document.close();
   };
 
+  const printContractDocument = (contract: Contract & { residentName?: string }) => {
+    const printWindow = window.open("", "_blank", "noopener,noreferrer,width=1000,height=900");
+    if (!printWindow) {
+      toast({ title: "Bloqueado pelo navegador", description: "Permita pop-ups para gerar o contrato.", variant: "destructive" });
+      return;
+    }
+
+    const planLabel = PLAN_LABELS[contract.plan ?? "standard"] ?? contract.plan ?? "-";
+    const statusLabel = STATUS_CONTRACT[contract.status ?? "active"]?.label ?? contract.status ?? "-";
+    const generatedAt = format(new Date(), "dd/MM/yyyy HH:mm", { locale: ptBR });
+    printWindow.document.write(`
+      <!doctype html>
+      <html lang="pt-BR">
+        <head>
+          <meta charset="utf-8" />
+          <title>Contrato - ${escapeHtml(contract.residentName ?? "Residente")}</title>
+          <style>
+            body { margin: 28px; color: #111827; font-family: Arial, sans-serif; line-height: 1.55; }
+            header { border-bottom: 2px solid #111827; padding-bottom: 14px; margin-bottom: 22px; }
+            h1 { margin: 0; font-size: 22px; }
+            h2 { margin: 22px 0 10px; font-size: 15px; }
+            p { margin: 0 0 10px; font-size: 13px; }
+            .muted { color: #6b7280; font-size: 12px; }
+            .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 18px; margin-bottom: 18px; font-size: 12px; }
+            .box { border: 1px solid #d1d5db; border-radius: 8px; padding: 12px; margin: 14px 0; }
+            .signature { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 48px; margin-top: 56px; font-size: 12px; }
+            .line { border-top: 1px solid #111827; padding-top: 8px; text-align: center; }
+            @media print { body { margin: 18mm; } }
+          </style>
+        </head>
+        <body>
+          <header>
+            <h1>Contrato de Prestacao de Servicos Assistenciais</h1>
+            <p class="muted">EasyCare - documento gerado em ${escapeHtml(generatedAt)}</p>
+          </header>
+
+          <h2>Dados do contrato</h2>
+          <div class="grid">
+            <div><strong>Residente:</strong> ${escapeHtml(contract.residentName ?? "-")}</div>
+            <div><strong>Plano:</strong> ${escapeHtml(planLabel)}</div>
+            <div><strong>Valor mensal:</strong> ${escapeHtml(formatCurrency(Number(contract.monthlyValue ?? 0)))}</div>
+            <div><strong>Vencimento:</strong> dia ${escapeHtml(contract.paymentDay ?? "-")}</div>
+            <div><strong>Inicio:</strong> ${escapeHtml(formatDateForDocument(contract.startDate))}</div>
+            <div><strong>Termino:</strong> ${escapeHtml(formatDateForDocument(contract.endDate))}</div>
+            <div><strong>Forma de pagamento:</strong> ${escapeHtml(contract.paymentMethod || "-")}</div>
+            <div><strong>Status:</strong> ${escapeHtml(statusLabel)}</div>
+          </div>
+
+          <div class="box">
+            <p>
+              Pelo presente instrumento, as partes registram a contratacao dos servicos assistenciais
+              vinculados ao residente acima identificado, conforme plano, vigencia e valores descritos neste documento.
+            </p>
+            <p>
+              O contratante declara ciencia das rotinas operacionais, regras de pagamento, responsabilidades
+              de comunicacao de dados clinicos relevantes e demais condicoes acordadas com a instituicao.
+            </p>
+            <p>
+              Observacoes: ${escapeHtml(contract.notes || "Sem observacoes adicionais.")}
+            </p>
+          </div>
+
+          <h2>Assinaturas</h2>
+          <div class="signature">
+            <div class="line">Responsavel financeiro</div>
+            <div class="line">Representante da instituicao</div>
+          </div>
+
+          <script>
+            window.onload = function () { setTimeout(function () { window.print(); }, 250); };
+          </script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  };
+
   // Delete contract
   const deleteContract = useMutation({
     mutationFn: async (id: number) => {
@@ -749,7 +907,7 @@ export default function Financeiro() {
   // Contract form
   const contractForm = useForm<z.infer<typeof contractSchema>>({
     resolver: zodResolver(contractSchema),
-    defaultValues: { plan: "standard", paymentDay: 5, monthlyValue: 3200, startDate: new Date().toISOString().split("T")[0] },
+    defaultValues: { plan: "standard", paymentDay: 5, monthlyValue: 3200, startDate: toDateInputValue() },
   });
 
   const createContract = useMutation({
@@ -779,21 +937,38 @@ export default function Financeiro() {
       discount: 0,
       fine: 0,
       referenceMonth: defaultReturnMonth,
-      dueDate: new Date().toISOString().split("T")[0],
+      dueDate: toDateInputValue(),
+      recurrenceEnabled: false,
+      recurrenceMonths: 1,
     },
   });
 
   const createFee = useMutation({
     mutationFn: async (data: z.infer<typeof feeSchema>) => {
-      const res = await fetch("/api/monthly-fees", {
-        method: "POST", credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-      if (!res.ok) throw new Error("Erro");
-      return res.json();
+      const { recurrenceEnabled, recurrenceMonths, ...basePayload } = data;
+      const monthsToCreate = recurrenceEnabled ? Number(recurrenceMonths || 1) : 1;
+      const baseDueDate = parseDateOnly(data.dueDate);
+      const dueDay = baseDueDate?.getDate() ?? 5;
+      const created: MonthlyFee[] = [];
+
+      for (let index = 0; index < monthsToCreate; index += 1) {
+        const referenceMonth = addMonthsToMonthKey(data.referenceMonth, index);
+        const payload = {
+          ...basePayload,
+          referenceMonth,
+          dueDate: dueDateForReferenceMonth(referenceMonth, dueDay),
+        };
+        const res = await fetch("/api/monthly-fees", {
+          method: "POST", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        created.push(await parseApiJson<MonthlyFee>(res, "Erro ao criar cobranca."));
+      }
+
+      return { created: created.length };
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["/api/monthly-fees"] });
       setFeeOpen(false);
       feeForm.reset({
@@ -801,9 +976,13 @@ export default function Financeiro() {
         discount: 0,
         fine: 0,
         referenceMonth: returnMonth,
-        dueDate: new Date().toISOString().split("T")[0],
+        dueDate: toDateInputValue(),
+        recurrenceEnabled: false,
+        recurrenceMonths: 1,
       });
-      toast({ title: "Cobrança criada" });
+      toast({
+        title: result.created > 1 ? `${result.created} cobrancas criadas` : "Cobranca criada",
+      });
     },
   });
 
@@ -838,7 +1017,7 @@ export default function Financeiro() {
       category: "staff",
       staffId: undefined,
       referenceMonth: returnMonth,
-      dueDate: new Date().toISOString().split("T")[0],
+      dueDate: toDateInputValue(),
       amount: 0,
       discount: 0,
       extra: 0,
@@ -874,7 +1053,7 @@ export default function Financeiro() {
         category: "staff",
         staffId: undefined,
         referenceMonth: returnMonth,
-        dueDate: new Date().toISOString().split("T")[0],
+        dueDate: toDateInputValue(),
         amount: 0,
         discount: 0,
         extra: 0,
@@ -888,30 +1067,31 @@ export default function Financeiro() {
   });
 
   const payableCategory = payableForm.watch("category");
+  const feeRecurrenceEnabled = feeForm.watch("recurrenceEnabled");
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+    <div className="space-y-5">
+      <div className="rounded-lg border border-border/70 bg-card p-4 shadow-sm">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-foreground" style={{ fontFamily: "var(--font-display)" }}>
+          <h1 className="text-2xl font-semibold text-foreground" style={{ fontFamily: "var(--font-display)" }}>
             Financeiro
           </h1>
-          <p className="text-muted-foreground mt-1">Contratos, mensalidades e contas a pagar da equipe</p>
+          <p className="mt-1 text-sm text-muted-foreground">Contratos, mensalidades e contas a pagar da equipe</p>
         </div>
-        <div className="flex flex-wrap items-end gap-2">
+        <div className="flex flex-wrap items-end gap-2 xl:justify-end">
           <div className="space-y-1">
             <Label className="text-xs text-muted-foreground">Mês de referência</Label>
-            <Input
-              type="month"
+            <MonthStepper
               value={returnMonth}
-              onChange={(event) => setReturnMonth(event.target.value || defaultReturnMonth)}
-              className="h-9 w-[170px]"
-              data-testid="input-finance-global-month"
+              onChange={(value) => setReturnMonth(value || defaultReturnMonth)}
+              inputTestId="input-finance-global-month"
             />
           </div>
           <Button
             variant="outline"
             size="sm"
+            className="h-9"
             onClick={() => setReturnMonth(defaultReturnMonth)}
             data-testid="button-finance-current-month"
           >
@@ -919,18 +1099,18 @@ export default function Financeiro() {
           </Button>
           <Button
             size="sm"
-            className="gap-2"
+            className="h-9 gap-1.5"
             onClick={() => generateMonthlyFees.mutate(returnMonth)}
             disabled={generateMonthlyFees.isPending}
             data-testid="button-generate-monthly-fees"
           >
-            <Plus className="h-4 w-4" />
-            {generateMonthlyFees.isPending ? "Gerando..." : "Gerar Cobranças do Mês"}
+            <Plus className="h-3.5 w-3.5" />
+            {generateMonthlyFees.isPending ? "Gerando..." : "Gerar mês"}
           </Button>
           <Dialog open={contractOpen} onOpenChange={setContractOpen}>
             <DialogTrigger asChild>
-              <Button variant="outline" size="sm" className="gap-2" data-testid="button-new-contract">
-                <FileText className="h-4 w-4" />Novo Contrato
+              <Button variant="outline" size="sm" className="h-9 gap-1.5" data-testid="button-new-contract">
+                <FileText className="h-3.5 w-3.5" />Contrato
               </Button>
             </DialogTrigger>
             <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
@@ -1020,11 +1200,11 @@ export default function Financeiro() {
 
           <Dialog open={feeOpen} onOpenChange={setFeeOpen}>
             <DialogTrigger asChild>
-              <Button size="sm" className="gap-2 btn-glow" data-testid="button-new-fee">
-                <Plus className="h-4 w-4" />Nova Cobrança
+              <Button size="sm" className="h-9 gap-1.5" data-testid="button-new-fee">
+                <Plus className="h-3.5 w-3.5" />Cobrança
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-lg">
+            <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
               <DialogHeader><DialogTitle>Lançar Mensalidade</DialogTitle></DialogHeader>
               <Form {...feeForm}>
                 <form onSubmit={feeForm.handleSubmit((d) => createFee.mutate(d))} className="space-y-4">
@@ -1088,6 +1268,42 @@ export default function Financeiro() {
                       </FormItem>
                     )} />
                   </div>
+                  <FormField control={feeForm.control} name="recurrenceEnabled" render={({ field }) => (
+                    <FormItem className="rounded-lg border border-border p-3">
+                      <div className="flex items-start gap-3">
+                        <FormControl>
+                          <Checkbox
+                            checked={Boolean(field.value)}
+                            onCheckedChange={(checked) => field.onChange(checked === true)}
+                            data-testid="checkbox-fee-recurrence"
+                          />
+                        </FormControl>
+                        <div className="space-y-1">
+                          <FormLabel className="m-0 cursor-pointer">Criar recorrencia</FormLabel>
+                          <p className="text-xs text-muted-foreground">
+                            Gera as proximas mensalidades automaticamente a partir do mes de referencia.
+                          </p>
+                        </div>
+                      </div>
+                    </FormItem>
+                  )} />
+                  {feeRecurrenceEnabled && (
+                    <FormField control={feeForm.control} name="recurrenceMonths" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Quantidade de meses</FormLabel>
+                        <FormControl>
+                          <Input
+                            type="number"
+                            min={1}
+                            max={60}
+                            {...field}
+                            data-testid="input-fee-recurrence-months"
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                  )}
                   <FormField control={feeForm.control} name="notes" render={({ field }) => (
                     <FormItem>
                       <FormLabel>Observações</FormLabel>
@@ -1096,7 +1312,9 @@ export default function Financeiro() {
                   )} />
                   <div className="flex justify-end gap-2">
                     <Button type="button" variant="outline" onClick={() => setFeeOpen(false)}>Cancelar</Button>
-                    <Button type="submit" disabled={createFee.isPending}>Lançar</Button>
+                    <Button type="submit" disabled={createFee.isPending}>
+                      {createFee.isPending ? "Lancando..." : "Lancar"}
+                    </Button>
                   </div>
                 </form>
               </Form>
@@ -1105,8 +1323,8 @@ export default function Financeiro() {
 
           <Dialog open={payableOpen} onOpenChange={setPayableOpen}>
             <DialogTrigger asChild>
-              <Button size="sm" variant="outline" className="gap-2" data-testid="button-new-payable">
-                <Wallet className="h-4 w-4" />Nova Conta a Pagar
+              <Button size="sm" variant="outline" className="h-9 gap-1.5" data-testid="button-new-payable">
+                <Wallet className="h-3.5 w-3.5" />Conta a pagar
               </Button>
             </DialogTrigger>
             <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
@@ -1229,95 +1447,99 @@ export default function Financeiro() {
             </DialogContent>
           </Dialog>
         </div>
+        </div>
       </div>
 
       {/* KPIs */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-        <KpiCard title="Contratos Ativos" value={activeContracts} sub="residentes com contrato" icon={FileText} color="#1F6FEB" />
-        <KpiCard title="A Receber" value={formatCurrency(totalPendingFees)} sub="mensalidades pendentes" icon={Clock} color="#F59E0B" />
-        <KpiCard title="Em Atraso" value={formatCurrency(totalOverdue)} sub="requerem atenção" icon={AlertCircle} color="#EF4444" />
-        <KpiCard title="Recebido" value={formatCurrency(totalReceived)} sub="histórico de pagamentos" icon={TrendingUp} color="#22C55E" />
-        <KpiCard title="A Pagar" value={formatCurrency(totalPendingPayables)} sub="despesas pendentes" icon={Wallet} color="#F97316" />
-        <KpiCard title="Atrasadas (Pagar)" value={formatCurrency(totalOverduePayables)} sub="contas vencidas" icon={AlertCircle} color="#DC2626" />
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <KpiCard title="Contratos Ativos" value={activeContracts} sub={`em ${selectedMonthLabel}`} icon={FileText} color="#1F6FEB" />
+        <KpiCard title="A Receber" value={formatCurrency(totalPendingFees)} sub="pendente no mês" icon={Clock} color="#F59E0B" />
+        <KpiCard title="Em Atraso" value={formatCurrency(totalOverdue)} sub="vencido no mês" icon={AlertCircle} color="#EF4444" />
+        <KpiCard title="Recebido" value={formatCurrency(totalReceived)} sub="recebido no mês" icon={TrendingUp} color="#22C55E" />
+        <KpiCard title="A Pagar" value={formatCurrency(totalPendingPayables)} sub="pendente no mês" icon={Wallet} color="#F97316" />
+        <KpiCard title="Atrasadas (Pagar)" value={formatCurrency(totalOverduePayables)} sub="vencido no mês" icon={AlertCircle} color="#DC2626" />
       </div>
 
       <Tabs defaultValue="return">
-        <TabsList>
-          <TabsTrigger value="return" data-testid="tab-return">
+        <TabsList className="h-9 w-full justify-start overflow-x-auto rounded-lg bg-muted/60 p-1 sm:w-auto">
+          <TabsTrigger value="return" className="h-7 px-3 text-xs" data-testid="tab-return">
             <TrendingUp className="h-3.5 w-3.5 mr-1.5" />Retorno / DRE
           </TabsTrigger>
-          <TabsTrigger value="fees" data-testid="tab-fees">
+          <TabsTrigger value="fees" className="h-7 px-3 text-xs" data-testid="tab-fees">
             <DollarSign className="h-3.5 w-3.5 mr-1.5" />Mensalidades
           </TabsTrigger>
-          <TabsTrigger value="accounts-payable" data-testid="tab-accounts-payable">
+          <TabsTrigger value="accounts-payable" className="h-7 px-3 text-xs" data-testid="tab-accounts-payable">
             <Wallet className="h-3.5 w-3.5 mr-1.5" />Contas a Pagar
           </TabsTrigger>
-          <TabsTrigger value="contracts" data-testid="tab-contracts">
+          <TabsTrigger value="contracts" className="h-7 px-3 text-xs" data-testid="tab-contracts">
             <FileText className="h-3.5 w-3.5 mr-1.5" />Contratos
           </TabsTrigger>
         </TabsList>
 
         {/* RETURN / DRE TAB */}
         <TabsContent value="return" className="mt-4 space-y-4">
-          <Card className="border-border/60">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Calculadora de retorno mensal</CardTitle>
-              <p className="text-sm text-muted-foreground">
-                Base automática em contratos/mensalidades e contas a pagar. Ajuste extras para simular cenário do mês.
+          <Card className="overflow-hidden border-border/70 shadow-sm">
+            <CardHeader className="border-b border-border/70 bg-muted/20 px-4 py-3">
+              <CardTitle className="text-sm">Retorno mensal</CardTitle>
+              <p className="text-xs text-muted-foreground">
+                Ajustes rápidos para simular o resultado de {selectedMonthLabel}.
               </p>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            <CardContent className="space-y-4 p-4">
+              <div className="grid gap-3 rounded-lg border border-border/70 bg-muted/20 p-3 sm:grid-cols-2 lg:grid-cols-5">
                 <div className="space-y-1.5">
-                  <Label>Mês de referência</Label>
-                  <Input
-                    type="month"
+                  <Label className="text-xs text-muted-foreground">Mês de referência</Label>
+                  <MonthStepper
                     value={returnMonth}
-                    onChange={(event) => setReturnMonth(event.target.value || defaultReturnMonth)}
-                    data-testid="input-return-month"
+                    onChange={(value) => setReturnMonth(value || defaultReturnMonth)}
+                    inputTestId="input-return-month"
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Outros serviços (R$)</Label>
+                  <Label className="text-xs text-muted-foreground">Outros serviços</Label>
                   <Input
                     type="number"
                     min="0"
                     step="0.01"
                     value={extraServicesRevenueInput}
                     onChange={(event) => setExtraServicesRevenueInput(event.target.value)}
+                    className="h-9"
                     data-testid="input-extra-services"
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Despesas extras (R$)</Label>
+                  <Label className="text-xs text-muted-foreground">Despesas extras</Label>
                   <Input
                     type="number"
                     min="0"
                     step="0.01"
                     value={extraOperationalExpenseInput}
                     onChange={(event) => setExtraOperationalExpenseInput(event.target.value)}
+                    className="h-9"
                     data-testid="input-extra-expenses"
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Inadimplência estimada (R$)</Label>
+                  <Label className="text-xs text-muted-foreground">Inadimplência</Label>
                   <Input
                     type="number"
                     min="0"
                     step="0.01"
                     value={expectedDelinquencyInput}
                     onChange={(event) => setExpectedDelinquencyInput(event.target.value)}
+                    className="h-9"
                     data-testid="input-delinquency"
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Impostos/taxas (%)</Label>
+                  <Label className="text-xs text-muted-foreground">Impostos/taxas (%)</Label>
                   <Input
                     type="number"
                     min="0"
                     step="0.01"
                     value={taxRateInput}
                     onChange={(event) => setTaxRateInput(event.target.value)}
+                    className="h-9"
                     data-testid="input-tax-rate"
                   />
                 </div>
@@ -1832,6 +2054,16 @@ export default function Financeiro() {
                       <p className="text-xs text-muted-foreground">por mês</p>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 gap-1 px-2 text-xs"
+                        onClick={() => printContractDocument(c)}
+                        data-testid={`button-print-contract-${c.id}`}
+                      >
+                        <FileText className="h-3.5 w-3.5" />
+                        Gerar
+                      </Button>
                       <Button
                         size="sm" variant="ghost"
                         className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"

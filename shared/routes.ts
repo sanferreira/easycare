@@ -7,6 +7,7 @@ import {
   occurrenceFormSchema,
   shiftAssignmentFormSchema,
   accountPayableFormSchema,
+  notifications,
   residents,
   medications,
   staff,
@@ -223,12 +224,48 @@ export const api = {
           capacity: z.number(),
           occupancyRate: z.number(),
           activeMedications: z.number(),
+          overdueMedicationDoses: z.number(),
           pendingOccurrences: z.number(),
           birthdaysThisMonth: z.number(),
           overdueFeesCount: z.number().optional(),
           pendingFeesAmount: z.number().optional(),
           activeContracts: z.number().optional(),
+          timeClockPendingApprovals: z.number().optional(),
+          timeClockPendingAdjustments: z.number().optional(),
+          timeClockIncompleteToday: z.number().optional(),
+          timeClockOutOfRangeToday: z.number().optional(),
         }),
+      },
+    },
+  },
+  notifications: {
+    list: {
+      method: 'GET' as const,
+      path: '/api/notifications',
+      input: z.object({
+        unreadOnly: z.coerce.boolean().optional(),
+        limit: z.coerce.number().optional(),
+      }).optional(),
+      responses: {
+        200: z.object({
+          notifications: z.array(z.custom<typeof notifications.$inferSelect>()),
+          unreadCount: z.number(),
+        }),
+      },
+    },
+    markRead: {
+      method: 'PATCH' as const,
+      path: '/api/notifications/:id/read',
+      responses: {
+        200: z.custom<typeof notifications.$inferSelect>(),
+        404: errorSchemas.notFound,
+      },
+    },
+    markAllRead: {
+      method: 'PATCH' as const,
+      path: '/api/notifications/read-all',
+      responses: {
+        200: z.object({ updated: z.number() }),
       },
     },
   },

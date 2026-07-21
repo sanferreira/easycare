@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, boolean, timestamp, date, real, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, date, real, uniqueIndex, index, varchar, json } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -36,6 +36,71 @@ export const users = pgTable("users", {
   orgUsernameUnique: uniqueIndex("users_org_username_unique").on(table.organizationId, table.username),
 }));
 
+// ===== INTERNAL NOTIFICATIONS =====
+export const notifications = pgTable("notifications", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull(),
+  userId: integer("user_id"),
+  staffId: integer("staff_id"),
+  type: text("type").notNull().default("general"),
+  severity: text("severity").notNull().default("info"), // info | success | warning | error
+  sourceModule: text("source_module").notNull().default("system"),
+  title: text("title").notNull(),
+  message: text("message").notNull(),
+  actionUrl: text("action_url"),
+  entityType: text("entity_type"),
+  entityId: integer("entity_id"),
+  dedupeKey: text("dedupe_key"),
+  metadata: text("metadata"),
+  scheduledFor: timestamp("scheduled_for").defaultNow(),
+  deliveredAt: timestamp("delivered_at").defaultNow(),
+  readAt: timestamp("read_at"),
+  cancelledAt: timestamp("cancelled_at"),
+  whatsappStatus: text("whatsapp_status").notNull().default("pending"), // pending | sent | failed | skipped
+  whatsappAttempts: integer("whatsapp_attempts").notNull().default(0),
+  whatsappSentAt: timestamp("whatsapp_sent_at"),
+  whatsappMessageId: text("whatsapp_message_id"),
+  whatsappError: text("whatsapp_error"),
+  pushStatus: text("push_status").notNull().default("pending"), // pending | sent | failed | skipped
+  pushAttempts: integer("push_attempts").notNull().default(0),
+  pushSentAt: timestamp("push_sent_at"),
+  pushError: text("push_error"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => ({
+  orgUserReadIdx: index("notifications_org_user_read_idx").on(table.organizationId, table.userId, table.readAt),
+  orgCreatedIdx: index("notifications_org_created_idx").on(table.organizationId, table.createdAt),
+  orgUserDedupeUnique: uniqueIndex("notifications_org_user_dedupe_unique").on(table.organizationId, table.userId, table.dedupeKey),
+}));
+
+// ===== WEB PUSH SUBSCRIPTIONS =====
+export const pushSubscriptions = pgTable("push_subscriptions", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull(),
+  userId: integer("user_id").notNull(),
+  endpoint: text("endpoint").notNull(),
+  p256dh: text("p256dh").notNull(),
+  auth: text("auth").notNull(),
+  userAgent: text("user_agent"),
+  active: boolean("active").notNull().default(true),
+  lastSeenAt: timestamp("last_seen_at").defaultNow(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => ({
+  endpointUnique: uniqueIndex("push_subscriptions_endpoint_unique").on(table.endpoint),
+  orgUserActiveIdx: index("push_subscriptions_org_user_active_idx").on(table.organizationId, table.userId, table.active),
+}));
+
+// ===== EXPRESS SESSION STORE =====
+// Managed by connect-pg-simple. Keeping it in the Drizzle schema prevents db:push
+// from treating the table as unrelated and removing it.
+export const userSessions = pgTable("user_sessions", {
+  sid: varchar("sid").primaryKey(),
+  sess: json("sess").notNull(),
+  expire: timestamp("expire", { precision: 6 }).notNull(),
+}, (table) => ({
+  expireIdx: index("IDX_user_sessions_expire").on(table.expire),
+}));
+
 // ===== RESIDENTS (expanded) =====
 export const residents = pgTable("residents", {
   id: serial("id").primaryKey(),
@@ -65,6 +130,14 @@ export const residents = pgTable("residents", {
   contactPhone: text("contact_phone").notNull(),
   contactRelationship: text("contact_relationship"),
   photoUrl: text("photo_url"),
+  careType: text("care_type").default("residential"), // residential | home_care
+  cep: text("cep"),
+  address: text("address"),
+  addressNumber: text("address_number"),
+  addressComplement: text("address_complement"),
+  neighborhood: text("neighborhood"),
+  city: text("city"),
+  state: text("state"),
 });
 
 // ===== FAMILY MEMBERS / RESPONSIBLE =====
@@ -86,6 +159,24 @@ export const familyMembers = pgTable("family_members", {
   portalPassword: text("portal_password"),   // password for family portal
   createdAt: timestamp("created_at").defaultNow(),
 });
+
+// ===== PATIENT DOCUMENTS =====
+export const patientDocuments = pgTable("patient_documents", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull(),
+  residentId: integer("resident_id").notNull(),
+  title: text("title").notNull(),
+  subtitle: text("subtitle"),
+  category: text("category").notNull().default("document"),
+  fileName: text("file_name").notNull(),
+  fileType: text("file_type"),
+  fileSize: integer("file_size"),
+  fileData: text("file_data").notNull(),
+  createdByUserId: integer("created_by_user_id"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => ({
+  orgResidentIdx: index("patient_documents_org_resident_idx").on(table.organizationId, table.residentId, table.createdAt),
+}));
 
 // ===== COMORBIDITIES / DIAGNOSES =====
 export const comorbidities = pgTable("comorbidities", {
@@ -109,6 +200,7 @@ export const medicalRecords = pgTable("medical_records", {
   organizationId: integer("organization_id").notNull(),
   residentId: integer("resident_id").notNull(),
   authorId: integer("author_id"),         // user who wrote
+  staffId: integer("staff_id"),           // professional responsible for the daily record
   date: date("date").notNull(),
   type: text("type").notNull().default("evolution"),
   title: text("title"),
@@ -120,7 +212,9 @@ export const medicalRecords = pgTable("medical_records", {
   temperature: real("temperature"),
   oxygenSat: integer("oxygen_sat"),       // SpO2 %
   weight: real("weight"),                 // kg
+  glucoseLevel: integer("glucose_level"), // mg/dL
   mood: text("mood"),                     // bom, regular, agitado, sonolento, ansioso
+  dailyChecklist: text("daily_checklist"), // JSON checklist for daily care items
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -164,6 +258,12 @@ export const staff = pgTable("staff", {
   cpf: text("cpf"),
   cnpj: text("cnpj"),
   shiftValue: real("shift_value").default(0), // valor base por plantao
+  bonusValue: real("bonus_value").default(0),
+  bonusNotes: text("bonus_notes"),
+  bankName: text("bank_name"),
+  bankAgency: text("bank_agency"),
+  bankAccount: text("bank_account"),
+  pixKey: text("pix_key"),
   role: text("role").notNull(),   // cuidador, enfermeiro, técnico de enfermagem, fisioterapeuta, médico, nutricionista, recepcionista, administrativo
   specialty: text("specialty"),
   coren: text("coren"),           // registration number for nurses
@@ -207,6 +307,84 @@ export const shiftAssignments = pgTable("shift_assignments", {
   startTime: timestamp("start_time").notNull(),
   endTime: timestamp("end_time").notNull(),
   notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// ===== TIME CLOCK / PONTO ELETRONICO =====
+export const timeClockLocations = pgTable("time_clock_locations", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull(),
+  name: text("name").notNull(),
+  address: text("address"),
+  latitude: real("latitude").notNull(),
+  longitude: real("longitude").notNull(),
+  radiusMeters: integer("radius_meters").notNull().default(200),
+  active: boolean("active").default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const timeClockEntries = pgTable("time_clock_entries", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull(),
+  staffId: integer("staff_id").notNull(),
+  userId: integer("user_id"),
+  locationId: integer("location_id"),
+  eventType: text("event_type").notNull(), // clock_in | break_start | break_end | clock_out
+  eventTime: timestamp("event_time").notNull().defaultNow(),
+  latitude: real("latitude"),
+  longitude: real("longitude"),
+  accuracy: real("accuracy"),
+  distanceMeters: real("distance_meters"),
+  geofenceRadiusMeters: integer("geofence_radius_meters"),
+  status: text("status").notNull().default("valid"), // valid | pending_approval | rejected | out_of_range | manual_adjusted
+  notes: text("notes"),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const timeClockAdjustmentRequests = pgTable("time_clock_adjustment_requests", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull(),
+  staffId: integer("staff_id").notNull(),
+  requestedByUserId: integer("requested_by_user_id"),
+  entryId: integer("entry_id"),
+  eventType: text("event_type").notNull(),
+  requestedEventTime: timestamp("requested_event_time").notNull(),
+  reason: text("reason").notNull(),
+  notes: text("notes"),
+  status: text("status").notNull().default("pending"), // pending | approved | rejected
+  reviewedByUserId: integer("reviewed_by_user_id"),
+  reviewedAt: timestamp("reviewed_at"),
+  reviewerNotes: text("reviewer_notes"),
+  appliedEntryId: integer("applied_entry_id"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const timeClockAuditLogs = pgTable("time_clock_audit_logs", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull(),
+  staffId: integer("staff_id"),
+  entityType: text("entity_type").notNull(),
+  entityId: integer("entity_id"),
+  action: text("action").notNull(),
+  performedByUserId: integer("performed_by_user_id"),
+  previousValue: text("previous_value"),
+  newValue: text("new_value"),
+  reason: text("reason"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const timeClockClosures = pgTable("time_clock_closures", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull(),
+  referenceMonth: text("reference_month").notNull(),
+  status: text("status").notNull().default("closed"), // closed | reopened
+  notes: text("notes"),
+  closedByUserId: integer("closed_by_user_id"),
+  closedAt: timestamp("closed_at").defaultNow(),
+  reopenedByUserId: integer("reopened_by_user_id"),
+  reopenedAt: timestamp("reopened_at"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -277,6 +455,7 @@ export const crmOpportunities = pgTable("crm_opportunities", {
   amount: real("amount").default(0),
   expectedCloseDate: date("expected_close_date"),
   ownerId: integer("owner_id"),
+  ownerStaffId: integer("owner_staff_id"),
   notes: text("notes"),
   followUpTasks: text("follow_up_tasks").default("[]"),
   lostReason: text("lost_reason"),
@@ -288,15 +467,23 @@ export const crmOpportunities = pgTable("crm_opportunities", {
 // ===== RELATIONS =====
 export const organizationsRelations = relations(organizations, ({ many }) => ({
   users: many(users),
+  notifications: many(notifications),
   residents: many(residents),
+  patientDocuments: many(patientDocuments),
   staff: many(staff),
   contracts: many(contracts),
   accountsPayable: many(accountsPayable),
   crmOpportunities: many(crmOpportunities),
+  timeClockLocations: many(timeClockLocations),
+  timeClockEntries: many(timeClockEntries),
+  timeClockAdjustmentRequests: many(timeClockAdjustmentRequests),
+  timeClockAuditLogs: many(timeClockAuditLogs),
+  timeClockClosures: many(timeClockClosures),
 }));
 
 export const usersRelations = relations(users, ({ one, many }) => ({
   organization: one(organizations, { fields: [users.organizationId], references: [organizations.id] }),
+  notifications: many(notifications),
   crmOwnedOpportunities: many(crmOpportunities),
 }));
 
@@ -308,6 +495,7 @@ export const residentsRelations = relations(residents, ({ one, many }) => ({
   medicalRecords: many(medicalRecords),
   comorbidities: many(comorbidities),
   familyMembers: many(familyMembers),
+  patientDocuments: many(patientDocuments),
   contracts: many(contracts),
   monthlyFees: many(monthlyFees),
 }));
@@ -316,6 +504,15 @@ export const staffRelations = relations(staff, ({ one, many }) => ({
   organization: one(organizations, { fields: [staff.organizationId], references: [organizations.id] }),
   shiftAssignments: many(shiftAssignments),
   accountsPayable: many(accountsPayable),
+  notifications: many(notifications),
+  timeClockEntries: many(timeClockEntries),
+  timeClockAdjustmentRequests: many(timeClockAdjustmentRequests),
+}));
+
+export const notificationsRelations = relations(notifications, ({ one }) => ({
+  organization: one(organizations, { fields: [notifications.organizationId], references: [organizations.id] }),
+  user: one(users, { fields: [notifications.userId], references: [users.id] }),
+  staff: one(staff, { fields: [notifications.staffId], references: [staff.id] }),
 }));
 
 export const shiftAssignmentsRelations = relations(shiftAssignments, ({ one }) => ({
@@ -339,6 +536,7 @@ export const occurrencesRelations = relations(occurrences, ({ one }) => ({
 
 export const medicalRecordsRelations = relations(medicalRecords, ({ one }) => ({
   resident: one(residents, { fields: [medicalRecords.residentId], references: [residents.id] }),
+  staff: one(staff, { fields: [medicalRecords.staffId], references: [staff.id] }),
 }));
 
 export const comorbiditiesRelations = relations(comorbidities, ({ one }) => ({
@@ -347,6 +545,12 @@ export const comorbiditiesRelations = relations(comorbidities, ({ one }) => ({
 
 export const familyMembersRelations = relations(familyMembers, ({ one }) => ({
   resident: one(residents, { fields: [familyMembers.residentId], references: [residents.id] }),
+}));
+
+export const patientDocumentsRelations = relations(patientDocuments, ({ one }) => ({
+  resident: one(residents, { fields: [patientDocuments.residentId], references: [residents.id] }),
+  organization: one(organizations, { fields: [patientDocuments.organizationId], references: [organizations.id] }),
+  createdBy: one(users, { fields: [patientDocuments.createdByUserId], references: [users.id] }),
 }));
 
 export const contractsRelations = relations(contracts, ({ one, many }) => ({
@@ -363,14 +567,44 @@ export const accountsPayableRelations = relations(accountsPayable, ({ one }) => 
   staff: one(staff, { fields: [accountsPayable.staffId], references: [staff.id] }),
 }));
 
+export const timeClockLocationsRelations = relations(timeClockLocations, ({ one, many }) => ({
+  organization: one(organizations, { fields: [timeClockLocations.organizationId], references: [organizations.id] }),
+  entries: many(timeClockEntries),
+}));
+
+export const timeClockEntriesRelations = relations(timeClockEntries, ({ one }) => ({
+  organization: one(organizations, { fields: [timeClockEntries.organizationId], references: [organizations.id] }),
+  staff: one(staff, { fields: [timeClockEntries.staffId], references: [staff.id] }),
+  location: one(timeClockLocations, { fields: [timeClockEntries.locationId], references: [timeClockLocations.id] }),
+}));
+
+export const timeClockAdjustmentRequestsRelations = relations(timeClockAdjustmentRequests, ({ one }) => ({
+  organization: one(organizations, { fields: [timeClockAdjustmentRequests.organizationId], references: [organizations.id] }),
+  staff: one(staff, { fields: [timeClockAdjustmentRequests.staffId], references: [staff.id] }),
+  entry: one(timeClockEntries, { fields: [timeClockAdjustmentRequests.entryId], references: [timeClockEntries.id] }),
+  appliedEntry: one(timeClockEntries, { fields: [timeClockAdjustmentRequests.appliedEntryId], references: [timeClockEntries.id] }),
+}));
+
+export const timeClockAuditLogsRelations = relations(timeClockAuditLogs, ({ one }) => ({
+  organization: one(organizations, { fields: [timeClockAuditLogs.organizationId], references: [organizations.id] }),
+  staff: one(staff, { fields: [timeClockAuditLogs.staffId], references: [staff.id] }),
+}));
+
+export const timeClockClosuresRelations = relations(timeClockClosures, ({ one }) => ({
+  organization: one(organizations, { fields: [timeClockClosures.organizationId], references: [organizations.id] }),
+}));
+
 export const crmOpportunitiesRelations = relations(crmOpportunities, ({ one }) => ({
   organization: one(organizations, { fields: [crmOpportunities.organizationId], references: [organizations.id] }),
   owner: one(users, { fields: [crmOpportunities.ownerId], references: [users.id] }),
+  ownerStaff: one(staff, { fields: [crmOpportunities.ownerStaffId], references: [staff.id] }),
 }));
 
 // ===== INSERT SCHEMAS (server use) =====
 export const insertOrganizationSchema = createInsertSchema(organizations).omit({ id: true, createdAt: true });
 export const insertUserSchema = createInsertSchema(users).omit({ id: true });
+export const insertNotificationSchema = createInsertSchema(notifications).omit({ id: true, createdAt: true });
+export const insertPushSubscriptionSchema = createInsertSchema(pushSubscriptions).omit({ id: true, createdAt: true });
 export const insertResidentSchema = createInsertSchema(residents).omit({ id: true });
 export const insertMedicationSchema = createInsertSchema(medications).omit({ id: true });
 export const insertStaffSchema = createInsertSchema(staff).omit({ id: true });
@@ -379,11 +613,17 @@ export const insertShiftAssignmentSchema = createInsertSchema(shiftAssignments).
 export const insertMedicalRecordSchema = createInsertSchema(medicalRecords).omit({ id: true, createdAt: true });
 export const insertComorbiditySchema = createInsertSchema(comorbidities).omit({ id: true, createdAt: true });
 export const insertFamilyMemberSchema = createInsertSchema(familyMembers).omit({ id: true, createdAt: true });
+export const insertPatientDocumentSchema = createInsertSchema(patientDocuments).omit({ id: true, createdAt: true });
 export const insertContractSchema = createInsertSchema(contracts).omit({ id: true, createdAt: true });
 export const insertMonthlyFeeSchema = createInsertSchema(monthlyFees).omit({ id: true, createdAt: true });
 export const insertAccountPayableSchema = createInsertSchema(accountsPayable).omit({ id: true, createdAt: true });
 export const insertMedicationAdministrationSchema = createInsertSchema(medicationAdministrations).omit({ id: true });
 export const insertCrmOpportunitySchema = createInsertSchema(crmOpportunities).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertTimeClockLocationSchema = createInsertSchema(timeClockLocations).omit({ id: true, createdAt: true });
+export const insertTimeClockEntrySchema = createInsertSchema(timeClockEntries).omit({ id: true, createdAt: true });
+export const insertTimeClockAdjustmentRequestSchema = createInsertSchema(timeClockAdjustmentRequests).omit({ id: true, createdAt: true });
+export const insertTimeClockAuditLogSchema = createInsertSchema(timeClockAuditLogs).omit({ id: true, createdAt: true });
+export const insertTimeClockClosureSchema = createInsertSchema(timeClockClosures).omit({ id: true, createdAt: true });
 
 // ===== FORM SCHEMAS (frontend — organizationId added by backend) =====
 export const residentFormSchema = createInsertSchema(residents).omit({ id: true, organizationId: true });
@@ -397,15 +637,38 @@ export const shiftAssignmentFormSchema = createInsertSchema(shiftAssignments).om
 export const medicalRecordFormSchema = createInsertSchema(medicalRecords).omit({ id: true, organizationId: true, createdAt: true });
 export const comorbidityFormSchema = createInsertSchema(comorbidities).omit({ id: true, organizationId: true, createdAt: true });
 export const familyMemberFormSchema = createInsertSchema(familyMembers).omit({ id: true, organizationId: true, createdAt: true });
+export const patientDocumentFormSchema = createInsertSchema(patientDocuments).omit({
+  id: true,
+  organizationId: true,
+  residentId: true,
+  createdByUserId: true,
+  createdAt: true,
+});
 export const contractFormSchema = createInsertSchema(contracts).omit({ id: true, organizationId: true, createdAt: true });
 export const monthlyFeeFormSchema = createInsertSchema(monthlyFees).omit({ id: true, organizationId: true, createdAt: true });
 export const accountPayableFormSchema = createInsertSchema(accountsPayable).omit({ id: true, organizationId: true, createdAt: true });
 export const medicationAdministrationFormSchema = createInsertSchema(medicationAdministrations).omit({ id: true, organizationId: true, administeredAt: true });
 export const crmOpportunityFormSchema = createInsertSchema(crmOpportunities).omit({ id: true, organizationId: true, createdAt: true, updatedAt: true });
+export const timeClockLocationFormSchema = createInsertSchema(timeClockLocations).omit({ id: true, organizationId: true, createdAt: true });
+export const timeClockEntryFormSchema = createInsertSchema(timeClockEntries).omit({ id: true, organizationId: true, userId: true, createdAt: true });
+export const timeClockAdjustmentRequestFormSchema = createInsertSchema(timeClockAdjustmentRequests).omit({
+  id: true,
+  organizationId: true,
+  staffId: true,
+  requestedByUserId: true,
+  status: true,
+  reviewedByUserId: true,
+  reviewedAt: true,
+  reviewerNotes: true,
+  appliedEntryId: true,
+  createdAt: true,
+});
 
 // ===== TYPES =====
 export type Organization = typeof organizations.$inferSelect;
 export type User = typeof users.$inferSelect;
+export type AppNotification = typeof notifications.$inferSelect;
+export type PushSubscriptionRecord = typeof pushSubscriptions.$inferSelect;
 export type Resident = typeof residents.$inferSelect;
 export type Medication = typeof medications.$inferSelect;
 export type StaffMember = typeof staff.$inferSelect;
@@ -414,14 +677,23 @@ export type ShiftAssignment = typeof shiftAssignments.$inferSelect;
 export type MedicalRecord = typeof medicalRecords.$inferSelect;
 export type Comorbidity = typeof comorbidities.$inferSelect;
 export type FamilyMember = typeof familyMembers.$inferSelect;
+export type PatientDocument = typeof patientDocuments.$inferSelect;
 export type Contract = typeof contracts.$inferSelect;
 export type MonthlyFee = typeof monthlyFees.$inferSelect;
 export type AccountPayable = typeof accountsPayable.$inferSelect;
 export type MedicationAdministration = typeof medicationAdministrations.$inferSelect;
 export type CrmOpportunity = typeof crmOpportunities.$inferSelect;
+export type TimeClockLocation = typeof timeClockLocations.$inferSelect;
+export type TimeClockEntry = typeof timeClockEntries.$inferSelect;
+export type UpdateTimeClockEntryRequest = Partial<InsertTimeClockEntry>;
+export type TimeClockAdjustmentRequest = typeof timeClockAdjustmentRequests.$inferSelect;
+export type TimeClockAuditLog = typeof timeClockAuditLogs.$inferSelect;
+export type TimeClockClosure = typeof timeClockClosures.$inferSelect;
 
 export type InsertOrganization = z.infer<typeof insertOrganizationSchema>;
 export type InsertUser = z.infer<typeof insertUserSchema>;
+export type InsertNotification = z.infer<typeof insertNotificationSchema>;
+export type InsertPushSubscription = z.infer<typeof insertPushSubscriptionSchema>;
 export type InsertResident = z.infer<typeof insertResidentSchema>;
 export type InsertMedication = z.infer<typeof insertMedicationSchema>;
 export type InsertStaff = z.infer<typeof insertStaffSchema>;
@@ -430,11 +702,17 @@ export type InsertShiftAssignment = z.infer<typeof insertShiftAssignmentSchema>;
 export type InsertMedicalRecord = z.infer<typeof insertMedicalRecordSchema>;
 export type InsertComorbidity = z.infer<typeof insertComorbiditySchema>;
 export type InsertFamilyMember = z.infer<typeof insertFamilyMemberSchema>;
+export type InsertPatientDocument = z.infer<typeof insertPatientDocumentSchema>;
 export type InsertContract = z.infer<typeof insertContractSchema>;
 export type InsertMonthlyFee = z.infer<typeof insertMonthlyFeeSchema>;
 export type InsertAccountPayable = z.infer<typeof insertAccountPayableSchema>;
 export type InsertMedicationAdministration = z.infer<typeof insertMedicationAdministrationSchema>;
 export type InsertCrmOpportunity = z.infer<typeof insertCrmOpportunitySchema>;
+export type InsertTimeClockLocation = z.infer<typeof insertTimeClockLocationSchema>;
+export type InsertTimeClockEntry = z.infer<typeof insertTimeClockEntrySchema>;
+export type InsertTimeClockAdjustmentRequest = z.infer<typeof insertTimeClockAdjustmentRequestSchema>;
+export type InsertTimeClockAuditLog = z.infer<typeof insertTimeClockAuditLogSchema>;
+export type InsertTimeClockClosure = z.infer<typeof insertTimeClockClosureSchema>;
 
 export type ResidentFormInput = z.infer<typeof residentFormSchema>;
 export type MedicationFormInput = z.infer<typeof medicationFormSchema>;
@@ -451,17 +729,25 @@ export type UpdateContractRequest = Partial<InsertContract>;
 export type UpdateMonthlyFeeRequest = Partial<InsertMonthlyFee>;
 export type UpdateAccountPayableRequest = Partial<InsertAccountPayable>;
 export type UpdateCrmOpportunityRequest = Partial<InsertCrmOpportunity>;
+export type UpdateTimeClockLocationRequest = Partial<InsertTimeClockLocation>;
+export type UpdateTimeClockAdjustmentRequest = Partial<InsertTimeClockAdjustmentRequest>;
+export type UpdateTimeClockClosureRequest = Partial<InsertTimeClockClosure>;
 
 export type DashboardStats = {
   totalResidents: number;
   capacity: number;
   occupancyRate: number;
   activeMedications: number;
+  overdueMedicationDoses: number;
   pendingOccurrences: number;
   birthdaysThisMonth: number;
   overdueFeesCount: number;
   pendingFeesAmount: number;
   activeContracts: number;
+  timeClockPendingApprovals: number;
+  timeClockPendingAdjustments: number;
+  timeClockIncompleteToday: number;
+  timeClockOutOfRangeToday: number;
 };
 
 export type SessionUser = {

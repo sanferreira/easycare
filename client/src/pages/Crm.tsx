@@ -5,6 +5,7 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
+import { toDateInputValue } from "@/lib/date";
 import { fetchJsonOrThrow } from "@/lib/fetch-json";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,7 +23,25 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, Clock3, DollarSign, GripVertical, Plus, Search, Settings2, Trash2 } from "lucide-react";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip as RechartsTooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import { AlertCircle, ArrowDown, ArrowUp, BarChart3, CheckCircle2, ChevronLeft, ChevronRight, Clock3, Columns3, DollarSign, FileText, FilterX, GripVertical, List, Plus, Search, Settings2, Trash2 } from "lucide-react";
 
 type CrmStagePayload = {
   value: string;
@@ -47,13 +66,36 @@ type CrmOpportunity = {
   amount: number | null;
   expectedCloseDate: string | null;
   ownerId: number | null;
+  ownerStaffId: number | null;
   ownerName?: string | null;
+  ownerStaffName?: string | null;
   notes: string | null;
   followUpTasks?: string | null;
   lostReason: string | null;
   position: number | null;
   createdAt: string | Date | null;
   updatedAt: string | Date | null;
+};
+
+type CrmOpportunityPageResponse = {
+  items: CrmOpportunity[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  totalAmount: number;
+  stageCounts?: Array<{ stage: string; count: number; amount: number }>;
+};
+
+type CrmOpportunityListResponse = CrmOpportunity[] | CrmOpportunityPageResponse;
+
+type CrmSourceMetric = {
+  source: string;
+  count: number;
+  totalAmount: number;
+  wonCount: number;
+  wonAmount: number;
+  conversionRate: number;
 };
 
 type CrmFollowUpTask = {
@@ -73,10 +115,20 @@ type OrganizationOption = {
   status?: string | null;
 };
 
+type CrmResponsibleOption = {
+  id: number;
+  name: string;
+  role?: string | null;
+  active?: boolean | null;
+};
+
 type CrmStagesApiResponse = {
   stages: CrmStagePayload[];
   migratedCount?: number;
 };
+
+type CrmViewMode = "list" | "kanban";
+type CrmFollowUpFilter = "all" | "pending" | "overdue" | "today" | "none";
 
 const DEFAULT_CRM_STAGES: CrmStagePayload[] = [
   { value: "lead", label: "Lead", color: "#64748B" },
@@ -150,6 +202,13 @@ const opportunitySchema = z.object({
   stage: z.string().trim().min(1, "Etapa obrigatoria"),
   amount: z.coerce.number().min(0, "Valor invalido"),
   expectedCloseDate: z.string().optional(),
+  ownerStaffId: z.preprocess(
+    (value) => {
+      if (value === "" || value === "none" || value === null || value === undefined) return null;
+      return Number(value);
+    },
+    z.number().int().positive().nullable().optional(),
+  ),
   notes: z.string().optional(),
   lostReason: z.string().optional(),
 });
@@ -219,7 +278,7 @@ const sortFollowUpTasks = (tasks: CrmFollowUpTask[]) =>
     if (left.done !== right.done) return left.done ? 1 : -1;
     return left.dueDate.localeCompare(right.dueDate);
   });
-const todayDateKey = () => new Date().toISOString().slice(0, 10);
+const todayDateKey = () => toDateInputValue();
 const formatDateKeyPtBr = (value: string) => {
   const parsed = new Date(`${value}T00:00:00`);
   if (Number.isNaN(parsed.getTime())) return value;
@@ -239,6 +298,37 @@ function formatCurrencyBRL(value?: number | null): string {
   });
 }
 
+function escapeHtml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function formatPercent(value: number): string {
+  if (!Number.isFinite(value)) return "0%";
+  return `${Math.round(value * 100)}%`;
+}
+
+function getOpportunityFollowUpSummary(opportunity: CrmOpportunity) {
+  const followUpTasks = parseCrmFollowUpTasks(opportunity.followUpTasks);
+  const pendingFollowUps = followUpTasks.filter((task) => !task.done);
+  const currentDateKey = todayDateKey();
+  const overdueCount = pendingFollowUps.filter((task) => task.dueDate < currentDateKey).length;
+  const dueTodayCount = pendingFollowUps.filter((task) => task.dueDate === currentDateKey).length;
+  const nextFollowUp = sortFollowUpTasks(pendingFollowUps)[0] ?? null;
+
+  return {
+    pendingFollowUps,
+    overdueCount,
+    dueTodayCount,
+    nextFollowUp,
+    hasAlert: overdueCount > 0 || dueTodayCount > 0,
+  };
+}
+
 function buildCrmUrl(basePath: string, params: Record<string, string | number | undefined | null>): string {
   const query = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
@@ -256,6 +346,14 @@ export default function CrmPage() {
 
   const [search, setSearch] = useState("");
   const [stageFilter, setStageFilter] = useState<string>("all");
+  const [sourceFilter, setSourceFilter] = useState<string>("all");
+  const [ownerFilter, setOwnerFilter] = useState<string>("all");
+  const [followUpFilter, setFollowUpFilter] = useState<CrmFollowUpFilter>("all");
+  const [expectedCloseFrom, setExpectedCloseFrom] = useState("");
+  const [expectedCloseTo, setExpectedCloseTo] = useState("");
+  const [viewMode, setViewMode] = useState<CrmViewMode>("list");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const [selectedOrganizationId, setSelectedOrganizationId] = useState<number | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingOpportunity, setEditingOpportunity] = useState<CrmOpportunity | null>(null);
@@ -284,6 +382,7 @@ export default function CrmPage() {
       stage: "",
       amount: 0,
       expectedCloseDate: "",
+      ownerStaffId: null,
       notes: "",
       lostReason: "",
     },
@@ -330,6 +429,16 @@ export default function CrmPage() {
     },
   });
 
+  const crmResponsiblesQuery = useQuery<CrmResponsibleOption[]>({
+    queryKey: ["/api/crm/responsibles", scopedOrganizationId],
+    enabled: !!scopedOrganizationId,
+    queryFn: () =>
+      fetchJsonOrThrow(
+        buildCrmUrl("/api/crm/responsibles", { organizationId: scopedOrganizationId }),
+        "Erro ao carregar responsaveis do CRM.",
+      ),
+  });
+
   const crmStages = useMemo<CrmStageConfig[]>(() => {
     const source = (stagesQuery.data?.stages?.length ? stagesQuery.data.stages : DEFAULT_CRM_STAGES)
       .map((stage, index) => ({
@@ -361,6 +470,21 @@ export default function CrmPage() {
   }, [stageFilter, stageValues]);
 
   useEffect(() => {
+    setCurrentPage(1);
+  }, [
+    search,
+    stageFilter,
+    sourceFilter,
+    ownerFilter,
+    followUpFilter,
+    expectedCloseFrom,
+    expectedCloseTo,
+    scopedOrganizationId,
+    pageSize,
+    viewMode,
+  ]);
+
+  useEffect(() => {
     if (!dialogOpen) return;
     const currentStage = normalizeLegacyStage(form.getValues("stage"));
     if (!stageValues.includes(currentStage)) {
@@ -368,8 +492,22 @@ export default function CrmPage() {
     }
   }, [dialogOpen, form, stageValues, defaultStageValue]);
 
-  const opportunitiesQuery = useQuery<CrmOpportunity[]>({
-    queryKey: ["/api/crm/opportunities", scopedOrganizationId, search, stageFilter, stageValues.join("|")],
+  const opportunitiesQuery = useQuery<CrmOpportunityListResponse>({
+    queryKey: [
+      "/api/crm/opportunities",
+      scopedOrganizationId,
+      search,
+      stageFilter,
+      sourceFilter,
+      ownerFilter,
+      followUpFilter,
+      expectedCloseFrom,
+      expectedCloseTo,
+      viewMode,
+      currentPage,
+      pageSize,
+      stageValues.join("|"),
+    ],
     enabled: !!scopedOrganizationId && crmStages.length > 0,
     queryFn: () =>
       fetchJsonOrThrow(
@@ -377,10 +515,37 @@ export default function CrmPage() {
           organizationId: scopedOrganizationId,
           search: search.trim() || undefined,
           stage: stageFilter !== "all" ? stageFilter : undefined,
+          source: sourceFilter !== "all" ? sourceFilter : undefined,
+          ownerStaffId: ownerFilter !== "all" ? ownerFilter : undefined,
+          followUpStatus: followUpFilter !== "all" ? followUpFilter : undefined,
+          expectedCloseFrom: expectedCloseFrom || undefined,
+          expectedCloseTo: expectedCloseTo || undefined,
+          page: viewMode === "list" ? currentPage : undefined,
+          pageSize: viewMode === "list" ? pageSize : undefined,
         }),
         "Erro ao carregar oportunidades do CRM.",
       ),
   });
+
+  const analyticsQuery = useQuery<CrmOpportunity[]>({
+    queryKey: ["/api/crm/opportunities", "analytics", scopedOrganizationId, stageValues.join("|")],
+    enabled: !!scopedOrganizationId && crmStages.length > 0,
+    queryFn: () =>
+      fetchJsonOrThrow(
+        buildCrmUrl("/api/crm/opportunities", {
+          organizationId: scopedOrganizationId,
+        }),
+        "Erro ao carregar analitico do CRM.",
+      ),
+  });
+
+  const opportunitiesResponse = opportunitiesQuery.data;
+  const paginatedResponse = opportunitiesResponse && !Array.isArray(opportunitiesResponse)
+    ? opportunitiesResponse
+    : null;
+  const loadedOpportunities = Array.isArray(opportunitiesResponse)
+    ? opportunitiesResponse
+    : paginatedResponse?.items ?? [];
 
   const grouped = useMemo(() => {
     const buckets: Record<string, CrmOpportunity[]> = {};
@@ -388,7 +553,7 @@ export default function CrmPage() {
       buckets[stage.value] = [];
     });
 
-    for (const opportunity of opportunitiesQuery.data ?? []) {
+    for (const opportunity of loadedOpportunities) {
       const normalizedStage = normalizeLegacyStage(opportunity.stage);
       const stage = stageValues.includes(normalizedStage) ? normalizedStage : defaultStageValue;
       if (!buckets[stage]) buckets[stage] = [];
@@ -405,13 +570,168 @@ export default function CrmPage() {
     });
 
     return buckets;
-  }, [crmStages, opportunitiesQuery.data, stageValues, defaultStageValue]);
+  }, [crmStages, loadedOpportunities, stageValues, defaultStageValue]);
 
   const totalAmount = useMemo(
-    () =>
-      (opportunitiesQuery.data ?? []).reduce((accumulator, item) => accumulator + Number(item.amount ?? 0), 0),
-    [opportunitiesQuery.data],
+    () => paginatedResponse?.totalAmount
+      ?? loadedOpportunities.reduce((accumulator, item) => accumulator + Number(item.amount ?? 0), 0),
+    [loadedOpportunities, paginatedResponse?.totalAmount],
   );
+
+  const sourceAnalytics = useMemo<CrmSourceMetric[]>(() => {
+    const buckets = new Map<string, CrmSourceMetric>();
+
+    for (const opportunity of analyticsQuery.data ?? []) {
+      const source = (opportunity.source ?? "").trim() || "Sem origem";
+      const metric = buckets.get(source) ?? {
+        source,
+        count: 0,
+        totalAmount: 0,
+        wonCount: 0,
+        wonAmount: 0,
+        conversionRate: 0,
+      };
+      const amount = Number(opportunity.amount ?? 0);
+      const isWon = normalizeLegacyStage(opportunity.stage) === "won";
+      metric.count += 1;
+      metric.totalAmount += Number.isFinite(amount) ? amount : 0;
+      if (isWon) {
+        metric.wonCount += 1;
+        metric.wonAmount += Number.isFinite(amount) ? amount : 0;
+      }
+      buckets.set(source, metric);
+    }
+
+    return Array.from(buckets.values())
+      .map((metric) => ({
+        ...metric,
+        conversionRate: metric.count > 0 ? metric.wonCount / metric.count : 0,
+      }))
+      .sort((left, right) => {
+        if (right.count !== left.count) return right.count - left.count;
+        return right.wonAmount - left.wonAmount;
+      });
+  }, [analyticsQuery.data]);
+
+  const sourceOptions = useMemo(
+    () =>
+      Array.from(new Set(
+        (analyticsQuery.data ?? [])
+          .map((opportunity) => (opportunity.source ?? "").trim())
+          .filter((source) => source.length > 0),
+      )).sort((left, right) => left.localeCompare(right)),
+    [analyticsQuery.data],
+  );
+  const bestVolumeSource = sourceAnalytics[0] ?? null;
+  const bestReturnSource = useMemo(
+    () =>
+      sourceAnalytics.reduce<CrmSourceMetric | null>((best, current) => {
+        if (!best) return current;
+        if (current.wonAmount !== best.wonAmount) return current.wonAmount > best.wonAmount ? current : best;
+        return current.conversionRate > best.conversionRate ? current : best;
+      }, null),
+    [sourceAnalytics],
+  );
+  const maxSourceCount = Math.max(1, ...sourceAnalytics.map((metric) => metric.count));
+  const maxSourceWonAmount = Math.max(1, ...sourceAnalytics.map((metric) => metric.wonAmount));
+  const sourceChartData = useMemo(
+    () =>
+      sourceAnalytics.slice(0, 6).map((metric) => ({
+        source: metric.source.length > 18 ? `${metric.source.slice(0, 18)}...` : metric.source,
+        fullSource: metric.source,
+        opportunities: metric.count,
+        wonAmount: metric.wonAmount,
+        conversionRate: metric.conversionRate,
+      })),
+    [sourceAnalytics],
+  );
+
+  const visibleOpportunities = loadedOpportunities;
+  const totalOpportunityCount = paginatedResponse?.total ?? visibleOpportunities.length;
+  const stageSummary = useMemo(
+    () => {
+      const stageCountRows = paginatedResponse?.stageCounts ?? null;
+      return crmStages.map((stage) => {
+        const apiStageCount = stageCountRows?.find((item) => normalizeLegacyStage(item.stage) === stage.value);
+        if (apiStageCount) {
+          return {
+            stage,
+            count: Number(apiStageCount.count ?? 0),
+            amount: Number(apiStageCount.amount ?? 0),
+          };
+        }
+        const items = visibleOpportunities.filter((opportunity) =>
+          normalizeLegacyStage(opportunity.stage) === stage.value,
+        );
+        return {
+          stage,
+          count: items.length,
+          amount: items.reduce((total, opportunity) => total + Number(opportunity.amount ?? 0), 0),
+        };
+      });
+    },
+    [crmStages, paginatedResponse?.stageCounts, visibleOpportunities],
+  );
+  const sortedOpportunities = useMemo(() => {
+    if (paginatedResponse) return visibleOpportunities;
+
+    const stageOrder = new Map(crmStages.map((stage, index) => [stage.value, index]));
+    const alertPriority = (opportunity: CrmOpportunity) => {
+      const summary = getOpportunityFollowUpSummary(opportunity);
+      if (summary.overdueCount > 0) return 0;
+      if (summary.dueTodayCount > 0) return 1;
+      if (summary.nextFollowUp) return 2;
+      return 3;
+    };
+
+    return [...visibleOpportunities].sort((left, right) => {
+      const leftPriority = alertPriority(left);
+      const rightPriority = alertPriority(right);
+      if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+
+      const leftStage = stageOrder.get(normalizeLegacyStage(left.stage)) ?? 999;
+      const rightStage = stageOrder.get(normalizeLegacyStage(right.stage)) ?? 999;
+      if (leftStage !== rightStage) return leftStage - rightStage;
+
+      const leftDate = left.expectedCloseDate || "9999-12-31";
+      const rightDate = right.expectedCloseDate || "9999-12-31";
+      if (leftDate !== rightDate) return leftDate.localeCompare(rightDate);
+
+      return Number(right.id) - Number(left.id);
+    });
+  }, [crmStages, paginatedResponse, visibleOpportunities]);
+  const totalPages = paginatedResponse?.totalPages ?? Math.max(1, Math.ceil(sortedOpportunities.length / pageSize));
+  const normalizedPage = paginatedResponse?.page ?? Math.min(currentPage, totalPages);
+  const effectivePageSize = paginatedResponse?.pageSize ?? pageSize;
+  const pageStart = (normalizedPage - 1) * effectivePageSize;
+  const paginatedOpportunities = paginatedResponse
+    ? sortedOpportunities
+    : sortedOpportunities.slice(pageStart, pageStart + pageSize);
+  const pageStartDisplay = totalOpportunityCount === 0 ? 0 : pageStart + 1;
+  const pageEnd = Math.min(pageStart + paginatedOpportunities.length, totalOpportunityCount);
+
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
+
+  const hasCrmFilters =
+    search.trim().length > 0
+    || stageFilter !== "all"
+    || sourceFilter !== "all"
+    || ownerFilter !== "all"
+    || followUpFilter !== "all"
+    || expectedCloseFrom.length > 0
+    || expectedCloseTo.length > 0;
+
+  const clearCrmFilters = () => {
+    setSearch("");
+    setStageFilter("all");
+    setSourceFilter("all");
+    setOwnerFilter("all");
+    setFollowUpFilter("all");
+    setExpectedCloseFrom("");
+    setExpectedCloseTo("");
+  };
 
   const invalidateCrm = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/crm/opportunities"] });
@@ -436,6 +756,7 @@ export default function CrmPage() {
           stage: data.stage,
           amount: Number(data.amount ?? 0),
           expectedCloseDate: asNullableText(data.expectedCloseDate),
+          ownerStaffId: data.ownerStaffId ?? null,
           notes: asNullableText(data.notes),
           lostReason: stageUsesLostReason(data.stage) ? asNullableText(data.lostReason) : null,
         }),
@@ -469,6 +790,7 @@ export default function CrmPage() {
           stage: data.stage,
           amount: Number(data.amount ?? 0),
           expectedCloseDate: asNullableText(data.expectedCloseDate),
+          ownerStaffId: data.ownerStaffId ?? null,
           notes: asNullableText(data.notes),
           lostReason: stageUsesLostReason(data.stage) ? asNullableText(data.lostReason) : null,
         }),
@@ -703,6 +1025,7 @@ export default function CrmPage() {
       stage: defaultStageValue,
       amount: 0,
       expectedCloseDate: "",
+      ownerStaffId: null,
       notes: "",
       lostReason: "",
     });
@@ -722,6 +1045,7 @@ export default function CrmPage() {
         : defaultStageValue,
       amount: Number(opportunity.amount ?? 0),
       expectedCloseDate: opportunity.expectedCloseDate ?? "",
+      ownerStaffId: opportunity.ownerStaffId ?? null,
       notes: opportunity.notes ?? "",
       lostReason: opportunity.lostReason ?? "",
     });
@@ -736,6 +1060,82 @@ export default function CrmPage() {
     setNewFollowUpAssignee("");
     setNewFollowUpNotes("");
     setFollowUpDialogOpen(true);
+  };
+
+  const printProposalDocument = (opportunity: CrmOpportunity) => {
+    const printWindow = window.open("", "_blank", "noopener,noreferrer,width=1000,height=900");
+    if (!printWindow) {
+      toast({ variant: "destructive", title: "Permita pop-ups para gerar a proposta." });
+      return;
+    }
+
+    const generatedAt = new Date().toLocaleString("pt-BR");
+    const expectedClose = opportunity.expectedCloseDate
+      ? formatDateKeyPtBr(opportunity.expectedCloseDate)
+      : "-";
+    printWindow.document.write(`
+      <!doctype html>
+      <html lang="pt-BR">
+        <head>
+          <meta charset="utf-8" />
+          <title>Proposta - ${escapeHtml(opportunity.title)}</title>
+          <style>
+            body { margin: 28px; color: #111827; font-family: Arial, sans-serif; line-height: 1.55; }
+            header { border-bottom: 2px solid #111827; padding-bottom: 14px; margin-bottom: 22px; }
+            h1 { margin: 0; font-size: 22px; }
+            h2 { margin: 22px 0 10px; font-size: 15px; }
+            p { margin: 0 0 10px; font-size: 13px; }
+            .muted { color: #6b7280; font-size: 12px; }
+            .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 18px; margin-bottom: 18px; font-size: 12px; }
+            .box { border: 1px solid #d1d5db; border-radius: 8px; padding: 12px; margin: 14px 0; }
+            .value { font-size: 18px; font-weight: 700; }
+            .signature { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 48px; margin-top: 56px; font-size: 12px; }
+            .line { border-top: 1px solid #111827; padding-top: 8px; text-align: center; }
+            @media print { body { margin: 18mm; } }
+          </style>
+        </head>
+        <body>
+          <header>
+            <h1>Proposta Comercial</h1>
+            <p class="muted">${escapeHtml(user?.organizationName ?? "EasyCare")} - gerada em ${escapeHtml(generatedAt)}</p>
+          </header>
+
+          <h2>Cliente / oportunidade</h2>
+          <div class="grid">
+            <div><strong>Titulo:</strong> ${escapeHtml(opportunity.title)}</div>
+            <div><strong>Etapa:</strong> ${escapeHtml(stageLabel(opportunity.stage, crmStages))}</div>
+            <div><strong>Contato:</strong> ${escapeHtml(opportunity.contactName || "-")}</div>
+            <div><strong>Telefone:</strong> ${escapeHtml(opportunity.contactPhone || "-")}</div>
+            <div><strong>E-mail:</strong> ${escapeHtml(opportunity.contactEmail || "-")}</div>
+            <div><strong>Origem:</strong> ${escapeHtml(opportunity.source || "-")}</div>
+            <div><strong>Responsavel:</strong> ${escapeHtml(opportunity.ownerStaffName || opportunity.ownerName || "-")}</div>
+            <div><strong>Previsao:</strong> ${escapeHtml(expectedClose)}</div>
+          </div>
+
+          <div class="box">
+            <p class="muted">Valor estimado</p>
+            <p class="value">${escapeHtml(formatCurrencyBRL(opportunity.amount))}</p>
+          </div>
+
+          <h2>Escopo proposto</h2>
+          <div class="box">
+            <p>${escapeHtml(opportunity.notes || "Proposta de servicos assistenciais conforme necessidades alinhadas com o cliente.")}</p>
+            <p>Os detalhes finais de plano, vigencia, equipe, rotina e condicoes comerciais devem ser confirmados antes da assinatura do contrato.</p>
+          </div>
+
+          <h2>Assinaturas</h2>
+          <div class="signature">
+            <div class="line">Cliente</div>
+            <div class="line">Representante comercial</div>
+          </div>
+
+          <script>
+            window.onload = function () { setTimeout(function () { window.print(); }, 250); };
+          </script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
   };
 
   const handleAddFollowUpTask = () => {
@@ -793,12 +1193,375 @@ export default function CrmPage() {
     setDraggingOpportunityId(null);
   };
 
+  const renderOpportunityList = () => (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <CardTitle className="text-base">Oportunidades</CardTitle>
+            <CardDescription>
+              {totalOpportunityCount} resultado(s) | Total {formatCurrencyBRL(totalAmount)}
+            </CardDescription>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {stageSummary.map((item) => (
+              <Badge key={item.stage.value} variant="outline" style={item.stage.badgeStyle}>
+                {item.stage.label}: {item.count}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {totalOpportunityCount === 0 ? (
+          <div className="rounded-lg border border-dashed border-border px-3 py-10 text-center text-sm text-muted-foreground">
+            Nenhuma oportunidade encontrada.
+          </div>
+        ) : (
+          <>
+            <div className="space-y-3 md:hidden">
+              {paginatedOpportunities.map((opportunity) => {
+                const followUpSummary = getOpportunityFollowUpSummary(opportunity);
+                return (
+                  <div key={opportunity.id} className={`rounded-lg border bg-background p-3 ${followUpSummary.hasAlert ? "border-red-300" : "border-border"}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-foreground">{opportunity.title}</p>
+                        <p className="truncate text-xs text-muted-foreground">{opportunity.contactName || "Sem contato"}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{opportunity.source || "Sem origem"}</p>
+                        <p className="text-xs text-muted-foreground">{opportunity.ownerStaffName || opportunity.ownerName || "Sem responsavel"}</p>
+                      </div>
+                      <p className="shrink-0 text-sm font-semibold text-foreground">{formatCurrencyBRL(opportunity.amount)}</p>
+                    </div>
+
+                    <div className="mt-3 grid gap-2">
+                      <Select
+                        value={stageValues.includes(normalizeLegacyStage(opportunity.stage))
+                          ? normalizeLegacyStage(opportunity.stage)
+                          : defaultStageValue}
+                        onValueChange={(nextStage) => {
+                          if (nextStage === normalizeLegacyStage(opportunity.stage)) return;
+                          moveOpportunity.mutate({ id: opportunity.id, stage: nextStage });
+                        }}
+                      >
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue>{stageLabel(opportunity.stage, crmStages)}</SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {crmStages.map((item) => (
+                            <SelectItem key={item.value} value={item.value}>
+                              {item.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] text-blue-700">
+                          <Clock3 className="h-3 w-3" />
+                          {followUpSummary.pendingFollowUps.length} pendente(s)
+                        </span>
+                        {followUpSummary.overdueCount > 0 ? (
+                          <span className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] text-red-700">
+                            <AlertCircle className="h-3 w-3" />
+                            {followUpSummary.overdueCount} atrasado(s)
+                          </span>
+                        ) : null}
+                        {followUpSummary.dueTodayCount > 0 ? (
+                          <span className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">
+                            <Clock3 className="h-3 w-3" />
+                            {followUpSummary.dueTodayCount} hoje
+                          </span>
+                        ) : null}
+                      </div>
+
+                      <p className="text-xs text-muted-foreground">
+                        {followUpSummary.nextFollowUp
+                          ? `Proximo: ${formatDateKeyPtBr(followUpSummary.nextFollowUp.dueDate)} - ${followUpSummary.nextFollowUp.title}`
+                          : "Sem follow-up agendado."}
+                      </p>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap justify-end gap-2 border-t border-border pt-3">
+                      <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => printProposalDocument(opportunity)}>
+                        <FileText className="mr-1 h-3.5 w-3.5" />
+                        Proposta
+                      </Button>
+                      <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => openFollowUpDialog(opportunity)}>
+                        Follow-up
+                      </Button>
+                      <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => openEditDialog(opportunity)}>
+                        Editar
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                        onClick={() => deleteOpportunity.mutate(opportunity.id)}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="hidden overflow-hidden rounded-lg border border-border md:block">
+              <Table>
+                <TableHeader className="bg-muted/50">
+                  <TableRow>
+                    <TableHead>Oportunidade</TableHead>
+                    <TableHead>Origem</TableHead>
+                    <TableHead>Responsavel</TableHead>
+                    <TableHead>Etapa</TableHead>
+                    <TableHead>Follow-up</TableHead>
+                    <TableHead className="text-right">Valor</TableHead>
+                    <TableHead>Previsao</TableHead>
+                    <TableHead className="text-right">Acoes</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {paginatedOpportunities.map((opportunity) => {
+                    const followUpSummary = getOpportunityFollowUpSummary(opportunity);
+                    return (
+                      <TableRow key={opportunity.id} className={followUpSummary.hasAlert ? "bg-red-50/40" : undefined}>
+                        <TableCell className="max-w-[280px]">
+                          <p className="truncate text-sm font-semibold text-foreground">{opportunity.title}</p>
+                          <p className="truncate text-xs text-muted-foreground">{opportunity.contactName || "Sem contato"}</p>
+                          {opportunity.contactPhone || opportunity.contactEmail ? (
+                            <p className="truncate text-xs text-muted-foreground">
+                              {[opportunity.contactPhone, opportunity.contactEmail].filter(Boolean).join(" | ")}
+                            </p>
+                          ) : null}
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{opportunity.source || "-"}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{opportunity.ownerStaffName || opportunity.ownerName || "-"}</TableCell>
+                        <TableCell className="min-w-[170px]">
+                          <Select
+                            value={stageValues.includes(normalizeLegacyStage(opportunity.stage))
+                              ? normalizeLegacyStage(opportunity.stage)
+                              : defaultStageValue}
+                            onValueChange={(nextStage) => {
+                              if (nextStage === normalizeLegacyStage(opportunity.stage)) return;
+                              moveOpportunity.mutate({ id: opportunity.id, stage: nextStage });
+                            }}
+                          >
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue>{stageLabel(opportunity.stage, crmStages)}</SelectValue>
+                            </SelectTrigger>
+                            <SelectContent>
+                              {crmStages.map((item) => (
+                                <SelectItem key={item.value} value={item.value}>
+                                  {item.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </TableCell>
+                        <TableCell className="max-w-[260px]">
+                          <div className="flex flex-wrap gap-1">
+                            {followUpSummary.overdueCount > 0 ? (
+                              <Badge variant="outline" className="border-red-200 bg-red-50 text-red-700">
+                                {followUpSummary.overdueCount} atrasado(s)
+                              </Badge>
+                            ) : null}
+                            {followUpSummary.dueTodayCount > 0 ? (
+                              <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700">
+                                {followUpSummary.dueTodayCount} hoje
+                              </Badge>
+                            ) : null}
+                            <Badge variant="outline" className="border-blue-200 bg-blue-50 text-blue-700">
+                              {followUpSummary.pendingFollowUps.length} pendente(s)
+                            </Badge>
+                          </div>
+                          <p className="mt-1 truncate text-xs text-muted-foreground">
+                            {followUpSummary.nextFollowUp
+                              ? `${formatDateKeyPtBr(followUpSummary.nextFollowUp.dueDate)} - ${followUpSummary.nextFollowUp.title}`
+                              : "Sem follow-up"}
+                          </p>
+                        </TableCell>
+                        <TableCell className="text-right text-sm font-semibold">
+                          {formatCurrencyBRL(opportunity.amount)}
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">
+                          {opportunity.expectedCloseDate ? formatDateKeyPtBr(opportunity.expectedCloseDate) : "-"}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => printProposalDocument(opportunity)}>
+                              <FileText className="mr-1 h-3.5 w-3.5" />
+                              Proposta
+                            </Button>
+                            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => openFollowUpDialog(opportunity)}>
+                              Follow-up
+                            </Button>
+                            <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => openEditDialog(opportunity)}>
+                              Editar
+                            </Button>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                              onClick={() => deleteOpportunity.mutate(opportunity.id)}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+
+            <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-muted-foreground">
+                Mostrando {pageStartDisplay} a {pageEnd} de {totalOpportunityCount}
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Select value={String(pageSize)} onValueChange={(value) => setPageSize(Number(value))}>
+                  <SelectTrigger className="h-8 w-[118px] text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="10">10 por pagina</SelectItem>
+                    <SelectItem value="20">20 por pagina</SelectItem>
+                    <SelectItem value="50">50 por pagina</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8 gap-1"
+                  disabled={normalizedPage <= 1}
+                  onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                  Anterior
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  {normalizedPage} / {totalPages}
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8 gap-1"
+                  disabled={normalizedPage >= totalPages}
+                  onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                >
+                  Proxima
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+
+  const renderCrmAnalytics = () => {
+    if (!scopedOrganizationId) return null;
+
+    return (
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <CardTitle className="text-base">Analitico por canal</CardTitle>
+              <CardDescription>Origem das oportunidades e retorno comercial.</CardDescription>
+            </div>
+            <BarChart3 className="h-4 w-4 text-muted-foreground" />
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {analyticsQuery.isLoading ? (
+            <p className="text-sm text-muted-foreground">Carregando analitico...</p>
+          ) : sourceAnalytics.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Sem oportunidades com origem para analisar.</p>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                <div className="rounded-lg border border-border bg-background p-3">
+                  <p className="text-xs text-muted-foreground">Mais oportunidades</p>
+                  <p className="mt-1 text-sm font-semibold text-foreground">{bestVolumeSource?.source ?? "-"}</p>
+                  <p className="text-xs text-muted-foreground">{bestVolumeSource?.count ?? 0} oportunidade(s)</p>
+                </div>
+                <div className="rounded-lg border border-border bg-background p-3">
+                  <p className="text-xs text-muted-foreground">Melhor retorno</p>
+                  <p className="mt-1 text-sm font-semibold text-foreground">{bestReturnSource?.source ?? "-"}</p>
+                  <p className="text-xs text-muted-foreground">{formatCurrencyBRL(bestReturnSource?.wonAmount ?? 0)} ganho(s)</p>
+                </div>
+                <div className="rounded-lg border border-border bg-background p-3">
+                  <p className="text-xs text-muted-foreground">Conversao do melhor retorno</p>
+                  <p className="mt-1 text-sm font-semibold text-foreground">{formatPercent(bestReturnSource?.conversionRate ?? 0)}</p>
+                  <p className="text-xs text-muted-foreground">{bestReturnSource?.wonCount ?? 0} de {bestReturnSource?.count ?? 0} ganho(s)</p>
+                </div>
+              </div>
+
+              <div className="h-64 rounded-lg border border-border bg-background p-3">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={sourceChartData} margin={{ top: 8, right: 12, left: -24, bottom: 12 }}>
+                    <CartesianGrid vertical={false} strokeDasharray="3 3" />
+                    <XAxis dataKey="source" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                    <YAxis allowDecimals={false} tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                    <RechartsTooltip
+                      formatter={(value) => [String(value), "Oportunidades"]}
+                      labelFormatter={(_, payload) => {
+                        const item = payload?.[0]?.payload as { fullSource?: string; wonAmount?: number; conversionRate?: number } | undefined;
+                        if (!item) return "";
+                        return `${item.fullSource ?? ""} | Retorno ${formatCurrencyBRL(item.wonAmount ?? 0)} | Conversao ${formatPercent(item.conversionRate ?? 0)}`;
+                      }}
+                    />
+                    <Bar dataKey="opportunities" fill="#0EA5E9" radius={[6, 6, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="space-y-3">
+                {sourceAnalytics.slice(0, 8).map((metric) => (
+                  <div key={metric.source} className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-3 text-xs">
+                      <span className="font-medium text-foreground">{metric.source}</span>
+                      <span className="text-muted-foreground">
+                        {metric.count} lead(s) | {formatCurrencyBRL(metric.wonAmount)} ganhos
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                      <div className="space-y-1">
+                        <div className="h-2 rounded-full bg-muted">
+                          <div
+                            className="h-2 rounded-full bg-sky-500"
+                            style={{ width: `${Math.max(4, (metric.count / maxSourceCount) * 100)}%` }}
+                          />
+                        </div>
+                        <div className="h-2 rounded-full bg-muted">
+                          <div
+                            className="h-2 rounded-full bg-emerald-500"
+                            style={{ width: `${Math.max(metric.wonAmount > 0 ? 4 : 0, (metric.wonAmount / maxSourceWonAmount) * 100)}%` }}
+                          />
+                        </div>
+                      </div>
+                      <span className="w-12 text-right text-xs text-muted-foreground">{formatPercent(metric.conversionRate)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+    );
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground">CRM</h1>
-          <p className="text-sm text-muted-foreground">Funil comercial em Kanban por etapa.</p>
+          <p className="text-sm text-muted-foreground">Oportunidades, follow-ups e analise de canais em uma visao simples.</p>
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -821,7 +1584,7 @@ export default function CrmPage() {
         <CardHeader className="pb-3">
           <CardTitle className="text-base">Filtros</CardTitle>
           <CardDescription>
-            {(opportunitiesQuery.data?.length ?? 0)} oportunidade(s) · Total {formatCurrencyBRL(totalAmount)}
+            {totalOpportunityCount} oportunidade(s) | Total {formatCurrencyBRL(totalAmount)}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -876,8 +1639,200 @@ export default function CrmPage() {
               </Select>
             </div>
           </div>
+
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+            <div className="space-y-1">
+              <Label>Origem</Label>
+              <Select value={sourceFilter} onValueChange={setSourceFilter}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todas as origens</SelectItem>
+                  {sourceOptions.map((source) => (
+                    <SelectItem key={source} value={source}>
+                      {source}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label>Responsavel da equipe</Label>
+              <Select value={ownerFilter} onValueChange={setOwnerFilter}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos</SelectItem>
+                  {(crmResponsiblesQuery.data ?? []).map((item) => (
+                    <SelectItem key={item.id} value={String(item.id)}>
+                      {item.name}{item.role ? ` - ${item.role}` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label>Follow-up</Label>
+              <Select value={followUpFilter} onValueChange={(value) => setFollowUpFilter(value as CrmFollowUpFilter)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos</SelectItem>
+                  <SelectItem value="overdue">Atrasados</SelectItem>
+                  <SelectItem value="today">Vencem hoje</SelectItem>
+                  <SelectItem value="pending">Com pendencia</SelectItem>
+                  <SelectItem value="none">Sem pendencia</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label>Previsao de</Label>
+              <Input
+                type="date"
+                value={expectedCloseFrom}
+                onChange={(event) => setExpectedCloseFrom(event.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>Previsao ate</Label>
+              <Input
+                type="date"
+                value={expectedCloseTo}
+                onChange={(event) => setExpectedCloseTo(event.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <Label>Visualizacao</Label>
+              <p className="text-xs text-muted-foreground">
+                Use lista para volume e Kanban para acompanhar o funil.
+              </p>
+            </div>
+            <ToggleGroup
+              aria-label="Visualizacao do CRM"
+              type="single"
+              value={viewMode}
+              onValueChange={(value) => {
+                if (value === "list" || value === "kanban") setViewMode(value);
+              }}
+              className="justify-start rounded-lg border border-border bg-background p-1 sm:justify-center"
+            >
+              <ToggleGroupItem value="list" size="sm" className="gap-1.5 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground">
+                <List className="h-4 w-4" />
+                Lista
+              </ToggleGroupItem>
+              <ToggleGroupItem value="kanban" size="sm" className="gap-1.5 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground">
+                <Columns3 className="h-4 w-4" />
+                Kanban
+              </ToggleGroupItem>
+            </ToggleGroup>
+          </div>
+
+          {hasCrmFilters ? (
+            <div className="flex justify-end">
+              <Button type="button" variant="ghost" size="sm" onClick={clearCrmFilters}>
+                <FilterX className="mr-1.5 h-4 w-4" />
+                Limpar filtros
+              </Button>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
+
+      {false && scopedOrganizationId ? (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <CardTitle className="text-base">Analitico por canal</CardTitle>
+                <CardDescription>Origem das oportunidades e retorno comercial.</CardDescription>
+              </div>
+              <BarChart3 className="h-4 w-4 text-muted-foreground" />
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {analyticsQuery.isLoading ? (
+              <p className="text-sm text-muted-foreground">Carregando analitico...</p>
+            ) : sourceAnalytics.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Sem oportunidades com origem para analisar.</p>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                  <div className="rounded-lg border border-border bg-background p-3">
+                    <p className="text-xs text-muted-foreground">Mais oportunidades</p>
+                    <p className="mt-1 text-sm font-semibold text-foreground">{bestVolumeSource?.source ?? "-"}</p>
+                    <p className="text-xs text-muted-foreground">{bestVolumeSource?.count ?? 0} oportunidade(s)</p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-background p-3">
+                    <p className="text-xs text-muted-foreground">Melhor retorno</p>
+                    <p className="mt-1 text-sm font-semibold text-foreground">{bestReturnSource?.source ?? "-"}</p>
+                    <p className="text-xs text-muted-foreground">{formatCurrencyBRL(bestReturnSource?.wonAmount ?? 0)} ganho(s)</p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-background p-3">
+                    <p className="text-xs text-muted-foreground">Conversao do melhor retorno</p>
+                    <p className="mt-1 text-sm font-semibold text-foreground">{formatPercent(bestReturnSource?.conversionRate ?? 0)}</p>
+                    <p className="text-xs text-muted-foreground">{bestReturnSource?.wonCount ?? 0} de {bestReturnSource?.count ?? 0} ganho(s)</p>
+                  </div>
+                </div>
+
+                <div className="h-64 rounded-lg border border-border bg-background p-3">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={sourceChartData} margin={{ top: 8, right: 12, left: -24, bottom: 12 }}>
+                      <CartesianGrid vertical={false} strokeDasharray="3 3" />
+                      <XAxis dataKey="source" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                      <YAxis allowDecimals={false} tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                      <RechartsTooltip
+                        formatter={(value) => [String(value), "Oportunidades"]}
+                        labelFormatter={(_, payload) => {
+                          const item = payload?.[0]?.payload as { fullSource?: string; wonAmount?: number; conversionRate?: number } | undefined;
+                          if (!item) return "";
+                          return `${item.fullSource ?? ""} | Retorno ${formatCurrencyBRL(item.wonAmount ?? 0)} | Conversao ${formatPercent(item.conversionRate ?? 0)}`;
+                        }}
+                      />
+                      <Bar dataKey="opportunities" fill="#0EA5E9" radius={[6, 6, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+
+                <div className="space-y-3">
+                  {sourceAnalytics.slice(0, 8).map((metric) => (
+                    <div key={metric.source} className="space-y-1.5">
+                      <div className="flex items-center justify-between gap-3 text-xs">
+                        <span className="font-medium text-foreground">{metric.source}</span>
+                        <span className="text-muted-foreground">
+                          {metric.count} lead(s) · {formatCurrencyBRL(metric.wonAmount)} ganhos
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                        <div className="space-y-1">
+                          <div className="h-2 rounded-full bg-muted">
+                            <div
+                              className="h-2 rounded-full bg-sky-500"
+                              style={{ width: `${Math.max(4, (metric.count / maxSourceCount) * 100)}%` }}
+                            />
+                          </div>
+                          <div className="h-2 rounded-full bg-muted">
+                            <div
+                              className="h-2 rounded-full bg-emerald-500"
+                              style={{ width: `${Math.max(metric.wonAmount > 0 ? 4 : 0, (metric.wonAmount / maxSourceWonAmount) * 100)}%` }}
+                            />
+                          </div>
+                        </div>
+                        <span className="w-12 text-right text-xs text-muted-foreground">{formatPercent(metric.conversionRate)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
 
       {!scopedOrganizationId ? (
         <Card>
@@ -909,7 +1864,14 @@ export default function CrmPage() {
               : "Erro ao carregar CRM."}
           </CardContent>
         </Card>
-      ) : (
+      ) : viewMode === "kanban" ? null : renderOpportunityList()}
+
+      {viewMode === "kanban"
+      && scopedOrganizationId
+      && !stagesQuery.isLoading
+      && !stagesQuery.error
+      && !opportunitiesQuery.isLoading
+      && !opportunitiesQuery.error ? (
         <div className={`grid grid-cols-1 gap-3 ${crmStages.length <= 3 ? "xl:grid-cols-3" : "xl:grid-cols-3 2xl:grid-cols-6"}`}>
           {crmStages.map((stage) => {
             const stageItems = grouped[stage.value] ?? [];
@@ -1020,18 +1982,23 @@ export default function CrmPage() {
                             </Select>
                           </div>
 
-                          <div className="flex items-center justify-end gap-1">
-                            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openFollowUpDialog(opportunity)}>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <Button size="sm" variant="outline" className="h-8 min-w-0 px-2 text-xs" onClick={() => printProposalDocument(opportunity)}>
+                              <FileText className="mr-1 h-3.5 w-3.5" />
+                              Proposta
+                            </Button>
+                            <Button size="sm" variant="outline" className="h-8 min-w-0 px-2 text-xs" onClick={() => openFollowUpDialog(opportunity)}>
                               Follow-up
                             </Button>
-                            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openEditDialog(opportunity)}>
+                            <Button size="sm" variant="outline" className="h-8 min-w-0 px-2 text-xs" onClick={() => openEditDialog(opportunity)}>
                               Editar
                             </Button>
                             <Button
-                              size="icon"
+                              size="sm"
                               variant="ghost"
-                              className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                              className="h-8 min-w-0 px-2 text-muted-foreground hover:text-destructive"
                               onClick={() => deleteOpportunity.mutate(opportunity.id)}
+                              aria-label="Excluir oportunidade"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </Button>
@@ -1045,7 +2012,9 @@ export default function CrmPage() {
             );
           })}
         </div>
-      )}
+      ) : null}
+
+      {renderCrmAnalytics()}
 
       <Dialog
         open={stagesDialogOpen}
@@ -1337,6 +2306,38 @@ export default function CrmPage() {
                       <FormControl>
                         <Input type="date" {...field} value={field.value ?? ""} />
                       </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="ownerStaffId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Responsavel da equipe</FormLabel>
+                      <Select
+                        value={field.value ? String(field.value) : "none"}
+                        onValueChange={(value) => field.onChange(value === "none" ? null : Number(value))}
+                      >
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Sem responsavel" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="none">Sem responsavel</SelectItem>
+                          {(crmResponsiblesQuery.data ?? []).map((item) => (
+                            <SelectItem key={item.id} value={String(item.id)}>
+                              {item.name}{item.role ? ` - ${item.role}` : ""}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        Cadastre ou edite responsaveis na aba Equipe.
+                      </p>
                       <FormMessage />
                     </FormItem>
                   )}

@@ -5,6 +5,7 @@ import {
   LogOut,
   Menu,
   Calendar,
+  Clock3,
   Building2,
   ShieldAlert,
   UserCheck,
@@ -19,6 +20,7 @@ import { useEnvironmentSettings } from "@/hooks/use-environment-settings";
 import { canAccessRoute, ROLE_LABELS } from "@/lib/permissions";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+import { NotificationCenter } from "@/components/NotificationCenter";
 
 const allNavItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -26,6 +28,7 @@ const allNavItems = [
   { href: "/prontuario", label: "Prontuario", icon: FileText },
   { href: "/staff", label: "Equipe", icon: UserCheck },
   { href: "/escalas", label: "Escalas", icon: Calendar },
+  { href: "/ponto-eletronico", label: "Ponto", icon: Clock3 },
   { href: "/financeiro", label: "Financeiro", icon: DollarSign },
   { href: "/crm", label: "CRM", icon: KanbanSquare },
   { href: "/environment", label: "Ambiente", icon: SlidersHorizontal },
@@ -126,6 +129,7 @@ function NavContent({ onClose }: { onClose?: () => void }) {
               {user?.isSuperAdmin ? "Super Admin" : roleLabel}
             </p>
           </div>
+          <NotificationCenter />
         </div>
         <button
           onClick={() => {
@@ -148,6 +152,7 @@ function NavContent({ onClose }: { onClose?: () => void }) {
 
 export function Sidebar() {
   const [open, setOpen] = useState(false);
+  const { user } = useAuth();
 
   return (
     <>
@@ -156,15 +161,27 @@ export function Sidebar() {
       </aside>
 
       <Sheet open={open} onOpenChange={setOpen}>
-        <SheetTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="md:hidden fixed top-3 left-3 z-40 bg-[#0A0F2C] text-white hover:bg-[#1F6FEB] border border-white/10 shadow-lg"
-          >
-            <Menu className="h-5 w-5" />
-          </Button>
-        </SheetTrigger>
+        <div className="sticky top-0 z-40 flex h-14 items-center gap-3 border-b border-border/70 bg-background/95 px-3 backdrop-blur md:hidden">
+          <SheetTrigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 gap-2 border-[#0A0F2C]/15 bg-white text-[#0A0F2C] shadow-sm hover:bg-[#F1F5F9]"
+            >
+              <Menu className="h-4 w-4" />
+              Menu
+            </Button>
+          </SheetTrigger>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-foreground">
+              {user?.organizationName ?? "EasyCare"}
+            </p>
+            <p className="text-[11px] text-muted-foreground">Gestao Inteligente</p>
+          </div>
+          <div className="ml-auto">
+            <NotificationCenter surface="light" />
+          </div>
+        </div>
         <SheetContent side="left" className="p-0 w-64 border-0">
           <NavContent onClose={() => setOpen(false)} />
         </SheetContent>

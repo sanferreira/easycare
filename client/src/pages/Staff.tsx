@@ -97,6 +97,7 @@ const WEEKDAY_ROWS: Array<{ key: WeekdayKey; label: string }> = [
 ];
 
 const DEFAULT_SLOT: WorkScheduleSlot = { start: "08:00", end: "17:00" };
+const MINUTES_IN_DAY = 24 * 60;
 
 const createRule = (enabled = false): WorkScheduleRule => ({
   enabled,
@@ -192,11 +193,77 @@ const hasAnyWorkSchedule = (schedule: WorkScheduleConfig): boolean => {
 const hasWorkScheduleMetadata = (schedule: WorkScheduleConfig): boolean =>
   schedule.profileCycleStart === "12h_manha" || schedule.profileCycleStart === "12h_noite";
 
-const validateRule = (rule: WorkScheduleRule): boolean =>
+function getRuleDurationHours(rule: ShiftProfileRule): number | null {
+  const value = Number(rule.exactShiftHours ?? 0);
+  if (!rule.enabled || !Number.isFinite(value) || value <= 0) return null;
+  return value;
+}
+
+function clockToMinutes(value: string): number | null {
+  if (!isValidClock(value)) return null;
+  const [hours, minutes] = value.split(":").map(Number);
+  return (hours * 60) + minutes;
+}
+
+function minutesToClock(value: number): string {
+  const normalized = ((Math.round(value) % MINUTES_IN_DAY) + MINUTES_IN_DAY) % MINUTES_IN_DAY;
+  const hours = Math.floor(normalized / 60);
+  const minutes = normalized % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function addHoursToClock(value: string, hours: number): string | null {
+  const baseMinutes = clockToMinutes(value);
+  if (baseMinutes === null) return null;
+  return minutesToClock(baseMinutes + (hours * 60));
+}
+
+function subtractHoursFromClock(value: string, hours: number): string | null {
+  const baseMinutes = clockToMinutes(value);
+  if (baseMinutes === null) return null;
+  return minutesToClock(baseMinutes - (hours * 60));
+}
+
+function getDefaultSlotForRule(rule: ShiftProfileRule, cycleStart: ProfileCycleStartType): WorkScheduleSlot {
+  const durationHours = getRuleDurationHours(rule);
+  if (!durationHours) return { ...DEFAULT_SLOT };
+  const start =
+    cycleStart === "12h_noite"
+      ? "19:00"
+      : cycleStart === "12h_manha"
+        ? "07:00"
+        : DEFAULT_SLOT.start;
+  return {
+    start,
+    end: addHoursToClock(start, durationHours) ?? DEFAULT_SLOT.end,
+  };
+}
+
+function updateSlotStartForRule(slot: WorkScheduleSlot, start: string, rule: ShiftProfileRule): WorkScheduleSlot {
+  const durationHours = getRuleDurationHours(rule);
+  return {
+    ...slot,
+    start,
+    end: durationHours ? (addHoursToClock(start, durationHours) ?? slot.end) : slot.end,
+  };
+}
+
+function updateSlotEndForRule(slot: WorkScheduleSlot, end: string, rule: ShiftProfileRule): WorkScheduleSlot {
+  const durationHours = getRuleDurationHours(rule);
+  return {
+    ...slot,
+    start: durationHours ? (subtractHoursFromClock(end, durationHours) ?? slot.start) : slot.start,
+    end,
+  };
+}
+
+const validateRule = (rule: WorkScheduleRule, fixedDurationHours: number | null = null): boolean =>
   !rule.enabled
   || (rule.slots.length > 0
     && rule.slots.every((slot) =>
-      isValidClock(slot.start) && isValidClock(slot.end) && slot.start !== slot.end,
+      isValidClock(slot.start)
+      && isValidClock(slot.end)
+      && (slot.start !== slot.end || fixedDurationHours === 24),
     ));
 
 type ViaCepPayload = {
@@ -452,6 +519,21 @@ export default function Staff() {
                           <div className="text-[11px] text-muted-foreground">
                             Plantao: {formatCurrencyBRL(Number(member.shiftValue ?? 0))}
                           </div>
+                          {Number(member.bonusValue ?? 0) > 0 && (
+                            <div className="text-[11px] text-muted-foreground">
+                              Bonificacao: {formatCurrencyBRL(Number(member.bonusValue ?? 0))}
+                            </div>
+                          )}
+                          {(member.bankName || member.bankAgency || member.bankAccount || member.pixKey) && (
+                            <div className="text-[11px] text-muted-foreground">
+                              Banco: {[
+                                member.bankName,
+                                member.bankAgency ? `Ag ${member.bankAgency}` : null,
+                                member.bankAccount ? `CC ${member.bankAccount}` : null,
+                                member.pixKey ? "Pix cadastrado" : null,
+                              ].filter(Boolean).join(" | ")}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </TableCell>
@@ -569,6 +651,12 @@ function StaffDialog({
     cpf: "",
     cnpj: "",
     shiftValue: 0,
+    bonusValue: 0,
+    bonusNotes: "",
+    bankName: "",
+    bankAgency: "",
+    bankAccount: "",
+    pixKey: "",
     phone: "",
     cep: "",
     address: "",
@@ -639,6 +727,11 @@ function StaffDialog({
     selectedShiftRule.enabled
     && selectedShiftRule.allowedShiftTypes.includes("12h_manha")
     && selectedShiftRule.allowedShiftTypes.includes("12h_noite");
+  const selectedShiftDurationHours = getRuleDurationHours(selectedShiftRule);
+  const defaultScheduleSlot = useMemo(
+    () => getDefaultSlotForRule(selectedShiftRule, workSchedule.profileCycleStart),
+    [selectedShiftRule, workSchedule.profileCycleStart],
+  );
   const portalAccessEnabled = !!form.watch("portalAccess");
   const hasParityBasedSchedule = workSchedule.oddDays.enabled || workSchedule.evenDays.enabled;
   const photoPreview = form.watch("photoUrl");
@@ -686,6 +779,12 @@ function StaffDialog({
         cpf: maskCpf(staff.cpf ?? ""),
         cnpj: maskCnpj(staff.cnpj ?? ""),
         shiftValue: Number.isFinite(Number(staff.shiftValue ?? 0)) ? Number(staff.shiftValue ?? 0) : 0,
+        bonusValue: Number.isFinite(Number(staff.bonusValue ?? 0)) ? Number(staff.bonusValue ?? 0) : 0,
+        bonusNotes: staff.bonusNotes ?? "",
+        bankName: staff.bankName ?? "",
+        bankAgency: staff.bankAgency ?? "",
+        bankAccount: staff.bankAccount ?? "",
+        pixKey: staff.pixKey ?? "",
         phone: maskPhoneBR(staff.phone ?? ""),
         cep: maskCep(staff.cep ?? ""),
         address: staff.address ?? "",
@@ -788,6 +887,7 @@ function StaffDialog({
     const selectedRoleKey = normalizeStaffRoleValue(data.role);
     const selectedProfile = normalizeShiftProfile(data.shift);
     const shiftValueNumber = Number(data.shiftValue ?? 0);
+    const bonusValueNumber = Number(data.bonusValue ?? 0);
     const scheduleAllowedForProfile = normalizedScheduleConfigurableProfiles.has(selectedProfile);
     const cpfDigits = digitsOnly(data.cpf || "");
     const cnpjDigits = digitsOnly(data.cnpj || "");
@@ -813,11 +913,15 @@ function StaffDialog({
       form.setError("shiftValue", { type: "manual", message: "Valor do plantao invalido." });
       return;
     }
+    if (!Number.isFinite(bonusValueNumber) || bonusValueNumber < 0) {
+      form.setError("bonusValue", { type: "manual", message: "Valor de bonificacao invalido." });
+      return;
+    }
 
     if (scheduleAllowedForProfile) {
-      const weeklyRuleInvalid = WEEKDAY_ROWS.some((day) => !validateRule(workSchedule.weekly[day.key]));
-      const oddRuleInvalid = !validateRule(workSchedule.oddDays);
-      const evenRuleInvalid = !validateRule(workSchedule.evenDays);
+      const weeklyRuleInvalid = WEEKDAY_ROWS.some((day) => !validateRule(workSchedule.weekly[day.key], selectedShiftDurationHours));
+      const oddRuleInvalid = !validateRule(workSchedule.oddDays, selectedShiftDurationHours);
+      const evenRuleInvalid = !validateRule(workSchedule.evenDays, selectedShiftDurationHours);
       if (weeklyRuleInvalid || oddRuleInvalid || evenRuleInvalid) {
         toast({
           variant: "destructive",
@@ -868,6 +972,12 @@ function StaffDialog({
       cpf: selectedEmploymentType === "clt" ? (data.cpf?.trim() || null) : null,
       cnpj: selectedEmploymentType === "pj" ? (data.cnpj?.trim() || null) : null,
       shiftValue: Math.round((shiftValueNumber + Number.EPSILON) * 100) / 100,
+      bonusValue: Math.round((bonusValueNumber + Number.EPSILON) * 100) / 100,
+      bonusNotes: data.bonusNotes?.trim() || null,
+      bankName: data.bankName?.trim() || null,
+      bankAgency: data.bankAgency?.trim() || null,
+      bankAccount: data.bankAccount?.trim() || null,
+      pixKey: data.pixKey?.trim() || null,
       phone: data.phone?.trim() || null,
       cep: data.cep?.trim() || null,
       address: data.address?.trim() || null,
@@ -1113,8 +1223,8 @@ function StaffDialog({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="12h_manha">Inicia de manha (07:00)</SelectItem>
-                      <SelectItem value="12h_noite">Inicia a noite (19:00)</SelectItem>
+                      <SelectItem value="12h_manha">Inicia no plantao diurno</SelectItem>
+                      <SelectItem value="12h_noite">Inicia no plantao noturno</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1131,6 +1241,11 @@ function StaffDialog({
                     <p className="text-xs text-muted-foreground">
                       Configure horarios por dia da semana e regras de dias pares/impares.
                     </p>
+                    {selectedShiftDurationHours ? (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Ao alterar inicio ou fim, o outro horario sera recalculado para {selectedShiftDurationHours}h.
+                      </p>
+                    ) : null}
                   </div>
                 </AccordionTrigger>
                 <AccordionContent className="px-4 pb-4">
@@ -1158,7 +1273,7 @@ function StaffDialog({
                             onClick={() =>
                               updateWeeklyRule(day.key, (rule) => ({
                                 ...rule,
-                                slots: [...rule.slots, { ...DEFAULT_SLOT }],
+                                slots: [...rule.slots, { ...defaultScheduleSlot }],
                                 enabled: true,
                               }))
                             }
@@ -1174,7 +1289,7 @@ function StaffDialog({
                                 ...rule,
                                 enabled: checked,
                                 slots: checked && rule.slots.length === 0
-                                  ? [{ ...DEFAULT_SLOT }]
+                                  ? [{ ...defaultScheduleSlot }]
                                   : rule.slots,
                               }))
                             }
@@ -1195,7 +1310,7 @@ function StaffDialog({
                                     ...rule,
                                     slots: rule.slots.map((item, index) =>
                                       index === slotIndex
-                                        ? { ...item, start: event.target.value }
+                                        ? updateSlotStartForRule(item, event.target.value, selectedShiftRule)
                                         : item,
                                     ),
                                   }))
@@ -1210,7 +1325,7 @@ function StaffDialog({
                                     ...rule,
                                     slots: rule.slots.map((item, index) =>
                                       index === slotIndex
-                                        ? { ...item, end: event.target.value }
+                                        ? updateSlotEndForRule(item, event.target.value, selectedShiftRule)
                                         : item,
                                     ),
                                   }))
@@ -1257,7 +1372,7 @@ function StaffDialog({
                           onClick={() =>
                             updateParityRule(item.key, (currentRule) => ({
                               ...currentRule,
-                              slots: [...currentRule.slots, { ...DEFAULT_SLOT }],
+                              slots: [...currentRule.slots, { ...defaultScheduleSlot }],
                               enabled: true,
                             }))
                           }
@@ -1272,7 +1387,7 @@ function StaffDialog({
                               ...currentRule,
                               enabled: checked,
                               slots: checked && currentRule.slots.length === 0
-                                ? [{ ...DEFAULT_SLOT }]
+                                ? [{ ...defaultScheduleSlot }]
                                 : currentRule.slots,
                             }))
                           }
@@ -1292,7 +1407,7 @@ function StaffDialog({
                                   ...currentRule,
                                   slots: currentRule.slots.map((currentSlot, index) =>
                                     index === slotIndex
-                                      ? { ...currentSlot, start: event.target.value }
+                                      ? updateSlotStartForRule(currentSlot, event.target.value, selectedShiftRule)
                                       : currentSlot,
                                   ),
                                 }))
@@ -1306,7 +1421,7 @@ function StaffDialog({
                                   ...currentRule,
                                   slots: currentRule.slots.map((currentSlot, index) =>
                                     index === slotIndex
-                                      ? { ...currentSlot, end: event.target.value }
+                                      ? updateSlotEndForRule(currentSlot, event.target.value, selectedShiftRule)
                                       : currentSlot,
                                   ),
                                 }))
@@ -1496,6 +1611,104 @@ function StaffDialog({
                             <FormLabel>E-mail</FormLabel>
                             <FormControl>
                               <Input type="email" {...field} value={field.value ?? ""} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                      <FormField
+                        control={form.control}
+                        name="bankName"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Banco</FormLabel>
+                            <FormControl>
+                              <Input {...field} value={field.value ?? ""} placeholder="Ex: Banco do Brasil" />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+
+                      <FormField
+                        control={form.control}
+                        name="bankAgency"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Agencia</FormLabel>
+                            <FormControl>
+                              <Input {...field} value={field.value ?? ""} placeholder="Ex: 1234" />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+
+                      <FormField
+                        control={form.control}
+                        name="bankAccount"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Conta corrente</FormLabel>
+                            <FormControl>
+                              <Input {...field} value={field.value ?? ""} placeholder="Ex: 12345-6" />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+
+                      <FormField
+                        control={form.control}
+                        name="pixKey"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Chave Pix</FormLabel>
+                            <FormControl>
+                              <Input {...field} value={field.value ?? ""} placeholder="CPF, e-mail, telefone ou chave" />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <FormField
+                        control={form.control}
+                        name="bonusValue"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Bonificacao (R$)</FormLabel>
+                            <FormControl>
+                              <Input
+                                type="number"
+                                min={0}
+                                step="0.01"
+                                value={typeof field.value === "number" ? field.value : Number(field.value ?? 0)}
+                                onChange={(event) => {
+                                  const nextValue = event.target.value;
+                                  field.onChange(nextValue === "" ? 0 : Number(nextValue));
+                                }}
+                                placeholder="0,00"
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+
+                      <FormField
+                        control={form.control}
+                        name="bonusNotes"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Observacao da bonificacao</FormLabel>
+                            <FormControl>
+                              <Input {...field} value={field.value ?? ""} placeholder="Ex: adicional fixo, meta, plantao especial" />
                             </FormControl>
                             <FormMessage />
                           </FormItem>

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { addDays, format } from "date-fns";
-import { Calendar as CalendarIcon, Pencil, Plus, Trash2 } from "lucide-react";
+import { Calendar as CalendarIcon, Download, Pencil, Plus, Trash2 } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { useAuth } from "@/hooks/use-auth";
@@ -29,6 +29,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { fetchJsonOrThrow } from "@/lib/fetch-json";
+import { downloadCsv } from "@/lib/csv";
+import { cn } from "@/lib/utils";
 import type { Medication } from "@shared/schema";
 
 type MedicationWithResident = Medication & { residentName?: string };
@@ -41,6 +43,8 @@ type MedicationDoseScheduleItem = {
   dosage: string;
   frequency: string;
   scheduledFor: string;
+  scheduledDate?: string;
+  scheduledTime?: string;
   status: "pending" | "given" | "skipped" | "refused" | "late";
   isOverdue: boolean;
   notes: string | null;
@@ -106,6 +110,7 @@ const DOSE_STATUS: Record<string, string> = {
   late: "Atrasado",
 };
 const ALL_MEDICATIONS_FILTER = "__all_medications__";
+type MedicationSectionTab = "medicacoes" | "agenda" | "historico";
 
 function getFrequencyLabel(value?: string | null): string {
   if (!value) return "-";
@@ -176,6 +181,21 @@ function formatDateLabel(value?: string | null): string {
   return format(parsed, "dd/MM/yyyy");
 }
 
+function formatScheduleDoseDateTime(dose: MedicationDoseScheduleItem): string {
+  if (dose.scheduledDate && dose.scheduledTime) {
+    return `${formatDateLabel(dose.scheduledDate)} ${dose.scheduledTime}`;
+  }
+  return format(new Date(dose.scheduledFor), "dd/MM/yyyy HH:mm");
+}
+
+function isSameScheduledMinute(left?: string | null, right?: string | null): boolean {
+  if (!left || !right) return true;
+  const leftDate = new Date(left);
+  const rightDate = new Date(right);
+  if (Number.isNaN(leftDate.getTime()) || Number.isNaN(rightDate.getTime())) return false;
+  return Math.abs(leftDate.getTime() - rightDate.getTime()) < 60 * 1000;
+}
+
 function doseStatusClass(status: MedicationDoseScheduleItem["status"]) {
   if (status === "given") return "bg-emerald-100 text-emerald-800 border-emerald-200";
   if (status === "skipped") return "bg-amber-100 text-amber-800 border-amber-200";
@@ -184,9 +204,21 @@ function doseStatusClass(status: MedicationDoseScheduleItem["status"]) {
   return "bg-slate-100 text-slate-700 border-slate-200";
 }
 
-type Props = { residentId: number; canEdit: boolean };
+type Props = {
+  residentId: number;
+  canEdit: boolean;
+  initialTab?: MedicationSectionTab;
+  focusMedicationId?: number | null;
+  focusScheduledFor?: string | null;
+};
 
-export function ResidentMedicationSection({ residentId, canEdit }: Props) {
+export function ResidentMedicationSection({
+  residentId,
+  canEdit,
+  initialTab,
+  focusMedicationId,
+  focusScheduledFor,
+}: Props) {
   const { user } = useAuth();
   const { toast } = useToast();
   const { confirm, confirmDialog } = useConfirmDialog();
@@ -201,6 +233,7 @@ export function ResidentMedicationSection({ residentId, canEdit }: Props) {
   const [isToCalendarOpen, setIsToCalendarOpen] = useState(false);
   const [isMedicationDialogOpen, setIsMedicationDialogOpen] = useState(false);
   const [editingMedication, setEditingMedication] = useState<MedicationWithResident | null>(null);
+  const [activeTab, setActiveTab] = useState<MedicationSectionTab>(initialTab ?? "medicacoes");
   const [isDoseDialogOpen, setIsDoseDialogOpen] = useState(false);
   const [selectedDose, setSelectedDose] = useState<MedicationDoseScheduleItem | null>(null);
   const [showRegisteredDoses, setShowRegisteredDoses] = useState(false);
@@ -313,6 +346,53 @@ export function ResidentMedicationSection({ residentId, canEdit }: Props) {
     }
     return visibleScheduleDoses.filter((dose) => dose.medicationName === selectedDoseMedicationFilter);
   }, [selectedDoseMedicationFilter, visibleScheduleDoses]);
+
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
+
+  useEffect(() => {
+    if (!focusMedicationId) return;
+    setActiveTab("agenda");
+    setShowRegisteredDoses(true);
+
+    if (focusScheduledFor) {
+      const scheduledForDate = new Date(focusScheduledFor);
+      if (!Number.isNaN(scheduledForDate.getTime())) {
+        const scheduledDate = formatDateOnly(scheduledForDate);
+        setRange({ from: scheduledDate, to: scheduledDate });
+      }
+    }
+  }, [focusMedicationId, focusScheduledFor]);
+
+  useEffect(() => {
+    if (!focusMedicationId) return;
+    const focusedMedicationName =
+      medicationsQuery.data?.find((item) => item.id === focusMedicationId)?.name
+      ?? scheduleQuery.data?.doses.find((dose) => dose.medicationId === focusMedicationId)?.medicationName;
+    if (focusedMedicationName) {
+      setSelectedDoseMedicationFilter(focusedMedicationName);
+    }
+  }, [focusMedicationId, medicationsQuery.data, scheduleQuery.data?.doses]);
+
+  useEffect(() => {
+    if (!focusMedicationId) return;
+    const focusedDose = filteredVisibleScheduleDoses.find((dose) =>
+      dose.medicationId === focusMedicationId && isSameScheduledMinute(dose.scheduledFor, focusScheduledFor),
+    );
+    const handle = window.setTimeout(() => {
+      const elementId = focusedDose
+        ? `medication-dose-${residentId}-${focusedDose.key.replace(/[^a-zA-Z0-9_-]/g, "-")}`
+        : `medication-row-${residentId}-${focusMedicationId}`;
+      document.getElementById(elementId)?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    }, 80);
+    return () => window.clearTimeout(handle);
+  }, [filteredVisibleScheduleDoses, focusMedicationId, focusScheduledFor, residentId]);
 
   const applyTodayRange = () => {
     const today = formatDateOnly(new Date());
@@ -481,6 +561,23 @@ export function ResidentMedicationSection({ residentId, canEdit }: Props) {
     setIsMedicationDialogOpen(true);
   };
 
+  const exportMedicationHistory = () => {
+    const rows = (historyQuery.data ?? []).map((item) => [
+      item.scheduledFor ? format(new Date(item.scheduledFor), "dd/MM/yyyy HH:mm") : "",
+      item.medicationName || "",
+      DOSE_STATUS[item.status] ?? item.status,
+      item.administeredByName || "",
+      item.administeredAt ? format(new Date(item.administeredAt), "dd/MM/yyyy HH:mm") : "",
+      item.notes || "",
+    ]);
+
+    downloadCsv(
+      `historico-medicacoes-residente-${residentId}.csv`,
+      ["Data/Hora da dose", "Medicacao", "Status", "Administrado por", "Registro em", "Observacoes"],
+      rows,
+    );
+  };
+
   const openEditMedication = (medication: MedicationWithResident) => {
     setEditingMedication(medication);
     medicationForm.reset({
@@ -506,11 +603,11 @@ export function ResidentMedicationSection({ residentId, canEdit }: Props) {
         </div>
       ) : null}
 
-      <Tabs defaultValue="medicacoes" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-1 sm:grid-cols-3">
-          <TabsTrigger value="medicacoes">Medicacoes</TabsTrigger>
-          <TabsTrigger value="agenda">Agenda de doses</TabsTrigger>
-          <TabsTrigger value="historico">Historico</TabsTrigger>
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as MedicationSectionTab)} className="space-y-4">
+        <TabsList className="grid h-auto w-full grid-cols-1 rounded-lg border border-border/70 bg-muted/60 p-1 shadow-sm sm:grid-cols-3">
+          <TabsTrigger value="medicacoes" className="h-10 font-semibold">Medicacoes</TabsTrigger>
+          <TabsTrigger value="agenda" className="h-10 font-semibold">Agenda de doses</TabsTrigger>
+          <TabsTrigger value="historico" className="h-10 font-semibold">Historico</TabsTrigger>
         </TabsList>
 
         <TabsContent value="medicacoes" className="space-y-3">
@@ -551,7 +648,13 @@ export function ResidentMedicationSection({ residentId, canEdit }: Props) {
                 </TableHeader>
                 <TableBody>
                   {medicationsQuery.data?.map((medication) => (
-                    <TableRow key={medication.id}>
+                    <TableRow
+                      key={medication.id}
+                      id={`medication-row-${residentId}-${medication.id}`}
+                      className={cn(
+                        focusMedicationId === medication.id && "bg-primary/5 ring-1 ring-inset ring-primary/25",
+                      )}
+                    >
                       <TableCell className="font-medium">{medication.name}</TableCell>
                       <TableCell>{medication.dosage}</TableCell>
                       <TableCell>{getFrequencyLabel(medication.frequency)}</TableCell>
@@ -737,42 +840,51 @@ export function ResidentMedicationSection({ residentId, canEdit }: Props) {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {filteredVisibleScheduleDoses.map((dose) => (
-                      <TableRow key={dose.key}>
-                        <TableCell className="font-medium">
-                          <div className="flex flex-col">
-                            <span>{format(new Date(dose.scheduledFor), "dd/MM/yyyy HH:mm")}</span>
-                            {dose.isOverdue && dose.status === "pending" ? (
-                              <span className="text-[11px] text-rose-600">Dose em atraso</span>
-                            ) : null}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex flex-col">
-                            <span className="font-medium">{dose.medicationName}</span>
-                            <span className="text-xs text-muted-foreground">{getFrequencyLabel(dose.frequency)}</span>
-                          </div>
-                        </TableCell>
-                        <TableCell>{dose.dosage}</TableCell>
-                        <TableCell>
-                          <Badge variant="outline" className={doseStatusClass(dose.status)}>
-                            {DOSE_STATUS[dose.status]}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-sm text-muted-foreground">
-                          {dose.administeredByName || "-"}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          {canEdit ? (
-                            <Button size="sm" variant="outline" onClick={() => { setSelectedDose(dose); setIsDoseDialogOpen(true); }}>
-                              {dose.status === "pending" ? "Registrar" : "Editar"}
-                            </Button>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">Somente leitura</span>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {filteredVisibleScheduleDoses.map((dose) => {
+                      const doseIsFocused =
+                        focusMedicationId === dose.medicationId
+                        && isSameScheduledMinute(dose.scheduledFor, focusScheduledFor);
+                      return (
+                        <TableRow
+                          key={dose.key}
+                          id={`medication-dose-${residentId}-${dose.key.replace(/[^a-zA-Z0-9_-]/g, "-")}`}
+                          className={cn(doseIsFocused && "bg-primary/5 ring-1 ring-inset ring-primary/25")}
+                        >
+                          <TableCell className="font-medium">
+                            <div className="flex flex-col">
+                              <span>{formatScheduleDoseDateTime(dose)}</span>
+                              {dose.isOverdue && dose.status === "pending" ? (
+                                <span className="text-[11px] text-rose-600">Dose em atraso</span>
+                              ) : null}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex flex-col">
+                              <span className="font-medium">{dose.medicationName}</span>
+                              <span className="text-xs text-muted-foreground">{getFrequencyLabel(dose.frequency)}</span>
+                            </div>
+                          </TableCell>
+                          <TableCell>{dose.dosage}</TableCell>
+                          <TableCell>
+                            <Badge variant="outline" className={doseStatusClass(dose.status)}>
+                              {DOSE_STATUS[dose.status]}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {dose.administeredByName || "-"}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {canEdit ? (
+                              <Button size="sm" variant="outline" onClick={() => { setSelectedDose(dose); setIsDoseDialogOpen(true); }}>
+                                {dose.status === "pending" ? "Registrar" : "Editar"}
+                              </Button>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">Somente leitura</span>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </div>
@@ -782,6 +894,19 @@ export function ResidentMedicationSection({ residentId, canEdit }: Props) {
 
         <TabsContent value="historico">
           <div className="rounded-xl border border-border bg-card shadow-sm p-4">
+            <div className="mb-3 flex items-center justify-end">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="gap-2"
+                onClick={exportMedicationHistory}
+                disabled={(historyQuery.data?.length ?? 0) === 0}
+              >
+                <Download className="h-4 w-4" />
+                Exportar
+              </Button>
+            </div>
             {historyQuery.isLoading ? (
               <div className="rounded-lg border border-dashed border-muted-foreground/40 p-6 text-sm text-muted-foreground">
                 Carregando historico...

@@ -1,0 +1,26 @@
+{
+  "id": "/",
+  "name": "EasyCare",
+  "short_name": "EasyCare",
+  "description": "Gestao inteligente para cuidado, equipe, ponto e operacao.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F8FAFC",
+  "theme_color": "#0A0F2C",
+  "icons": [
+    {
+      "src": "/icons/easycare-pwa-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/easycare-pwa-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
