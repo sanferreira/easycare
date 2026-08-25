@@ -29,6 +29,7 @@ const MODULE_LABELS: Record<ModuleRoute, string> = {
   "/financeiro": "Financeiro",
   "/crm": "CRM",
   "/environment": "Configuracao de ambiente",
+  "/audit": "Auditoria",
 };
 
 const SHIFT_TYPE_LABELS: Record<ShiftAssignmentType, string> = {

@@ -9,6 +9,7 @@ export const MODULE_ROUTE_VALUES = [
   "/financeiro",
   "/crm",
   "/environment",
+  "/audit",
 ] as const;
 
 export type ModuleRoute = (typeof MODULE_ROUTE_VALUES)[number];
@@ -32,7 +33,7 @@ export const APP_ROLE_VALUES = [
 export type AppRole = (typeof APP_ROLE_VALUES)[number];
 
 export const DEFAULT_ROLE_ROUTES: Record<string, ModuleRoute[]> = {
-  admin: ["/", "/residents", "/prontuario", "/staff", "/escalas", "/ponto-eletronico", "/occurrences", "/financeiro", "/crm", "/environment"],
+  admin: ["/", "/residents", "/prontuario", "/staff", "/escalas", "/ponto-eletronico", "/occurrences", "/financeiro", "/crm", "/environment", "/audit"],
   enfermeiro: ["/", "/residents", "/prontuario", "/escalas", "/ponto-eletronico", "/occurrences"],
   medico: ["/", "/residents", "/prontuario", "/ponto-eletronico", "/occurrences"],
   tecnico_enfermagem: ["/", "/residents", "/prontuario", "/escalas", "/ponto-eletronico", "/occurrences"],
@@ -40,7 +41,7 @@ export const DEFAULT_ROLE_ROUTES: Record<string, ModuleRoute[]> = {
   fisioterapeuta: ["/", "/residents", "/prontuario", "/ponto-eletronico", "/occurrences"],
   nutricionista: ["/", "/residents", "/prontuario", "/ponto-eletronico", "/occurrences"],
   recepcionista: ["/", "/residents", "/escalas", "/ponto-eletronico", "/occurrences", "/financeiro"],
-  administrativo: ["/", "/residents", "/escalas", "/ponto-eletronico", "/occurrences", "/financeiro"],
+  administrativo: ["/", "/residents", "/escalas", "/ponto-eletronico", "/occurrences", "/financeiro", "/audit"],
   staff: ["/", "/residents", "/ponto-eletronico", "/occurrences"],
 };
 
@@ -110,6 +111,7 @@ export type EnvironmentSettings = {
 const allowedRouteSet = new Set<string>(MODULE_ROUTE_VALUES);
 const allowedShiftTypeSet = new Set<string>(SHIFT_ASSIGNMENT_TYPE_VALUES);
 const ROUTE_ALIASES: Record<string, ModuleRoute> = {
+  "/app": "/",
   "/medications": "/prontuario",
 };
 
@@ -617,9 +619,10 @@ export function routeIsAllowed(
   roleRoutes: Record<string, string[]>,
 ): boolean {
   if (!role) return false;
+  const resolvedRoute = ROUTE_ALIASES[route] ?? route;
   const allowed = roleRoutes[role] ?? [];
-  if (route === "/") return allowed.includes("/");
-  return allowed.some((currentRoute) => currentRoute !== "/" && route.startsWith(currentRoute));
+  if (resolvedRoute === "/") return allowed.includes("/");
+  return allowed.some((currentRoute) => currentRoute !== "/" && resolvedRoute.startsWith(currentRoute));
 }
 
 export function routeActionIsAllowed(

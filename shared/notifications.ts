@@ -3,12 +3,16 @@ export const NOTIFICATION_MODULE_LABELS = {
   time_clock: "Ponto",
   medications: "Medicações",
   finance: "Financeiro",
+  billing: "Cobrança",
   crm: "CRM",
   clinical: "Prontuário",
   schedules: "Escalas",
 } as const;
 
 export const NOTIFICATION_TYPES = {
+  billingPaymentOverdue: "billing_payment_overdue",
+  billingGracePeriod: "billing_grace_period",
+  billingAccessRestricted: "billing_access_restricted",
   timeClockPunchRegistered: "time_clock_punch_registered",
   timeClockEntryPendingApproval: "time_clock_entry_pending_approval",
   timeClockEntryReviewed: "time_clock_entry_reviewed",

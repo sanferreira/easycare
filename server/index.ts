@@ -25,7 +25,13 @@ app.use(
   }),
 );
 
-app.use(express.json({ limit: "25mb" }));
+const stripeWebhookPath = "/api/stripe/webhook";
+
+app.use(stripeWebhookPath, express.raw({ type: "application/json", limit: "2mb" }));
+app.use((req, res, next) => {
+  if (req.path === stripeWebhookPath) return next();
+  return express.json({ limit: "25mb" })(req, res, next);
+});
 app.use(express.urlencoded({ extended: false, limit: "25mb" }));
 
 app.use("/api", (_req, res, next) => {

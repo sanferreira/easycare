@@ -1,6 +1,8 @@
 import { Link, useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import {
   LayoutDashboard,
+  ClipboardList,
   Users,
   LogOut,
   Menu,
@@ -12,6 +14,7 @@ import {
   FileText,
   DollarSign,
   KanbanSquare,
+  Rocket,
   SlidersHorizontal,
 } from "lucide-react";
 import { useState } from "react";
@@ -23,7 +26,7 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { NotificationCenter } from "@/components/NotificationCenter";
 
 const allNavItems = [
-  { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/app", label: "Dashboard", icon: LayoutDashboard },
   { href: "/residents", label: "Pacientes", icon: Users },
   { href: "/prontuario", label: "Prontuário", icon: FileText },
   { href: "/staff", label: "Equipe", icon: UserCheck },
@@ -32,12 +35,22 @@ const allNavItems = [
   { href: "/financeiro", label: "Financeiro", icon: DollarSign },
   { href: "/crm", label: "CRM", icon: KanbanSquare },
   { href: "/environment", label: "Ambiente", icon: SlidersHorizontal },
+  { href: "/audit", label: "Auditoria", icon: ClipboardList },
 ];
+
+const onboardingItem = { href: "/onboarding", label: "Primeiros passos", icon: Rocket };
 
 const superAdminItems = [
   { href: "/admin", label: "Organizacoes", icon: Building2 },
   { href: "/crm", label: "CRM", icon: KanbanSquare },
+  { href: "/audit", label: "Auditoria", icon: ClipboardList },
 ];
+
+type OnboardingStatus = {
+  completed: number;
+  total: number;
+  percent: number;
+};
 
 function NavContent({ onClose }: { onClose?: () => void }) {
   const [location] = useLocation();
@@ -45,13 +58,27 @@ function NavContent({ onClose }: { onClose?: () => void }) {
   const { data: environmentSettings } = useEnvironmentSettings({
     enabled: !!user && !user?.isSuperAdmin,
   });
+  const { data: onboardingStatus } = useQuery<OnboardingStatus>({
+    queryKey: ["/api/onboarding/status"],
+    enabled: !!user && !user.isSuperAdmin && user.role === "admin" && user.organizationStatus === "active",
+    staleTime: 30000,
+    queryFn: async () => {
+      const res = await fetch("/api/onboarding/status", { credentials: "include" });
+      if (!res.ok) throw new Error("Falha ao carregar implantação");
+      return res.json();
+    },
+  });
 
   const isActive = (href: string) =>
-    href === "/" ? location === "/" : location.startsWith(href);
+    href === "/app" ? location === "/app" : location.startsWith(href);
 
+  const baseNavItems = allNavItems.filter((item) => canAccessRoute(user?.role, item.href, environmentSettings?.roleRoutes));
+  const showOnboarding = user?.role === "admin" && !!onboardingStatus && onboardingStatus.percent < 100;
   const navItems = user?.isSuperAdmin
     ? superAdminItems
-    : allNavItems.filter((item) => canAccessRoute(user?.role, item.href, environmentSettings?.roleRoutes));
+    : showOnboarding
+      ? [onboardingItem, ...baseNavItems]
+      : baseNavItems;
 
   const roleLabel = user?.role ? (ROLE_LABELS[user.role] ?? user.role) : "";
 
@@ -61,17 +88,11 @@ function NavContent({ onClose }: { onClose?: () => void }) {
       style={{ background: "linear-gradient(180deg, #0D1535 0%, #0A0F2C 100%)" }}
     >
       <div className="px-5 pt-6 pb-5 border-b border-white/[0.07]">
-        <div className="flex items-center gap-3">
-          <img src="/easycare-logo.png" alt="EasyCare" className="h-9 w-9 object-contain rounded-xl" />
-          <div>
-            <p className="font-bold text-lg leading-none tracking-tight" style={{ fontFamily: "var(--font-display)" }}>
-              <span className="text-white">Easy</span>
-              <span style={{ color: "#22D3EE" }}>Care</span>
-            </p>
-            <p className="text-[10px] mt-0.5" style={{ color: "rgba(255,255,255,0.4)" }}>
-              Gestão Inteligente
-            </p>
-          </div>
+        <div className="flex flex-col gap-2">
+          <img src="/brand/logo-easycare-header.png" alt="EasyCare" className="h-10 w-fit max-w-[176px] object-contain" />
+          <p className="text-[10px] uppercase tracking-[0.22em]" style={{ color: "rgba(255,255,255,0.42)" }}>
+            Gestão inteligente
+          </p>
         </div>
 
         {user?.organizationName && (
@@ -129,7 +150,6 @@ function NavContent({ onClose }: { onClose?: () => void }) {
               {user?.isSuperAdmin ? "Super Admin" : roleLabel}
             </p>
           </div>
-          <NotificationCenter />
         </div>
         <button
           onClick={() => {

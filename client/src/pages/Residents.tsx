@@ -45,7 +45,7 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Plus, Search, Trash2, Phone, Bed, Pencil, Eye, EyeOff, Globe, Sun, Moon, Timer, ClipboardList, Calendar as CalendarIcon, FileText, Download, Upload, MapPin } from "lucide-react";
+import { Plus, Search, Trash2, Phone, Bed, Pencil, Eye, EyeOff, Globe, Sun, Moon, Timer, ClipboardList, Calendar as CalendarIcon, FileText, Download, Upload, MapPin, Link2, MessageCircle } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -183,6 +183,25 @@ function formatDateTimeLabel(value?: string | Date | null): string {
   return format(parsed, "dd/MM/yyyy HH:mm");
 }
 
+type FamilyPortalInviteResponse = {
+  url: string;
+  expiresAt: string;
+  whatsappText: string;
+};
+
+function buildFamilyInviteWhatsappUrl(phone: string | null | undefined, text: string): string | null {
+  const digits = digitsOnly(phone ?? "");
+  if (!digits) return null;
+  const phoneNumber = digits.startsWith("55") ? digits : `55${digits}`;
+  return `https://wa.me/${phoneNumber}?text=${encodeURIComponent(text)}`;
+}
+
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  if (typeof navigator === "undefined" || !navigator.clipboard) return false;
+  await navigator.clipboard.writeText(text);
+  return true;
+}
+
 const familySchema = z.object({
   name: z.string().min(2, "Nome obrigatório"),
   relationship: z.string().min(2, "Parentesco obrigatorio"),
@@ -195,12 +214,6 @@ const familySchema = z.object({
   portalAccess: z.boolean().default(false),
   portalUsername: z.string().optional(),
   portalPassword: z.string().optional(),
-}).refine((data) => {
-  if (!data.portalAccess) return true;
-  return !!data.portalUsername && data.portalUsername.trim().length >= 3;
-}, {
-  message: "Usuário de portal obrigatorio",
-  path: ["portalUsername"],
 });
 
 const defaultFamilyFormValues: z.infer<typeof familySchema> = {
@@ -1896,6 +1909,46 @@ function ResidentDetailsDialog({
     },
     onError: (error: Error) => {
       toast({ variant: "destructive", title: error.message || "Erro ao remover familiar" });
+    },
+  });
+
+  const generateFamilyInvite = useMutation({
+    mutationFn: async ({ family }: { family: FamilyMember; openWhatsapp?: boolean }) => {
+      const res = await fetch(`/api/family/${family.id}/portal-invite`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        let message = "Erro ao gerar convite.";
+        try {
+          const responseBody = await res.json();
+          if (responseBody?.message) message = responseBody.message;
+        } catch {}
+        throw new Error(message);
+      }
+      return res.json() as Promise<FamilyPortalInviteResponse>;
+    },
+    onSuccess: async (data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/residents", residentId, "family"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/residents", residentId, "family", "resident-details"] });
+      try {
+        await copyTextToClipboard(data.whatsappText || data.url);
+      } catch {}
+
+      if (variables.openWhatsapp) {
+        const whatsappUrl = buildFamilyInviteWhatsappUrl(variables.family.phone, data.whatsappText || data.url);
+        if (whatsappUrl) window.open(whatsappUrl, "_blank", "noopener,noreferrer");
+      }
+
+      toast({
+        title: "Convite gerado",
+        description: variables.openWhatsapp
+          ? "Mensagem pronta para envio pelo WhatsApp."
+          : "Texto do convite copiado.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({ variant: "destructive", title: error.message || "Erro ao gerar convite" });
     },
   });
 
@@ -4068,12 +4121,34 @@ function ResidentDetailsDialog({
                           {family.phone2 ? <span>{maskPhoneBR(family.phone2)}</span> : null}
                           {family.email ? <span className="truncate">{family.email}</span> : null}
                         </div>
-                        {family.portalAccess && (
+                        {(family.portalAccess || family.portalInviteExpiresAt) && (
                           <div className="mt-3 inline-block rounded-md border border-cyan-200 bg-cyan-50 px-2 py-1 text-xs text-cyan-700">
-                            Portal ativo @{family.portalUsername}
+                            {family.portalAccess
+                              ? `Portal ativo${family.portalUsername ? ` @${family.portalUsername}` : ""}`
+                              : "Convite pendente"}
                           </div>
                         )}
                         <div className="mt-4 flex justify-end gap-2 border-t border-border pt-3">
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-8 w-8 text-muted-foreground hover:bg-cyan-50 hover:text-cyan-700"
+                            disabled={generateFamilyInvite.isPending}
+                            onClick={() => generateFamilyInvite.mutate({ family })}
+                            title="Copiar convite"
+                          >
+                            <Link2 className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-8 w-8 text-muted-foreground hover:bg-green-50 hover:text-green-700"
+                            disabled={generateFamilyInvite.isPending || !digitsOnly(family.phone)}
+                            onClick={() => generateFamilyInvite.mutate({ family, openWhatsapp: true })}
+                            title="Enviar convite pelo WhatsApp"
+                          >
+                            <MessageCircle className="h-4 w-4" />
+                          </Button>
                           <Button
                             size="sm"
                             variant="outline"
@@ -4293,9 +4368,9 @@ function ResidentDetailsDialog({
                               name="portalUsername"
                               render={({ field }) => (
                                 <FormItem>
-                                  <FormLabel>Usuário do portal *</FormLabel>
+                                  <FormLabel>Usuário do portal</FormLabel>
                                   <FormControl>
-                                    <Input {...field} value={field.value ?? ""} />
+                                    <Input placeholder="Opcional" {...field} value={field.value ?? ""} />
                                   </FormControl>
                                   <FormMessage />
                                 </FormItem>

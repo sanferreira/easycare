@@ -3,13 +3,22 @@ import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { Sidebar } from "@/components/Sidebar";
+import { AppShell } from "@/components/AppShell";
 import { useAuth } from "@/hooks/use-auth";
 import { useEnvironmentSettings } from "@/hooks/use-environment-settings";
 import { canAccessRoute } from "@/lib/permissions";
 
 // Pages
+import LandingPage from "@/pages/LandingPage";
+import PremiumLandingPage from "@/pages/PremiumLandingPage";
 import Login from "@/pages/Login";
+import Signup from "@/pages/Signup";
+import { PrivacyPage, TermsPage } from "@/pages/LegalPage";
+import Billing from "@/pages/Billing";
+import BillingCancel from "@/pages/BillingCancel";
+import CheckoutPage from "@/pages/CheckoutPage";
+import Onboarding from "@/pages/Onboarding";
+import AuditLogs from "@/pages/AuditLogs";
 import Dashboard from "@/pages/Dashboard";
 import Residents from "@/pages/Residents";
 import Staff from "@/pages/Staff";
@@ -21,6 +30,7 @@ import Financeiro from "@/pages/Financeiro";
 import Crm from "@/pages/Crm";
 import EnvironmentSettings from "@/pages/EnvironmentSettings";
 import Notificacoes from "@/pages/Notificacoes";
+import FamilyPortalInvite from "@/pages/FamilyPortalInvite";
 import FamilyPortalLogin from "@/pages/FamilyPortalLogin";
 import FamilyPortalHome from "@/pages/FamilyPortalHome";
 import NotFound from "@/pages/not-found";
@@ -60,6 +70,8 @@ function PrivateRoute({ component: Component, superAdminOnly = false, allowSuper
     </div>
   );
   if (!user) return <Redirect to="/login" />;
+  if (!user.isSuperAdmin && user.organizationStatus === "restricted") return <Redirect to="/billing" />;
+  if (!user.isSuperAdmin && user.organizationStatus === "inactive") return <Redirect to="/billing" />;
   if (!user.isSuperAdmin && !superAdminOnly && isEnvironmentSettingsLoading) return (
     <div className="min-h-screen flex items-center justify-center text-muted-foreground">
       Carregando...
@@ -73,35 +85,40 @@ function PrivateRoute({ component: Component, superAdminOnly = false, allowSuper
   // Verificação de permissão por papel
   if (!user.isSuperAdmin && !superAdminOnly && route && !canAccessRoute(user.role, route, environmentSettings?.roleRoutes)) {
     return (
-      <div className="min-h-screen bg-background md:flex">
-        <Sidebar />
-        <main className="flex-1 md:pl-64">
-          <div className="p-3 sm:p-4 lg:p-6 h-full overflow-y-auto">
-            <AccessDenied />
-          </div>
-        </main>
-      </div>
+      <AppShell>
+        <AccessDenied />
+      </AppShell>
     );
   }
 
   return (
-    <div className="min-h-screen bg-background md:flex">
-      <Sidebar />
-      <main className="flex-1 md:pl-64">
-        <div className="p-3 sm:p-4 lg:p-6 h-full overflow-y-auto">
-          <Component />
-        </div>
-      </main>
-    </div>
+    <AppShell>
+      <Component />
+    </AppShell>
   );
 }
 
 function Router() {
   return (
     <Switch>
+      <Route path="/" component={LandingPage} />
+      {/* <Route path="/premium" component={PremiumLandingPage} /> */}
       <Route path="/login" component={Login} />
+      <Route path="/signup" component={Signup} />
+      <Route path="/termos" component={TermsPage} />
+      <Route path="/privacidade" component={PrivacyPage} />
+      <Route path="/billing/cancelar" component={BillingCancel} />
+      <Route path="/billing/success" component={Billing} />
+      <Route path="/billing" component={Billing} />
+      <Route path="/checkout" component={CheckoutPage} />
+      <Route path="/onboarding">
+        <PrivateRoute component={Onboarding} />
+      </Route>
+      <Route path="/audit">
+        <PrivateRoute component={AuditLogs} route="/audit" allowSuperAdmin />
+      </Route>
 
-      <Route path="/">
+      <Route path="/app">
         <PrivateRoute component={Dashboard} route="/" />
       </Route>
       <Route path="/residents">
@@ -142,6 +159,7 @@ function Router() {
       </Route>
 
       {/* Family Portal — public routes */}
+      <Route path="/portal/convite/:token" component={FamilyPortalInvite} />
       <Route path="/portal" component={FamilyPortalLogin} />
       <Route path="/portal/home" component={FamilyPortalHome} />
 

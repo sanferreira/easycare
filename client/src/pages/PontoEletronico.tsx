@@ -178,6 +178,8 @@ type CepLookupResponse = {
   district: string | null;
   city: string | null;
   state: string | null;
+  latitude: number | null;
+  longitude: number | null;
   address: string;
 };
 
@@ -899,7 +901,16 @@ export default function PontoEletronico() {
         const data = await parseJson<CepLookupResponse>(res, "CEP não encontrado.");
         if (cancelled) return;
         setLocationAddress(data.address);
-        setCapturedLocation(null);
+        if (typeof data.latitude === "number" && typeof data.longitude === "number") {
+          setCapturedLocation({
+            latitude: data.latitude,
+            longitude: data.longitude,
+            accuracy: null,
+            label: data.address,
+          });
+        } else {
+          setCapturedLocation(null);
+        }
         if (data.street) {
           setLocationName((current) =>
             !current.trim() || current === "Unidade principal" ? data.street ?? current : current,

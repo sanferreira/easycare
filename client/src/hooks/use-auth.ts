@@ -41,7 +41,13 @@ export function useAuth() {
       queryClient.clear();
       queryClient.setQueryData(["auth-user"], data.user);
       // Super admin goes to admin page, regular users go to dashboard
-      setLocation(data.user.isSuperAdmin ? "/admin" : "/");
+      if (data.user.isSuperAdmin) {
+        setLocation("/admin");
+      } else if (data.user.organizationStatus === "restricted" || data.user.organizationStatus === "inactive") {
+        setLocation("/billing");
+      } else {
+        setLocation("/app");
+      }
       toast({
         title: "Bem-vindo!",
         description: data.user.organizationName

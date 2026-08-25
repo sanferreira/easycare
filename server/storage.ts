@@ -1,12 +1,13 @@
 import { db } from "./db";
 import {
-  users, organizations, notifications, pushSubscriptions, residents, medications, staff, occurrences, shiftAssignments,
+  users, organizations, notifications, pushSubscriptions, auditLogs, residents, medications, staff, occurrences, shiftAssignments,
   medicalRecords, comorbidities, familyMembers, patientDocuments, contracts, monthlyFees, accountsPayable, medicationAdministrations, crmOpportunities,
   timeClockLocations, timeClockEntries, timeClockAdjustmentRequests, timeClockAuditLogs, timeClockClosures,
   type User, type InsertUser,
   type Organization, type InsertOrganization,
   type AppNotification, type InsertNotification,
   type PushSubscriptionRecord, type InsertPushSubscription,
+  type AuditLog, type InsertAuditLog,
   type Resident, type InsertResident, type UpdateResidentRequest,
   type Medication, type InsertMedication, type UpdateMedicationRequest,
   type StaffMember, type InsertStaff, type UpdateStaffRequest,
@@ -33,12 +34,50 @@ import { aliasedTable } from "drizzle-orm/alias";
 import { hashPassword, isPasswordHash } from "./security";
 
 const normalizePortalUsername = (username: string) => username.trim().toLowerCase();
+const DEFAULT_PAYMENT_GRACE_DAYS = 10;
+const STRIPE_CURRENT_STATUSES = new Set(["active", "trialing"]);
+const STRIPE_GRACE_STATUSES = new Set(["past_due", "unpaid", "incomplete"]);
+const getPaymentGraceDays = (value?: number | null) => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) return DEFAULT_PAYMENT_GRACE_DAYS;
+  return Math.min(parsed, 60);
+};
+const withinGracePeriod = (since?: Date | string | null, graceDays = DEFAULT_PAYMENT_GRACE_DAYS) => {
+  if (!since) return false;
+  const date = since instanceof Date ? new Date(since) : new Date(since);
+  if (Number.isNaN(date.getTime())) return false;
+  return Date.now() <= date.getTime() + graceDays * 24 * 60 * 60 * 1000;
+};
+const stripeAccessIsCurrent = (org: Partial<Organization>) => {
+  const status = org.stripeSubscriptionStatus;
+  if (status && STRIPE_CURRENT_STATUSES.has(status)) return true;
+  if (status && STRIPE_GRACE_STATUSES.has(status)) {
+    return withinGracePeriod(org.subscriptionUpdatedAt, getPaymentGraceDays(org.paymentGraceDays));
+  }
+  return false;
+};
+const manualAccessExpired = (value?: Date | string | null) => {
+  if (!value) return false;
+  const date = value instanceof Date ? new Date(value) : new Date(value);
+  return !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
+};
 const normalizeOrganizationStatus = (org: Partial<Organization>): "active" | "inactive" | "restricted" => {
   const rawStatus = typeof org.status === "string" ? org.status.toLowerCase().trim() : "";
-  if (rawStatus === "active" || rawStatus === "inactive" || rawStatus === "restricted") {
-    return rawStatus;
+  const normalized = rawStatus === "active" || rawStatus === "inactive" || rawStatus === "restricted"
+    ? rawStatus
+    : org.active === false ? "inactive" : "active";
+  if (normalized === "restricted" && stripeAccessIsCurrent(org)) {
+    return "active";
   }
-  return org.active === false ? "inactive" : "active";
+  const hasStripeStatus = typeof org.stripeSubscriptionStatus === "string" && org.stripeSubscriptionStatus.trim().length > 0;
+  if (
+    normalized === "active"
+    && !stripeAccessIsCurrent(org)
+    && (manualAccessExpired(org.manualAccessUntil) || hasStripeStatus)
+  ) {
+    return "restricted";
+  }
+  return normalized;
 };
 
 const MEDICATION_TIME_REGEX = /^([01]?\d|2[0-3]):([0-5]\d)$/;
@@ -235,6 +274,8 @@ export interface IStorage {
   getOrganizations(includeInactive?: boolean): Promise<Organization[]>;
   getOrganization(id: number): Promise<Organization | undefined>;
   getOrganizationByCnpj(cnpj: string): Promise<Organization | undefined>;
+  getOrganizationByStripeCustomerId(customerId: string): Promise<Organization | undefined>;
+  getOrganizationByStripeSubscriptionId(subscriptionId: string): Promise<Organization | undefined>;
   createOrganization(org: InsertOrganization): Promise<Organization>;
   updateOrganization(id: number, updates: Partial<InsertOrganization>): Promise<Organization>;
   deleteOrganization(id: number): Promise<void>;
@@ -290,6 +331,15 @@ export interface IStorage {
   markNotificationPushFailed(id: number, error: string): Promise<void>;
   markNotificationPushSkipped(id: number, reason: string): Promise<void>;
 
+  // Audit Logs
+  createAuditLog(log: InsertAuditLog): Promise<AuditLog>;
+  getAuditLogs(query?: {
+    organizationId?: number;
+    action?: string;
+    entityType?: string;
+    limit?: number;
+  }): Promise<(AuditLog & { organizationName?: string | null; userName?: string | null })[]>;
+
   // Residents
   getResidents(orgId: number, query?: { search: string; status?: string }): Promise<Resident[]>;
   getResident(orgId: number, id: number): Promise<Resident | undefined>;
@@ -299,8 +349,11 @@ export interface IStorage {
 
   // Family Members
   getFamilyMembers(orgId: number, residentId: number): Promise<FamilyMember[]>;
+  getFamilyMember(orgId: number, id: number): Promise<FamilyMember | undefined>;
   getFamilyMemberByPortalUsername(username: string): Promise<FamilyMember | undefined>;
   getFamilyMembersByPortalUsername(username: string): Promise<FamilyMember[]>;
+  getFamilyMembersByPortalLogin(login: string): Promise<FamilyMember[]>;
+  getFamilyMemberByInviteTokenHash(tokenHash: string): Promise<FamilyMember | undefined>;
   createFamilyMember(member: InsertFamilyMember): Promise<FamilyMember>;
   updateFamilyMember(orgId: number, id: number, updates: Partial<InsertFamilyMember>): Promise<FamilyMember>;
   deleteFamilyMember(orgId: number, id: number): Promise<void>;
@@ -458,6 +511,18 @@ export class DatabaseStorage implements IStorage {
       .where(sql`regexp_replace(coalesce(${organizations.cnpj}, ''), '\D', '', 'g') = ${normalized}`);
 
     return normalizedMatch;
+  }
+  async getOrganizationByStripeCustomerId(customerId: string): Promise<Organization | undefined> {
+    const normalized = customerId.trim();
+    if (!normalized) return undefined;
+    const [org] = await db.select().from(organizations).where(eq(organizations.stripeCustomerId, normalized));
+    return org;
+  }
+  async getOrganizationByStripeSubscriptionId(subscriptionId: string): Promise<Organization | undefined> {
+    const normalized = subscriptionId.trim();
+    if (!normalized) return undefined;
+    const [org] = await db.select().from(organizations).where(eq(organizations.stripeSubscriptionId, normalized));
+    return org;
   }
   async createOrganization(org: InsertOrganization): Promise<Organization> {
     const [newOrg] = await db.insert(organizations).values(org).returning();
@@ -823,6 +888,39 @@ export class DatabaseStorage implements IStorage {
       .where(eq(notifications.id, id));
   }
 
+  // --- Audit Logs ---
+  async createAuditLog(log: InsertAuditLog): Promise<AuditLog> {
+    const [created] = await db.insert(auditLogs).values(log).returning();
+    return created;
+  }
+
+  async getAuditLogs(query?: {
+    organizationId?: number;
+    action?: string;
+    entityType?: string;
+    limit?: number;
+  }): Promise<(AuditLog & { organizationName?: string | null; userName?: string | null })[]> {
+    const filters: any[] = [];
+    if (query?.organizationId) filters.push(eq(auditLogs.organizationId, query.organizationId));
+    if (query?.action) filters.push(eq(auditLogs.action, query.action));
+    if (query?.entityType) filters.push(eq(auditLogs.entityType, query.entityType));
+
+    const rows = await db
+      .select({
+        ...getTableColumns(auditLogs),
+        organizationName: organizations.name,
+        userName: users.name,
+      })
+      .from(auditLogs)
+      .leftJoin(organizations, eq(auditLogs.organizationId, organizations.id))
+      .leftJoin(users, eq(auditLogs.userId, users.id))
+      .where(filters.length > 0 ? and(...filters) : undefined)
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(Math.min(Math.max(query?.limit ?? 100, 1), 500));
+
+    return rows;
+  }
+
   // --- Residents ---
   async getResidents(orgId: number, query?: { search: string; status?: string }): Promise<Resident[]> {
     const filters: any[] = [eq(residents.organizationId, orgId)];
@@ -852,6 +950,13 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(familyMembers.organizationId, orgId), eq(familyMembers.residentId, residentId)))
       .orderBy(desc(familyMembers.isPrimary), familyMembers.name);
   }
+  async getFamilyMember(orgId: number, id: number): Promise<FamilyMember | undefined> {
+    const [member] = await db
+      .select()
+      .from(familyMembers)
+      .where(and(eq(familyMembers.organizationId, orgId), eq(familyMembers.id, id)));
+    return member;
+  }
   async getFamilyMembersByPortalUsername(username: string): Promise<FamilyMember[]> {
     const normalized = normalizePortalUsername(username);
     if (!normalized) return [];
@@ -864,8 +969,45 @@ export class DatabaseStorage implements IStorage {
         eq(familyMembers.portalAccess, true),
       ));
   }
+  async getFamilyMembersByPortalLogin(login: string): Promise<FamilyMember[]> {
+    const normalizedUsername = normalizePortalUsername(login);
+    const normalizedDigits = login.replace(/\D/g, "");
+    if (!normalizedUsername && !normalizedDigits) return [];
+
+    const loginConditions = [
+      sql`lower(coalesce(${familyMembers.portalUsername}, '')) = ${normalizedUsername}`,
+    ];
+    if (normalizedDigits.length >= 8) {
+      loginConditions.push(
+        sql`regexp_replace(coalesce(${familyMembers.phone}, ''), '\D', '', 'g') = ${normalizedDigits}`,
+        sql`regexp_replace(coalesce(${familyMembers.phone2}, ''), '\D', '', 'g') = ${normalizedDigits}`,
+      );
+      if (normalizedDigits.length === 11) {
+        loginConditions.push(
+          sql`regexp_replace(coalesce(${familyMembers.cpf}, ''), '\D', '', 'g') = ${normalizedDigits}`,
+        );
+      }
+    }
+
+    return await db
+      .select()
+      .from(familyMembers)
+      .where(and(
+        eq(familyMembers.portalAccess, true),
+        or(...loginConditions),
+      ));
+  }
   async getFamilyMemberByPortalUsername(username: string): Promise<FamilyMember | undefined> {
     const [member] = await this.getFamilyMembersByPortalUsername(username);
+    return member;
+  }
+  async getFamilyMemberByInviteTokenHash(tokenHash: string): Promise<FamilyMember | undefined> {
+    const normalized = tokenHash.trim();
+    if (!normalized) return undefined;
+    const [member] = await db
+      .select()
+      .from(familyMembers)
+      .where(eq(familyMembers.portalInviteTokenHash, normalized));
     return member;
   }
   async createFamilyMember(member: InsertFamilyMember): Promise<FamilyMember> {

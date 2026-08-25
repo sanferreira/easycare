@@ -172,6 +172,55 @@ export async function ensureDatabaseCompatibility() {
   `);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id serial PRIMARY KEY,
+      organization_id integer,
+      user_id integer,
+      actor_name text,
+      actor_role text,
+      action text NOT NULL,
+      entity_type text NOT NULL,
+      entity_id integer,
+      message text NOT NULL,
+      metadata text,
+      ip_address text,
+      user_agent text,
+      created_at timestamp DEFAULT now()
+    );
+  `);
+
+  await pool.query(`
+    ALTER TABLE IF EXISTS audit_logs
+      ADD COLUMN IF NOT EXISTS organization_id integer,
+      ADD COLUMN IF NOT EXISTS user_id integer,
+      ADD COLUMN IF NOT EXISTS actor_name text,
+      ADD COLUMN IF NOT EXISTS actor_role text,
+      ADD COLUMN IF NOT EXISTS action text,
+      ADD COLUMN IF NOT EXISTS entity_type text,
+      ADD COLUMN IF NOT EXISTS entity_id integer,
+      ADD COLUMN IF NOT EXISTS message text,
+      ADD COLUMN IF NOT EXISTS metadata text,
+      ADD COLUMN IF NOT EXISTS ip_address text,
+      ADD COLUMN IF NOT EXISTS user_agent text,
+      ADD COLUMN IF NOT EXISTS created_at timestamp DEFAULT now();
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS audit_logs_org_created_idx
+      ON audit_logs (organization_id, created_at);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS audit_logs_user_created_idx
+      ON audit_logs (user_id, created_at);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS audit_logs_entity_idx
+      ON audit_logs (entity_type, entity_id);
+  `);
+
+  await pool.query(`
     ALTER TABLE organizations
       ADD COLUMN IF NOT EXISTS active boolean DEFAULT true;
   `);
@@ -180,6 +229,106 @@ export async function ensureDatabaseCompatibility() {
     ALTER TABLE organizations
       ADD COLUMN IF NOT EXISTS status text DEFAULT 'active';
   `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+      ADD COLUMN IF NOT EXISTS stripe_customer_id text,
+      ADD COLUMN IF NOT EXISTS stripe_subscription_id text,
+      ADD COLUMN IF NOT EXISTS stripe_price_id text,
+      ADD COLUMN IF NOT EXISTS stripe_subscription_status text,
+      ADD COLUMN IF NOT EXISTS stripe_cancel_at_period_end boolean DEFAULT false,
+      ADD COLUMN IF NOT EXISTS stripe_cancel_at timestamp,
+      ADD COLUMN IF NOT EXISTS subscription_current_period_end timestamp,
+      ADD COLUMN IF NOT EXISTS subscription_updated_at timestamp,
+      ADD COLUMN IF NOT EXISTS billing_method text DEFAULT 'stripe',
+      ADD COLUMN IF NOT EXISTS manual_billing_due_day integer,
+      ADD COLUMN IF NOT EXISTS payment_grace_days integer DEFAULT 10,
+      ADD COLUMN IF NOT EXISTS manual_access_until timestamp;
+  `);
+
+  await pool.query(`
+    UPDATE organizations
+    SET payment_grace_days = 10
+    WHERE payment_grace_days IS NULL
+       OR payment_grace_days < 0;
+  `);
+
+  await pool.query(`
+    UPDATE organizations
+    SET billing_method = CASE
+      WHEN billing_method IS NULL OR btrim(billing_method) = '' THEN
+        CASE
+          WHEN manual_access_until IS NOT NULL
+            AND stripe_customer_id IS NULL
+            AND stripe_subscription_id IS NULL
+          THEN 'manual_boleto'
+          ELSE 'stripe'
+        END
+      ELSE billing_method
+    END;
+  `);
+
+  const upsertManualBoletoClient = async (namePattern: string, dueDay: number) => {
+    await pool.query(`
+      WITH cutoff AS (
+        SELECT
+          date_trunc('month', CURRENT_DATE)
+          + (($2::int - 1) * interval '1 day')
+          + (10 * interval '1 day')
+          + interval '23 hours 59 minutes 59 seconds' AS manual_access_until
+      )
+      UPDATE organizations
+      SET billing_method = 'manual_boleto',
+          manual_billing_due_day = $2,
+          payment_grace_days = 10,
+          manual_access_until = cutoff.manual_access_until,
+          status = 'active',
+          active = true
+      FROM cutoff
+      WHERE lower(organizations.name) LIKE lower($1)
+        AND organizations.stripe_subscription_id IS NULL
+        AND (
+          organizations.billing_method IS DISTINCT FROM 'manual_boleto'
+          OR organizations.manual_billing_due_day IS DISTINCT FROM $2
+        );
+    `, [namePattern, dueDay]);
+  };
+
+  await upsertManualBoletoClient("%consultoria ambiental%", 15);
+  await upsertManualBoletoClient("%nosso cuidar%", 22);
+
+  const billingPlanCapacityUpdates = [
+    { priceId: process.env.STRIPE_MONTHLY_PRICE_ID?.trim() || process.env.STRIPE_PRICE_ID?.trim(), capacity: 30 },
+    { priceId: process.env.STRIPE_SEMIANNUAL_PRICE_ID?.trim(), capacity: 40 },
+    { priceId: process.env.STRIPE_ANNUAL_PRICE_ID?.trim(), capacity: 60 },
+  ].filter((item): item is { priceId: string; capacity: number } => Boolean(item.priceId));
+
+  for (const { priceId, capacity } of billingPlanCapacityUpdates) {
+    await pool.query(`
+      UPDATE organizations
+      SET capacity = $2
+      WHERE stripe_price_id = $1
+        AND capacity IS DISTINCT FROM $2;
+    `, [priceId, capacity]);
+  }
+
+  await pool.query(`
+    ALTER TABLE organizations
+      ADD CONSTRAINT organizations_manual_billing_due_day_check
+      CHECK (manual_billing_due_day IS NULL OR manual_billing_due_day BETWEEN 1 AND 31)
+      NOT VALID;
+  `).catch((error) => {
+    if (error?.code !== "42710") throw error;
+  });
+
+  await pool.query(`
+    ALTER TABLE organizations
+      ADD CONSTRAINT organizations_payment_grace_days_check
+      CHECK (payment_grace_days IS NULL OR payment_grace_days BETWEEN 0 AND 60)
+      NOT VALID;
+  `).catch((error) => {
+    if (error?.code !== "42710") throw error;
+  });
 
   await pool.query(`
     UPDATE organizations
@@ -197,6 +346,16 @@ export async function ensureDatabaseCompatibility() {
       ELSE false
     END
     WHERE active IS NULL;
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS organizations_stripe_customer_id_idx
+      ON organizations (stripe_customer_id);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS organizations_stripe_subscription_id_idx
+      ON organizations (stripe_subscription_id);
   `);
 
   await pool.query(`
@@ -288,6 +447,23 @@ export async function ensureDatabaseCompatibility() {
   await pool.query(`
     ALTER TABLE organizations
       ADD COLUMN IF NOT EXISTS environment_settings text;
+  `);
+
+  await pool.query(`
+    ALTER TABLE IF EXISTS family_members
+      ADD COLUMN IF NOT EXISTS portal_invite_token_hash text,
+      ADD COLUMN IF NOT EXISTS portal_invite_expires_at timestamp,
+      ADD COLUMN IF NOT EXISTS portal_invited_at timestamp,
+      ADD COLUMN IF NOT EXISTS portal_last_login_at timestamp;
+  `);
+
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF to_regclass('public.family_members') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS family_members_portal_invite_token_hash_idx ON family_members (portal_invite_token_hash)';
+      END IF;
+    END $$;
   `);
 
   await pool.query(`

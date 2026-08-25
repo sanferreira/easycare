@@ -1,15 +1,24 @@
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
 import {
   Heart, LogOut, Pill, AlertTriangle, FileText, User, BedDouble,
-  Activity, Thermometer, Wind, Weight, Smile, ChevronRight, Calendar, Phone,
+  Activity, Thermometer, Wind, Smile, Calendar, Phone,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { digitsOnly, maskPhoneBR } from "@/lib/masks";
 
-type FamilySession = { id: number; name: string; relationship: string; residentId: number; organizationId: number };
+type FamilySession = {
+  id: number;
+  name: string;
+  relationship: string;
+  residentId: number;
+  organizationId: number;
+  organizationName?: string;
+  organizationPhone?: string | null;
+};
 type Resident = { id: number; name: string; birthDate: string; roomNumber: string; admissionDate: string; healthNotes?: string; allergies?: string; dietaryRestrictions?: string; mobilityStatus?: string; cognitiveStatus?: string; status: string };
 type MedicalRecord = { id: number; date: string; title: string; content: string; type: string; bloodPressure?: string; heartRate?: number; temperature?: number; oxygenSat: number; weight?: number; mood?: string };
 type Medication = { id: number; name: string; dosage: string; frequency: string; route?: string; scheduleTime?: string; prescribedBy?: string };
@@ -24,9 +33,14 @@ const moodColor: Record<string, string> = {
 };
 const severityLabel: Record<string, string> = { low: "Leve", medium: "Moderada", high: "Grave", critical: "Crítica" };
 const severityColor: Record<string, string> = {
-  low: "bg-yellow-100 text-yellow-800", medium: "bg-orange-100 text-orange-800",
-  high: "bg-red-100 text-red-800", critical: "bg-red-200 text-red-900",
+  low: "border-yellow-300/25 bg-yellow-300/10 text-yellow-100",
+  medium: "border-orange-300/25 bg-orange-300/10 text-orange-100",
+  high: "border-red-300/25 bg-red-300/10 text-red-100",
+  critical: "border-red-200/35 bg-red-400/15 text-red-50",
 };
+
+const portalCardClass = "rounded-lg border border-white/10 bg-white/[0.06] text-white shadow-2xl backdrop-blur-xl";
+const mutedTextClass = "text-white/50";
 
 function ageFromDate(birthDate: string) {
   const today = new Date();
@@ -42,12 +56,17 @@ function formatDate(d: string) {
 function formatDateTime(d: string) {
   return new Date(d).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
+function buildPhoneHref(phone?: string | null) {
+  const digits = digitsOnly(phone ?? "");
+  return digits ? `tel:${digits}` : "";
+}
 
 export default function FamilyPortalHome() {
   const [_, setLocation] = useLocation();
+  const [timelineFilter, setTimelineFilter] = useState<"all" | "records" | "medications" | "occurrences">("all");
   const queryClient = useQueryClient();
 
-  const { data: me } = useQuery<FamilySession>({
+  const { data: me, isLoading: loadingMe } = useQuery<FamilySession | null>({
     queryKey: ["family-portal-me"],
     queryFn: async () => {
       const res = await fetch("/api/family-portal/me", { credentials: "include" });
@@ -55,6 +74,10 @@ export default function FamilyPortalHome() {
       return res.json();
     },
   });
+
+  useEffect(() => {
+    if (!loadingMe && !me) setLocation("/portal");
+  }, [loadingMe, me, setLocation]);
 
   const { data: resident, isLoading: loadingResident } = useQuery<Resident>({
     queryKey: ["family-portal-resident"],
@@ -106,257 +129,403 @@ export default function FamilyPortalHome() {
     },
   });
 
+  if (loadingMe) {
+    return (
+      <div className="min-h-screen bg-[#07122E] text-white">
+        <div
+          className="absolute inset-0 opacity-[0.08]"
+          style={{
+            backgroundImage:
+              "linear-gradient(rgba(34,211,238,1) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,1) 1px, transparent 1px)",
+            backgroundSize: "40px 40px",
+          }}
+        />
+        <div className="relative z-10 flex min-h-screen items-center justify-center text-sm text-white/45">
+          Carregando portal...
+        </div>
+      </div>
+    );
+  }
+
   if (!me) {
-    setLocation("/portal");
     return null;
   }
 
   const latestRecord = records[0];
   const openOccurrences = occurrences.filter(o => o.status !== "resolved");
+  const statItems = [
+    { label: "Evoluções", value: records.length, icon: FileText },
+    { label: "Medicações", value: medications.length, icon: Pill },
+    { label: "Ocorrências abertas", value: openOccurrences.length, icon: AlertTriangle },
+  ];
+  const timelineItems = useMemo(() => {
+    const recordItems = records.map((record) => ({
+      id: `record-${record.id}`,
+      kind: "records" as const,
+      title: record.title || "Evolução compartilhada",
+      description: record.content,
+      date: record.date,
+      icon: FileText,
+      tone: "text-cyan-200",
+    }));
+    const medicationItems = medications.map((medication) => ({
+      id: `medication-${medication.id}`,
+      kind: "medications" as const,
+      title: medication.name,
+      description: `${medication.dosage} · ${medication.frequency}${medication.scheduleTime ? ` · ${medication.scheduleTime}` : ""}`,
+      date: "",
+      icon: Pill,
+      tone: "text-emerald-200",
+    }));
+    const occurrenceItems = occurrences.map((occurrence) => ({
+      id: `occurrence-${occurrence.id}`,
+      kind: "occurrences" as const,
+      title: occurrence.type,
+      description: occurrence.description,
+      date: occurrence.createdAt,
+      icon: AlertTriangle,
+      tone: "text-orange-200",
+    }));
+    return [...recordItems, ...medicationItems, ...occurrenceItems]
+      .filter((item) => timelineFilter === "all" || item.kind === timelineFilter)
+      .sort((left, right) => new Date(right.date || 0).getTime() - new Date(left.date || 0).getTime());
+  }, [medications, occurrences, records, timelineFilter]);
 
   return (
-    <div className="min-h-screen" style={{ background: "linear-gradient(180deg, #ECFEFF 0%, #F8FAFC 100%)" }}>
-      {/* Header */}
-      <header className="sticky top-0 z-10 border-b"
-        style={{ background: "#0A0F2C", borderColor: "rgba(34,211,238,0.15)" }}>
-        <div className="max-w-2xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-1 items-center gap-2.5">
-            <div className="relative">
-              <img src="/easycare-logo.png" alt="EasyCare" className="h-8 w-8 object-contain rounded-lg" />
-              <div className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#0A0F2C]" style={{ background: "#22D3EE" }} />
-            </div>
+    <div className="relative min-h-screen overflow-hidden bg-[#07122E] text-white">
+      <div
+        className="absolute inset-0 opacity-[0.08]"
+        style={{
+          backgroundImage:
+            "linear-gradient(rgba(34,211,238,1) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,1) 1px, transparent 1px)",
+          backgroundSize: "40px 40px",
+        }}
+      />
+
+      <header className="sticky top-0 z-20 border-b border-white/10 bg-[#07122E]/90 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4 sm:px-6">
+          <div className="flex min-w-0 items-center gap-3">
+            <img src="/easycare-logo.png" alt="EasyCare" className="h-10 w-10 shrink-0 object-contain" />
             <div className="min-w-0">
-              <p className="text-sm font-bold" style={{ fontFamily: "var(--font-display)", color: "white" }}>
-                Easy<span style={{ color: "#22D3EE" }}>Care</span>{" "}
-                <span className="text-xs font-normal px-1.5 py-0.5 rounded-md ml-0.5"
-                  style={{ background: "rgba(34,211,238,0.12)", color: "#22D3EE", fontSize: "10px" }}>
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-lg font-bold leading-none font-display">
+                  Easy<span className="text-cyan-300">Care</span>
+                </p>
+                <span className="rounded-md border border-cyan-300/20 bg-cyan-300/10 px-2 py-1 text-[10px] font-semibold uppercase text-cyan-200">
                   Portal Família
                 </span>
+              </div>
+              <p className="mt-1 truncate text-xs text-white/42">
+                {me.organizationName || "Instituição"} · {me.name} · {me.relationship}
               </p>
-              <p className="text-[10px] leading-none mt-0.5 truncate" style={{ color: "rgba(255,255,255,0.35)" }}>{me.name} · {me.relationship}</p>
             </div>
           </div>
-          <Button variant="ghost" size="sm" className="w-full justify-center gap-1.5 text-xs sm:w-auto"
-            style={{ color: "rgba(255,255,255,0.4)" }}
-            onClick={() => logoutMutation.mutate()} data-testid="button-portal-logout">
-            <LogOut className="h-3.5 w-3.5" />
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1.5 text-xs text-white/50 hover:bg-white/10 hover:text-white"
+            onClick={() => logoutMutation.mutate()}
+            data-testid="button-portal-logout"
+          >
+            <LogOut className="h-4 w-4" />
             Sair
           </Button>
         </div>
       </header>
 
-      <main className="max-w-2xl mx-auto px-4 py-6 space-y-5">
-        {/* Resident card */}
-        {loadingResident ? (
-          <div className="h-32 rounded-2xl animate-pulse" style={{ background: "rgba(34,211,238,0.08)" }} />
-        ) : resident && (
-          <div className="rounded-2xl p-5 shadow-lg border"
-            style={{
-              background: "linear-gradient(135deg, #0A0F2C 0%, #0e1a3a 100%)",
-              borderColor: "rgba(34,211,238,0.3)",
-              boxShadow: "0 4px 24px rgba(34,211,238,0.12)",
-            }}>
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-              <div className="min-w-0">
-                <p className="text-xs font-semibold uppercase tracking-wider mb-1" style={{ color: "#22D3EE" }}>Seu familiar</p>
-                <h2 className="text-2xl font-bold text-white truncate" style={{ fontFamily: "var(--font-display)" }}>{resident.name}</h2>
-                <div className="flex flex-wrap gap-2 mt-2">
-                  <span className="flex items-center gap-1 text-xs" style={{ color: "rgba(255,255,255,0.55)" }}>
-                    <BedDouble className="h-3.5 w-3.5" />
-                    Quarto {resident.roomNumber}
-                  </span>
-                  <span className="flex items-center gap-1 text-xs" style={{ color: "rgba(255,255,255,0.55)" }}>
-                    <Calendar className="h-3.5 w-3.5" />
-                    {ageFromDate(resident.birthDate)} anos
-                  </span>
-                  <span className="flex items-center gap-1 text-xs" style={{ color: "rgba(255,255,255,0.55)" }}>
-                    <User className="h-3.5 w-3.5" />
-                    Internado desde {formatDate(resident.admissionDate)}
-                  </span>
+      <main className="relative z-10 mx-auto max-w-6xl space-y-4 px-4 py-6 sm:px-6 sm:py-8">
+        <section className="grid gap-4 lg:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.95fr)]">
+          {loadingResident ? (
+            <div className={`${portalCardClass} h-56 animate-pulse`} />
+          ) : resident && (
+            <div className={`${portalCardClass} p-5 sm:p-6`}>
+              <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold uppercase text-cyan-200">Paciente acompanhado</p>
+                  <h1 className="mt-2 truncate text-3xl font-bold leading-tight font-display sm:text-4xl">
+                    {resident.name}
+                  </h1>
+                  <div className="mt-4 flex flex-wrap gap-2 text-xs text-white/58">
+                    <span className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.05] px-2.5 py-1.5">
+                      <BedDouble className="h-3.5 w-3.5 text-cyan-200" />
+                      Quarto {resident.roomNumber}
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.05] px-2.5 py-1.5">
+                      <Calendar className="h-3.5 w-3.5 text-cyan-200" />
+                      {ageFromDate(resident.birthDate)} anos
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.05] px-2.5 py-1.5">
+                      <User className="h-3.5 w-3.5 text-cyan-200" />
+                      Desde {formatDate(resident.admissionDate)}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg border border-cyan-300/25 bg-cyan-300/10">
+                  <span className="text-3xl font-bold text-cyan-200">{resident.name.charAt(0)}</span>
                 </div>
               </div>
-              <div className="h-14 w-14 rounded-full flex items-center justify-center shrink-0 border-2"
-                style={{ background: "rgba(34,211,238,0.15)", borderColor: "rgba(34,211,238,0.4)" }}>
-                <span className="text-2xl font-bold" style={{ color: "#22D3EE" }}>{resident.name.charAt(0)}</span>
-              </div>
-            </div>
 
-            {(resident.allergies || resident.dietaryRestrictions) && (
-              <div className="mt-3 pt-3 border-t flex flex-wrap gap-2" style={{ borderColor: "rgba(34,211,238,0.15)" }}>
+              {(resident.allergies || resident.dietaryRestrictions) && (
+                <div className="mt-5 flex flex-wrap gap-2 border-t border-white/10 pt-4">
                 {resident.allergies && resident.allergies !== "Nenhuma conhecida" && resident.allergies !== "Nenhuma" && (
-                  <span className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-red-500/20 text-white border border-red-300/20">
+                  <span className="inline-flex items-center gap-1.5 rounded-md border border-red-300/20 bg-red-300/10 px-2.5 py-1.5 text-xs font-medium text-red-50">
                     <AlertTriangle className="h-3 w-3" />
                     Alergia: {resident.allergies}
                   </span>
                 )}
                 {resident.dietaryRestrictions && (
-                  <span className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-yellow-500/20 text-white border border-yellow-300/20">
+                  <span className="inline-flex items-center gap-1.5 rounded-md border border-yellow-300/20 bg-yellow-300/10 px-2.5 py-1.5 text-xs font-medium text-yellow-50">
                     Dieta: {resident.dietaryRestrictions}
                   </span>
                 )}
+                </div>
+              )}
+            </div>
+          )}
+
+          <Card className={portalCardClass}>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between gap-3">
+                <CardTitle className="flex items-center gap-2 text-base font-semibold text-white">
+                  <FileText className="h-4 w-4 text-cyan-200" />
+                  Última evolução
+                </CardTitle>
+                {latestRecord && <span className="text-xs text-white/38">{formatDate(latestRecord.date)}</span>}
+              </div>
+            </CardHeader>
+            <CardContent>
+              {latestRecord ? (
+                <div className="space-y-4">
+                  {(latestRecord.bloodPressure || latestRecord.heartRate || latestRecord.temperature || latestRecord.oxygenSat) && (
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {latestRecord.bloodPressure && (
+                        <div className="rounded-md border border-red-300/15 bg-red-300/10 p-3">
+                          <Activity className="mb-2 h-4 w-4 text-red-100" />
+                          <p className="text-sm font-bold text-white">{latestRecord.bloodPressure}</p>
+                          <p className="mt-0.5 text-[11px] text-red-100/60">Pressão</p>
+                        </div>
+                      )}
+                      {latestRecord.heartRate && (
+                        <div className="rounded-md border border-pink-300/15 bg-pink-300/10 p-3">
+                          <Heart className="mb-2 h-4 w-4 text-pink-100" />
+                          <p className="text-sm font-bold text-white">{latestRecord.heartRate} bpm</p>
+                          <p className="mt-0.5 text-[11px] text-pink-100/60">Frequência</p>
+                        </div>
+                      )}
+                      {latestRecord.temperature && (
+                        <div className="rounded-md border border-orange-300/15 bg-orange-300/10 p-3">
+                          <Thermometer className="mb-2 h-4 w-4 text-orange-100" />
+                          <p className="text-sm font-bold text-white">{latestRecord.temperature}°C</p>
+                          <p className="mt-0.5 text-[11px] text-orange-100/60">Temperatura</p>
+                        </div>
+                      )}
+                      {latestRecord.oxygenSat && (
+                        <div className="rounded-md border border-blue-300/15 bg-blue-300/10 p-3">
+                          <Wind className="mb-2 h-4 w-4 text-blue-100" />
+                          <p className="text-sm font-bold text-white">{latestRecord.oxygenSat}%</p>
+                          <p className="mt-0.5 text-[11px] text-blue-100/60">SpO2</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {latestRecord.mood && (
+                    <div className="flex items-center gap-2 text-xs text-white/55">
+                      <Smile className="h-4 w-4 text-white/35" />
+                      Humor:
+                      <span className={`font-semibold ${moodColor[latestRecord.mood] || "text-white"}`}>
+                        {moodLabel[latestRecord.mood] || latestRecord.mood}
+                      </span>
+                    </div>
+                  )}
+
+                  <p className="text-sm leading-6 text-white/72">{latestRecord.content}</p>
+
+                  {records.length > 1 && (
+                    <div className="border-t border-white/10 pt-3">
+                      <p className="mb-2 text-xs font-semibold uppercase text-white/35">Registros anteriores</p>
+                      {records.slice(1, 4).map((r) => (
+                        <div key={r.id} className="grid grid-cols-[72px_1fr] gap-3 border-t border-white/8 py-2 first:border-t-0">
+                          <span className="text-xs text-white/35">{formatDate(r.date)}</span>
+                          <p className="line-clamp-2 text-xs leading-5 text-white/55">{r.content}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="py-8 text-center">
+                  <FileText className="mx-auto mb-3 h-8 w-8 text-white/18" />
+                  <p className="text-sm text-white/42">Nenhuma evolução compartilhada ainda</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </section>
+
+        <section className="grid gap-3 sm:grid-cols-3">
+          {statItems.map(({ icon: Icon, label, value }) => (
+            <div key={label} className="rounded-lg border border-white/10 bg-white/[0.05] p-4 backdrop-blur">
+              <Icon className="h-4 w-4 text-cyan-200" />
+              <p className="mt-3 text-2xl font-bold text-white">{value}</p>
+              <p className="mt-1 text-xs font-medium text-white/42">{label}</p>
+            </div>
+          ))}
+        </section>
+
+        <Card className={portalCardClass}>
+          <CardHeader className="pb-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <CardTitle className="flex items-center gap-2 text-base font-semibold text-white">
+                <Activity className="h-4 w-4 text-cyan-200" />
+                Linha do tempo
+              </CardTitle>
+              <div className="grid grid-cols-2 gap-1 rounded-md border border-white/10 bg-white/[0.04] p-1 sm:flex">
+                {[
+                  ["all", "Tudo"],
+                  ["records", "Evoluções"],
+                  ["medications", "Medicações"],
+                  ["occurrences", "Ocorrências"],
+                ].map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setTimelineFilter(value as typeof timelineFilter)}
+                    className={`h-8 rounded-md px-2 text-xs font-semibold transition ${
+                      timelineFilter === value
+                        ? "bg-cyan-300 text-[#07122E]"
+                        : "text-white/45 hover:bg-white/10 hover:text-white"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {timelineItems.length === 0 ? (
+              <div className="py-8 text-center">
+                <Activity className="mx-auto mb-3 h-8 w-8 text-white/18" />
+                <p className="text-sm text-white/42">Nenhuma informação compartilhada neste filtro</p>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {timelineItems.slice(0, 8).map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <div key={item.id} className="grid gap-3 border-t border-white/10 py-3 first:border-t-0 sm:grid-cols-[96px_1fr]">
+                      <span className="text-xs text-white/35">
+                        {item.date ? formatDateTime(item.date) : "Ativo"}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="flex items-center gap-2 text-sm font-semibold text-white">
+                          <Icon className={`h-4 w-4 ${item.tone}`} />
+                          {item.title}
+                        </p>
+                        <p className="mt-1 line-clamp-2 text-xs leading-5 text-white/55">{item.description}</p>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
-          </div>
-        )}
+          </CardContent>
+        </Card>
 
-        {/* Latest evolution */}
-        {latestRecord && (
-          <Card className="shadow-sm" style={{ borderColor: "rgba(34,211,238,0.2)" }}>
+        <section className="grid gap-4 lg:grid-cols-2">
+          <Card className={portalCardClass}>
             <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                  <FileText className="h-4 w-4" style={{ color: "#22D3EE" }} />
-                  Última Evolução
-                </CardTitle>
-                <span className="text-xs text-gray-400">{formatDate(latestRecord.date)}</span>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {/* Vitals */}
-              {(latestRecord.bloodPressure || latestRecord.heartRate || latestRecord.temperature || latestRecord.oxygenSat) && (
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                  {latestRecord.bloodPressure && (
-                    <div className="rounded-xl p-2.5 bg-red-50 border border-red-100 text-center">
-                      <Activity className="h-3.5 w-3.5 text-red-400 mx-auto mb-1" />
-                      <p className="text-xs font-bold text-red-700">{latestRecord.bloodPressure}</p>
-                      <p className="text-[10px] text-red-400">Pressão</p>
-                    </div>
-                  )}
-                  {latestRecord.heartRate && (
-                    <div className="rounded-xl p-2.5 bg-pink-50 border border-pink-100 text-center">
-                      <Heart className="h-3.5 w-3.5 text-pink-400 mx-auto mb-1" />
-                      <p className="text-xs font-bold text-pink-700">{latestRecord.heartRate} bpm</p>
-                      <p className="text-[10px] text-pink-400">Frequência</p>
-                    </div>
-                  )}
-                  {latestRecord.temperature && (
-                    <div className="rounded-xl p-2.5 bg-orange-50 border border-orange-100 text-center">
-                      <Thermometer className="h-3.5 w-3.5 text-orange-400 mx-auto mb-1" />
-                      <p className="text-xs font-bold text-orange-700">{latestRecord.temperature}°C</p>
-                      <p className="text-[10px] text-orange-400">Temperatura</p>
-                    </div>
-                  )}
-                  {latestRecord.oxygenSat && (
-                    <div className="rounded-xl p-2.5 bg-blue-50 border border-blue-100 text-center">
-                      <Wind className="h-3.5 w-3.5 text-blue-400 mx-auto mb-1" />
-                      <p className="text-xs font-bold text-blue-700">{latestRecord.oxygenSat}%</p>
-                      <p className="text-[10px] text-blue-400">SpO₂</p>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {latestRecord.mood && (
-                <div className="flex items-center gap-2">
-                  <Smile className="h-3.5 w-3.5 text-gray-400" />
-                  <span className="text-xs text-gray-500">Humor:</span>
-                  <span className={`text-xs font-semibold ${moodColor[latestRecord.mood] || "text-gray-600"}`}>
-                    {moodLabel[latestRecord.mood] || latestRecord.mood}
-                  </span>
-                </div>
-              )}
-
-              <p className="text-sm text-gray-700 leading-relaxed">{latestRecord.content}</p>
-
-              {records.length > 1 && (
-                <>
-                  <Separator />
-                  <p className="text-xs text-gray-400 font-medium uppercase tracking-wider">Registros anteriores ({records.length - 1})</p>
-                  {records.slice(1, 4).map((r) => (
-                    <div key={r.id} className="flex items-start gap-3 py-2 border-b border-gray-50 last:border-0">
-                      <span className="text-xs text-gray-400 shrink-0 mt-0.5">{formatDate(r.date)}</span>
-                      <p className="text-xs text-gray-600 line-clamp-2">{r.content}</p>
-                    </div>
-                  ))}
-                </>
-              )}
-            </CardContent>
-          </Card>
-        )}
-
-        {records.length === 0 && (
-          <Card className="shadow-sm" style={{ borderColor: "rgba(34,211,238,0.15)" }}>
-            <CardContent className="py-8 text-center">
-              <FileText className="h-8 w-8 text-gray-200 mx-auto mb-2" />
-              <p className="text-sm text-gray-400">Nenhuma evolução compartilhada ainda</p>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Medications */}
-        {medications.length > 0 && (
-          <Card className="shadow-sm" style={{ borderColor: "rgba(34,211,238,0.2)" }}>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                <Pill className="h-4 w-4" style={{ color: "#22D3EE" }} />
-                Medicações Ativas ({medications.length})
+              <CardTitle className="flex items-center gap-2 text-base font-semibold text-white">
+                <Pill className="h-4 w-4 text-cyan-200" />
+                Medicações ativas
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-2">
-              {medications.map((med) => (
-                <div key={med.id} className="flex items-start gap-3 p-3 rounded-xl border"
-                  style={{ background: "rgba(34,211,238,0.06)", borderColor: "rgba(34,211,238,0.2)" }}>
-                  <div className="h-8 w-8 rounded-lg flex items-center justify-center shrink-0"
-                    style={{ background: "rgba(34,211,238,0.15)" }}>
-                    <Pill className="h-4 w-4" style={{ color: "#22D3EE" }} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-gray-800">{med.name} <span className="font-normal text-gray-500">{med.dosage}</span></p>
-                    <p className="text-xs text-gray-500 mt-0.5">{med.frequency}{med.scheduleTime ? ` · ${med.scheduleTime}` : ""}</p>
-                    {med.prescribedBy && <p className="text-xs text-gray-400 mt-0.5">Dr(a). {med.prescribedBy}</p>}
-                  </div>
+            <CardContent>
+              {medications.length > 0 ? (
+                <div className="divide-y divide-white/10">
+                  {medications.map((med) => (
+                    <div key={med.id} className="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-cyan-300/15 bg-cyan-300/10">
+                        <Pill className="h-4 w-4 text-cyan-200" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-semibold text-white">
+                          {med.name} <span className="font-normal text-white/45">{med.dosage}</span>
+                        </p>
+                        <p className="mt-1 text-xs leading-5 text-white/45">
+                          {med.frequency}{med.scheduleTime ? ` · ${med.scheduleTime}` : ""}
+                        </p>
+                        {med.prescribedBy && <p className="mt-0.5 text-xs text-white/35">Dr(a). {med.prescribedBy}</p>}
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              ) : (
+                <p className={`py-8 text-center text-sm ${mutedTextClass}`}>Nenhuma medicação ativa compartilhada</p>
+              )}
             </CardContent>
           </Card>
-        )}
 
-        {/* Occurrences */}
-        {occurrences.length > 0 && (
-          <Card className="shadow-sm border-orange-100">
+          <Card className={portalCardClass}>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                <AlertTriangle className="h-4 w-4 text-orange-500" />
-                Ocorrências Relevantes
+              <CardTitle className="flex items-center gap-2 text-base font-semibold text-white">
+                <AlertTriangle className="h-4 w-4 text-orange-200" />
+                Ocorrências relevantes
                 {openOccurrences.length > 0 && (
-                  <Badge className="bg-orange-100 text-orange-700 text-[10px] px-1.5 py-0">{openOccurrences.length} abertas</Badge>
+                  <Badge className="border border-orange-300/20 bg-orange-300/10 px-1.5 py-0 text-[10px] text-orange-100">
+                    {openOccurrences.length} abertas
+                  </Badge>
                 )}
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-2">
-              {occurrences.map((occ) => (
-                <div key={occ.id} className="p-3 rounded-xl border border-gray-100 bg-white space-y-1.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-sm font-semibold text-gray-800">{occ.type}</p>
-                    <div className="flex gap-1.5 shrink-0">
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${severityColor[occ.severity]}`}>
-                        {severityLabel[occ.severity]}
-                      </span>
-                      {occ.status === "resolved" && (
-                        <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-green-100 text-green-700">Resolvido</span>
-                      )}
+            <CardContent>
+              {occurrences.length > 0 ? (
+                <div className="divide-y divide-white/10">
+                  {occurrences.map((occ) => (
+                    <div key={occ.id} className="space-y-2 py-3 first:pt-0 last:pb-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-white">{occ.type}</p>
+                        <div className="flex shrink-0 gap-1.5">
+                          <span className={`rounded-md border px-2 py-0.5 text-[10px] font-medium ${severityColor[occ.severity]}`}>
+                            {severityLabel[occ.severity]}
+                          </span>
+                          {occ.status === "resolved" && (
+                            <span className="rounded-md border border-emerald-300/20 bg-emerald-300/10 px-2 py-0.5 text-[10px] font-medium text-emerald-100">
+                              Resolvido
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <p className="text-xs leading-5 text-white/58">{occ.description}</p>
+                      {occ.resolution && <p className="text-xs font-medium text-emerald-100">{occ.resolution}</p>}
+                      <p className="text-[10px] text-white/32">{formatDateTime(occ.createdAt)}</p>
                     </div>
-                  </div>
-                  <p className="text-xs text-gray-600">{occ.description}</p>
-                  {occ.resolution && <p className="text-xs text-green-700 font-medium">✓ {occ.resolution}</p>}
-                  <p className="text-[10px] text-gray-400">{formatDateTime(occ.createdAt)}</p>
+                  ))}
                 </div>
-              ))}
+              ) : (
+                <p className={`py-8 text-center text-sm ${mutedTextClass}`}>Nenhuma ocorrência relevante compartilhada</p>
+              )}
             </CardContent>
           </Card>
-        )}
+        </section>
 
-        {/* Info section */}
-        <Card className="shadow-sm border-gray-100">
-          <CardContent className="py-4">
-            <p className="text-xs text-gray-400 text-center leading-relaxed">
+        <Card className="rounded-lg border border-white/10 bg-white/[0.04] text-white backdrop-blur">
+          <CardContent className="py-4 text-center">
+            <p className="text-xs leading-relaxed text-white/40">
               Este portal mostra informações compartilhadas pela equipe da ILPI.<br />
               Para dúvidas urgentes, entre em contato diretamente com a unidade.
-              <br />
-              <span className="flex items-center justify-center gap-1 mt-2">
-                <Phone className="h-3 w-3" />
-                <a href="tel:" className="hover:underline" style={{ color: "#22D3EE" }}>Ligue para a ILPI</a>
-              </span>
+              {me.organizationPhone && (
+                <>
+                  <br />
+                  <span className="mt-2 flex items-center justify-center gap-1">
+                    <Phone className="h-3 w-3" />
+                    <a href={buildPhoneHref(me.organizationPhone)} className="font-semibold text-cyan-200 hover:underline">
+                      {maskPhoneBR(me.organizationPhone)}
+                    </a>
+                  </span>
+                </>
+              )}
             </p>
           </CardContent>
         </Card>

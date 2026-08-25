@@ -60,6 +60,29 @@ function KpiCard({ title, value, desc, icon: Icon, color, gradient, to }: {
   );
 }
 
+function EmptyState({ title, text, actionLabel, to, icon: Icon = AlertCircle }: {
+  title: string;
+  text: string;
+  actionLabel: string;
+  to: string;
+  icon?: React.ComponentType<{ className?: string }>;
+}) {
+  const [, navigate] = useLocation();
+  return (
+    <div className="flex min-h-[200px] flex-col items-center justify-center rounded-xl border border-dashed border-border bg-muted/20 px-4 py-8 text-center">
+      <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
+        <Icon className="h-5 w-5" />
+      </div>
+      <p className="mt-3 text-sm font-semibold text-foreground">{title}</p>
+      <p className="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">{text}</p>
+      <Button variant="outline" size="sm" className="mt-4 gap-2" onClick={() => navigate(to)}>
+        {actionLabel}
+        <ArrowRight className="h-3.5 w-3.5" />
+      </Button>
+    </div>
+  );
+}
+
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (!active || !payload?.length) return null;
   return (
@@ -141,8 +164,24 @@ export default function Dashboard() {
     },
   });
 
+  const { data: staff = [] } = useQuery<any[]>({
+    queryKey: ["/api/staff", "dashboard-health"],
+    queryFn: async () => {
+      const res = await fetch("/api/staff", { credentials: "include" });
+      if (!res.ok) return [];
+      return res.json();
+    },
+  });
+
   const now = new Date();
+  const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+  const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0, 0);
   const activeShifts = shifts.filter((s: any) => now >= new Date(s.startTime) && now <= new Date(s.endTime));
+  const shiftsThisMonth = shifts.filter((s: any) => {
+    const start = new Date(s.startTime);
+    return start >= currentMonthStart && start < nextMonthStart;
+  });
+  const activeStaff = staff.filter((member: any) => member.active !== false);
   const hour = now.getHours();
   const greeting = hour < 12 ? "Bom dia" : hour < 18 ? "Boa tarde" : "Boa noite";
   const timeClockPendingTotal =
@@ -150,6 +189,54 @@ export default function Dashboard() {
     + (stats?.timeClockPendingAdjustments ?? 0)
     + (stats?.timeClockIncompleteToday ?? 0)
     + (stats?.timeClockOutOfRangeToday ?? 0);
+  const totalResidents = stats?.totalResidents ?? 0;
+  const capacity = stats?.capacity ?? 0;
+  const activeContracts = stats?.activeContracts ?? 0;
+  const financialPendingTotal = fees.filter((fee: any) => fee.status === "pending" || fee.status === "overdue").length;
+  const operationHealthItems = [
+    {
+      title: "Pacientes ativos",
+      value: totalResidents,
+      helper: totalResidents === 0 ? "Cadastre o primeiro paciente para iniciar prontuário, família e financeiro." : `${totalResidents} de ${capacity} vagas do plano`,
+      to: "/residents",
+      color: BRAND.blue,
+    },
+    {
+      title: "Equipe ativa",
+      value: activeStaff.length,
+      helper: activeStaff.length === 0 ? "Cadastre cuidadores, enfermagem e gestores para operar escalas e ponto." : `${activeStaff.length} colaborador${activeStaff.length === 1 ? "" : "es"} com acesso operacional`,
+      to: "/staff",
+      color: BRAND.cyan,
+    },
+    {
+      title: "Escalas do mês",
+      value: shiftsThisMonth.length,
+      helper: shiftsThisMonth.length === 0 ? "Monte as escalas do mês para alimentar rotina e ponto eletrônico." : "Plantões programados neste mês",
+      to: "/escalas",
+      color: BRAND.purple,
+    },
+    {
+      title: "Ponto pendente",
+      value: timeClockPendingTotal,
+      helper: timeClockPendingTotal > 0 ? "Existem batidas, ajustes ou jornadas para revisar." : "Sem pendências críticas no ponto agora",
+      to: "/ponto-eletronico",
+      color: timeClockPendingTotal > 0 ? BRAND.red : BRAND.green,
+    },
+    {
+      title: "Financeiro pendente",
+      value: financialPendingTotal,
+      helper: financialPendingTotal > 0 ? "Há mensalidades pendentes ou vencidas para acompanhar." : "Sem mensalidades pendentes carregadas",
+      to: "/financeiro",
+      color: financialPendingTotal > 0 ? BRAND.yellow : BRAND.green,
+    },
+  ];
+  const setupGaps = [
+    totalResidents === 0 ? { label: "Sem pacientes", to: "/residents" } : null,
+    activeStaff.length === 0 ? { label: "Sem equipe", to: "/staff" } : null,
+    shiftsThisMonth.length === 0 ? { label: "Sem escala no mês", to: "/escalas" } : null,
+    financialPendingTotal === 0 && activeContracts === 0 ? { label: "Sem contratos/financeiro", to: "/financeiro" } : null,
+    totalResidents > 0 ? { label: "Revise familiares e portal", to: "/residents" } : null,
+  ].filter(Boolean) as Array<{ label: string; to: string }>;
 
   // ── Chart data ──────────────────────────────────────────────────────────────
 
@@ -323,6 +410,67 @@ export default function Dashboard() {
         </button>
       )}
 
+      <Card className="overflow-hidden shadow-sm">
+        <CardHeader className="pb-3">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <CardTitle className="text-base flex items-center gap-2">
+                <TrendingUp className="h-4 w-4 text-primary" />
+                Saúde da operação
+              </CardTitle>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Indicadores rápidos para saber se a operação está pronta para rodar hoje.
+              </p>
+            </div>
+            <Badge variant={setupGaps.length > 0 ? "secondary" : "default"} className="w-fit">
+              {setupGaps.length > 0 ? `${setupGaps.length} ponto(s) para revisar` : "Operação em dia"}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            {operationHealthItems.map((item) => (
+              <button
+                key={item.title}
+                type="button"
+                onClick={() => navigate(item.to)}
+                className="rounded-xl border border-border bg-card p-4 text-left shadow-sm transition hover:border-primary/30 hover:shadow-md"
+                data-testid={`operation-health-${item.title.toLowerCase().replace(/\s+/g, "-")}`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{item.title}</p>
+                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.color }} />
+                </div>
+                <p className="mt-3 text-2xl font-bold text-foreground">{item.value}</p>
+                <p className="mt-1 min-h-[38px] text-xs leading-5 text-muted-foreground">{item.helper}</p>
+              </button>
+            ))}
+          </div>
+          {setupGaps.length > 0 && (
+            <div className="flex flex-col gap-3 rounded-xl border border-blue-100 bg-blue-50/60 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-semibold text-blue-950">Próximos ajustes recomendados</p>
+                <p className="mt-1 text-xs leading-5 text-blue-800/75">
+                  Resolva os vazios antes de escalar o uso para equipe, família e financeiro.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {setupGaps.map((gap) => (
+                  <button
+                    key={gap.label}
+                    type="button"
+                    onClick={() => navigate(gap.to)}
+                    className="inline-flex h-8 items-center rounded-md border border-blue-200 bg-white px-3 text-xs font-semibold text-blue-700 hover:bg-blue-50"
+                  >
+                    {gap.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Charts Row */}
       <div className="grid gap-4 lg:grid-cols-3">
         {/* Bar chart — financial by month */}
@@ -340,9 +488,13 @@ export default function Dashboard() {
           </CardHeader>
           <CardContent>
             {feeAmountData.length === 0 ? (
-              <div className="h-[200px] flex items-center justify-center text-muted-foreground text-sm">
-                Nenhum dado financeiro ainda
-              </div>
+              <EmptyState
+                title="Sem dados financeiros ainda"
+                text="Cadastre contratos e mensalidades para visualizar recebimentos, pendências e vencidos por competência."
+                actionLabel="Abrir financeiro"
+                to="/financeiro"
+                icon={BarChart2}
+              />
             ) : (
               <ResponsiveContainer width="100%" height={220}>
                 <BarChart data={feeAmountData} margin={{ top: 4, right: 4, left: -10, bottom: 0 }}>
@@ -370,9 +522,13 @@ export default function Dashboard() {
           </CardHeader>
           <CardContent>
             {feePieData.length === 0 ? (
-              <div className="h-[200px] flex items-center justify-center text-muted-foreground text-sm">
-                Nenhuma mensalidade registrada
-              </div>
+              <EmptyState
+                title="Sem mensalidades registradas"
+                text="Quando houver mensalidades cadastradas, este gráfico mostra pagas, pendentes e vencidas."
+                actionLabel="Cadastrar cobrança"
+                to="/financeiro"
+                icon={PieChartIcon}
+              />
             ) : (
               <ResponsiveContainer width="100%" height={220}>
                 <PieChart>
@@ -417,7 +573,13 @@ export default function Dashboard() {
           </CardHeader>
           <CardContent>
             {residents.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-6">Nenhum paciente cadastrado</p>
+              <EmptyState
+                title="Nenhum paciente ativo"
+                text="Cadastre o primeiro paciente para liberar prontuário, medicações, familiares e contrato financeiro."
+                actionLabel="Cadastrar paciente"
+                to="/residents"
+                icon={Users}
+              />
             ) : (
               <div className="divide-y divide-border/60">
                 {residents.slice(0, 5).map((r: any) => (
@@ -468,7 +630,10 @@ export default function Dashboard() {
             </CardHeader>
             <CardContent className="pb-3">
               {occurrenceBarData.length === 0 ? (
-                <p className="text-xs text-muted-foreground py-4 text-center">Nenhuma ocorrência registrada</p>
+                <div className="rounded-xl border border-dashed border-border bg-muted/20 px-3 py-6 text-center">
+                  <p className="text-sm font-semibold text-foreground">Nenhuma ocorrência aberta</p>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">Quando a equipe registrar ocorrências, elas aparecem aqui por tipo e gravidade.</p>
+                </div>
               ) : (
                 <ResponsiveContainer width="100%" height={140}>
                   <BarChart data={occurrenceBarData} margin={{ top: 4, right: 0, left: -20, bottom: 0 }}>
@@ -536,7 +701,14 @@ export default function Dashboard() {
         </CardHeader>
         <CardContent>
           {activeShifts.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-2 text-center">Nenhum plantão ativo no momento</p>
+            <div className="rounded-xl border border-dashed border-border bg-muted/20 px-4 py-8 text-center">
+              <p className="text-sm font-semibold text-foreground">Nenhum plantão ativo agora</p>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">Se a operação já está rodando, confira se as escalas do mês foram criadas.</p>
+              <Button variant="outline" size="sm" className="mt-4 gap-2" onClick={() => navigate("/escalas")}>
+                Gerenciar escalas
+                <ArrowRight className="h-3.5 w-3.5" />
+              </Button>
+            </div>
           ) : (
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {activeShifts.map((s: any) => {

@@ -25,11 +25,11 @@ import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import {
   Plus, FileText, Stethoscope, Heart, Users2,
-  Activity, Thermometer, Wind, Smile, Lock, Eye, EyeOff, Globe, Trash2, Pencil, Pill, AlertTriangle, Check, ChevronsUpDown, Printer, MapPin
+  Activity, Thermometer, Wind, Smile, Lock, Eye, EyeOff, Globe, Trash2, Pencil, Pill, AlertTriangle, Check, ChevronsUpDown, Printer, MapPin, Link2, MessageCircle
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { MedicalRecord, Comorbidity, FamilyMember, Medication, MedicationAdministration, Occurrence } from "@shared/schema";
-import { maskCpf, maskPhoneBR } from "@/lib/masks";
+import { digitsOnly, maskCpf, maskPhoneBR } from "@/lib/masks";
 import { canAccessRoute, canEditRoute } from "@/lib/permissions";
 import { toDateInputValue } from "@/lib/date";
 import { printHtmlDocument } from "@/lib/print";
@@ -90,12 +90,7 @@ const familySchema = z.object({
   portalAccess: z.boolean().default(false),
   portalUsername: z.string().optional(),
   portalPassword: z.string().optional(),
-}).refine((d) => {
-  if (d.portalAccess) {
-    if (!d.portalUsername || d.portalUsername.trim().length < 3) return false;
-  }
-  return true;
-}, { message: "Usuário de acesso (mín. 3 caracteres) é obrigatório para acesso ao portal", path: ["portalUsername"] });
+});
 
 const SEVERITY_MAP = {
   mild: { label: "Leve", color: "#22C55E" },
@@ -152,6 +147,11 @@ const DAILY_CHECKLIST_OPTIONS = [
 ] as const;
 
 type DailyChecklistKey = (typeof DAILY_CHECKLIST_OPTIONS)[number]["key"];
+type FamilyPortalInviteResponse = {
+  url: string;
+  expiresAt: string;
+  whatsappText: string;
+};
 
 function createEmptyDailyChecklist(): Record<DailyChecklistKey, boolean> {
   return {
@@ -160,6 +160,19 @@ function createEmptyDailyChecklist(): Record<DailyChecklistKey, boolean> {
     afternoonCoffee: false,
     rest: false,
   };
+}
+
+function buildFamilyInviteWhatsappUrl(phone: string | null | undefined, text: string): string | null {
+  const digits = digitsOnly(phone ?? "");
+  if (!digits) return null;
+  const phoneNumber = digits.startsWith("55") ? digits : `55${digits}`;
+  return `https://wa.me/${phoneNumber}?text=${encodeURIComponent(text)}`;
+}
+
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  if (typeof navigator === "undefined" || !navigator.clipboard) return false;
+  await navigator.clipboard.writeText(text);
+  return true;
 }
 
 function parseDailyChecklist(raw: unknown): Record<DailyChecklistKey, boolean> {
@@ -639,6 +652,41 @@ export default function Prontuario() {
       toast({ title: "Familiar removido" });
     },
     onError: () => toast({ variant: "destructive", title: "Erro ao remover familiar" }),
+  });
+
+  const generateFamilyInvite = useMutation({
+    mutationFn: async ({ family }: { family: FamilyMember; openWhatsapp?: boolean }) => {
+      const res = await fetch(`/api/family/${family.id}/portal-invite`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.message || "Erro ao gerar convite");
+      }
+      return res.json() as Promise<FamilyPortalInviteResponse>;
+    },
+    onSuccess: async (data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/residents", selectedResident, "family"] });
+      try {
+        await copyTextToClipboard(data.whatsappText || data.url);
+      } catch {}
+
+      if (variables.openWhatsapp) {
+        const whatsappUrl = buildFamilyInviteWhatsappUrl(variables.family.phone, data.whatsappText || data.url);
+        if (whatsappUrl) window.open(whatsappUrl, "_blank", "noopener,noreferrer");
+      }
+
+      toast({
+        title: "Convite gerado",
+        description: variables.openWhatsapp
+          ? "Mensagem pronta para envio pelo WhatsApp."
+          : "Texto do convite copiado.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({ variant: "destructive", title: error.message || "Erro ao gerar convite" });
+    },
   });
 
   const printEvolutionReport = () => {
@@ -1731,9 +1779,9 @@ export default function Prontuario() {
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                               <FormField control={familyForm.control} name="portalUsername" render={({ field }) => (
                                 <FormItem>
-                                  <FormLabel className="text-xs">Usuário de acesso *</FormLabel>
+                                  <FormLabel className="text-xs">Usuário de acesso</FormLabel>
                                   <FormControl>
-                                    <Input placeholder="ex: joao.silva" {...field} data-testid="input-portal-username" />
+                                    <Input placeholder="Opcional" {...field} data-testid="input-portal-username" />
                                   </FormControl>
                                   <FormMessage />
                                 </FormItem>
@@ -1797,6 +1845,24 @@ export default function Prontuario() {
                         </div>
                         <div className="flex items-center gap-1 shrink-0">
                           <button
+                            className="h-7 w-7 flex items-center justify-center rounded-lg text-muted-foreground hover:text-cyan-600 hover:bg-cyan-50 transition-colors disabled:opacity-50"
+                            disabled={generateFamilyInvite.isPending}
+                            onClick={() => generateFamilyInvite.mutate({ family: f })}
+                            data-testid={`button-copy-family-invite-${f.id}`}
+                            title="Copiar convite"
+                          >
+                            <Link2 className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            className="h-7 w-7 flex items-center justify-center rounded-lg text-muted-foreground hover:text-green-600 hover:bg-green-50 transition-colors disabled:opacity-50"
+                            disabled={generateFamilyInvite.isPending || !digitsOnly(f.phone)}
+                            onClick={() => generateFamilyInvite.mutate({ family: f, openWhatsapp: true })}
+                            data-testid={`button-whatsapp-family-invite-${f.id}`}
+                            title="Enviar convite pelo WhatsApp"
+                          >
+                            <MessageCircle className="h-3.5 w-3.5" />
+                          </button>
+                          <button
                             className="h-7 w-7 flex items-center justify-center rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
                             onClick={() => {
                               setEditingFamily(f);
@@ -1843,11 +1909,13 @@ export default function Prontuario() {
                         {f.phone2 && <p>📞 {maskPhoneBR(f.phone2)}</p>}
                         {f.email && <p>✉️ {f.email}</p>}
                       </div>
-                      {f.portalAccess && (
+                      {(f.portalAccess || f.portalInviteExpiresAt) && (
                         <div className="mt-2 flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-lg w-fit"
                           style={{ background: "rgba(34,211,238,0.1)", color: "#22D3EE" }}>
                           <Globe className="h-3 w-3" />
-                          Portal ativo · @{f.portalUsername}
+                          {f.portalAccess
+                            ? `Portal ativo${f.portalUsername ? ` · @${f.portalUsername}` : ""}`
+                            : "Convite pendente"}
                         </div>
                       )}
                     </div>

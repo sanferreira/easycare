@@ -16,6 +16,18 @@ export const organizations = pgTable("organizations", {
   // active | inactive | restricted
   status: text("status").notNull().default("active"),
   active: boolean("active").default(true),
+  stripeCustomerId: text("stripe_customer_id"),
+  stripeSubscriptionId: text("stripe_subscription_id"),
+  stripePriceId: text("stripe_price_id"),
+  stripeSubscriptionStatus: text("stripe_subscription_status"),
+  stripeCancelAtPeriodEnd: boolean("stripe_cancel_at_period_end").default(false),
+  stripeCancelAt: timestamp("stripe_cancel_at"),
+  subscriptionCurrentPeriodEnd: timestamp("subscription_current_period_end"),
+  subscriptionUpdatedAt: timestamp("subscription_updated_at"),
+  billingMethod: text("billing_method").default("stripe"),
+  manualBillingDueDay: integer("manual_billing_due_day"),
+  paymentGraceDays: integer("payment_grace_days").default(10),
+  manualAccessUntil: timestamp("manual_access_until"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -90,6 +102,27 @@ export const pushSubscriptions = pgTable("push_subscriptions", {
   orgUserActiveIdx: index("push_subscriptions_org_user_active_idx").on(table.organizationId, table.userId, table.active),
 }));
 
+// ===== AUDIT LOGS =====
+export const auditLogs = pgTable("audit_logs", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id"),
+  userId: integer("user_id"),
+  actorName: text("actor_name"),
+  actorRole: text("actor_role"),
+  action: text("action").notNull(),
+  entityType: text("entity_type").notNull(),
+  entityId: integer("entity_id"),
+  message: text("message").notNull(),
+  metadata: text("metadata"),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => ({
+  orgCreatedIdx: index("audit_logs_org_created_idx").on(table.organizationId, table.createdAt),
+  userCreatedIdx: index("audit_logs_user_created_idx").on(table.userId, table.createdAt),
+  entityIdx: index("audit_logs_entity_idx").on(table.entityType, table.entityId),
+}));
+
 // ===== EXPRESS SESSION STORE =====
 // Managed by connect-pg-simple. Keeping it in the Drizzle schema prevents db:push
 // from treating the table as unrelated and removing it.
@@ -157,6 +190,10 @@ export const familyMembers = pgTable("family_members", {
   portalAccess: boolean("portal_access").default(false),
   portalUsername: text("portal_username"),   // login for family portal (unique)
   portalPassword: text("portal_password"),   // password for family portal
+  portalInviteTokenHash: text("portal_invite_token_hash"),
+  portalInviteExpiresAt: timestamp("portal_invite_expires_at"),
+  portalInvitedAt: timestamp("portal_invited_at"),
+  portalLastLoginAt: timestamp("portal_last_login_at"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -515,6 +552,11 @@ export const notificationsRelations = relations(notifications, ({ one }) => ({
   staff: one(staff, { fields: [notifications.staffId], references: [staff.id] }),
 }));
 
+export const auditLogsRelations = relations(auditLogs, ({ one }) => ({
+  organization: one(organizations, { fields: [auditLogs.organizationId], references: [organizations.id] }),
+  user: one(users, { fields: [auditLogs.userId], references: [users.id] }),
+}));
+
 export const shiftAssignmentsRelations = relations(shiftAssignments, ({ one }) => ({
   resident: one(residents, { fields: [shiftAssignments.residentId], references: [residents.id] }),
   staff: one(staff, { fields: [shiftAssignments.staffId], references: [staff.id] }),
@@ -605,6 +647,7 @@ export const insertOrganizationSchema = createInsertSchema(organizations).omit({
 export const insertUserSchema = createInsertSchema(users).omit({ id: true });
 export const insertNotificationSchema = createInsertSchema(notifications).omit({ id: true, createdAt: true });
 export const insertPushSubscriptionSchema = createInsertSchema(pushSubscriptions).omit({ id: true, createdAt: true });
+export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true, createdAt: true });
 export const insertResidentSchema = createInsertSchema(residents).omit({ id: true });
 export const insertMedicationSchema = createInsertSchema(medications).omit({ id: true });
 export const insertStaffSchema = createInsertSchema(staff).omit({ id: true });
@@ -669,6 +712,7 @@ export type Organization = typeof organizations.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type AppNotification = typeof notifications.$inferSelect;
 export type PushSubscriptionRecord = typeof pushSubscriptions.$inferSelect;
+export type AuditLog = typeof auditLogs.$inferSelect;
 export type Resident = typeof residents.$inferSelect;
 export type Medication = typeof medications.$inferSelect;
 export type StaffMember = typeof staff.$inferSelect;
@@ -694,6 +738,7 @@ export type InsertOrganization = z.infer<typeof insertOrganizationSchema>;
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type InsertNotification = z.infer<typeof insertNotificationSchema>;
 export type InsertPushSubscription = z.infer<typeof insertPushSubscriptionSchema>;
+export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
 export type InsertResident = z.infer<typeof insertResidentSchema>;
 export type InsertMedication = z.infer<typeof insertMedicationSchema>;
 export type InsertStaff = z.infer<typeof insertStaffSchema>;
@@ -757,5 +802,7 @@ export type SessionUser = {
   role: string;
   organizationId?: number;
   organizationName?: string;
+  organizationStatus?: "active" | "inactive" | "restricted";
+  stripeSubscriptionStatus?: string | null;
   isSuperAdmin?: boolean;
 };

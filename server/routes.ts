@@ -1,10 +1,12 @@
 ﻿import type { Express, Request, Response, NextFunction } from "express";
 import type { Server } from "http";
+import { createHash, randomBytes } from "crypto";
 import { storage } from "./storage";
 import { z } from "zod";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
+import Stripe from "stripe";
 import type { InsertNotification, Medication, SessionUser } from "@shared/schema";
 import { verifyPassword } from "./security";
 import { pool } from "./db";
@@ -31,6 +33,8 @@ type FamilyPortalSession = {
   relationship: string;
   residentId: number;
   organizationId: number;
+  organizationName?: string;
+  organizationPhone?: string | null;
 };
 
 declare module "express-session" {
@@ -78,17 +82,54 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   const authLoginRateLimiter = createLoginRateLimiter();
   const familyLoginRateLimiter = createLoginRateLimiter();
+  const publicSignupRateLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 8,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { message: "Muitas tentativas de cadastro. Tente novamente em alguns minutos." },
+  });
 
   const sanitizeUser = <T extends { password?: unknown }>(user: T) => {
     const { password: _password, ...safe } = user;
     return safe;
   };
 
-  const sanitizeFamilyMember = <T extends { portalPassword?: unknown }>(member: T) => {
-    const { portalPassword: _portalPassword, ...safe } = member;
+  const sanitizeFamilyMember = <T extends { portalPassword?: unknown; portalInviteTokenHash?: unknown }>(member: T) => {
+    const { portalPassword: _portalPassword, portalInviteTokenHash: _portalInviteTokenHash, ...safe } = member;
     return safe;
   };
   const normalizePortalUsername = (username: string) => username.trim().toLowerCase();
+
+  const logAudit = async (
+    req: Request,
+    input: {
+      action: string;
+      entityType: string;
+      entityId?: number | null;
+      message: string;
+      organizationId?: number | null;
+      metadata?: Record<string, unknown>;
+    },
+  ) => {
+    const sessionUser = req.session.user;
+    const familySession = req.session.familyMember;
+    await storage.createAuditLog({
+      organizationId: input.organizationId ?? sessionUser?.organizationId ?? familySession?.organizationId ?? null,
+      userId: sessionUser?.id ?? null,
+      actorName: sessionUser?.name ?? sessionUser?.username ?? familySession?.name ?? null,
+      actorRole: sessionUser?.role ?? (familySession ? "family" : null),
+      action: input.action,
+      entityType: input.entityType,
+      entityId: input.entityId ?? null,
+      message: input.message,
+      metadata: input.metadata ? JSON.stringify(input.metadata) : null,
+      ipAddress: req.ip,
+      userAgent: req.get("user-agent") ?? null,
+    } as any).catch((error) => {
+      console.error("[audit] falha ao registrar evento", error);
+    });
+  };
 
   const regenerateSession = (req: Request) =>
     new Promise<void>((resolve, reject) => {
@@ -118,13 +159,76 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   const ORG_STATUS_VALUES = ["active", "inactive", "restricted"] as const;
   type OrgStatus = typeof ORG_STATUS_VALUES[number];
-
-  const normalizeOrgStatus = (org?: { status?: unknown; active?: unknown }): OrgStatus => {
-    const raw = typeof org?.status === "string" ? org.status.trim().toLowerCase() : "";
-    if (raw === "active" || raw === "inactive" || raw === "restricted") {
-      return raw;
+  const DEFAULT_PAYMENT_GRACE_DAYS = 10;
+  const STRIPE_ACCESS_STATUSES = new Set(["active", "trialing"]);
+  const STRIPE_GRACE_STATUSES = new Set(["past_due", "unpaid", "incomplete"]);
+  const getPaymentGraceDays = (value: unknown) => {
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < 0) return DEFAULT_PAYMENT_GRACE_DAYS;
+    return Math.min(parsed, 60);
+  };
+  const withinPaymentGracePeriod = (since: unknown, graceDays: number, now = new Date()) => {
+    if (!since) return false;
+    const date = since instanceof Date ? new Date(since) : new Date(String(since));
+    if (Number.isNaN(date.getTime())) return false;
+    return now.getTime() <= date.getTime() + graceDays * 24 * 60 * 60 * 1000;
+  };
+  const getPaymentGraceEndsAt = (since: unknown, graceDays: number) => {
+    if (!since) return null;
+    const date = since instanceof Date ? new Date(since) : new Date(String(since));
+    if (Number.isNaN(date.getTime())) return null;
+    return new Date(date.getTime() + graceDays * 24 * 60 * 60 * 1000);
+  };
+  const daysUntilDate = (date: Date | null, now = new Date()) => {
+    if (!date) return null;
+    return Math.max(0, Math.ceil((date.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)));
+  };
+  const stripeSubscriptionAllowsAccess = (org?: {
+    stripeSubscriptionStatus?: string | null;
+    subscriptionUpdatedAt?: unknown;
+    paymentGraceDays?: unknown;
+  } | string | null) => {
+    const status = typeof org === "string" ? org : org?.stripeSubscriptionStatus;
+    if (status && STRIPE_ACCESS_STATUSES.has(status)) return true;
+    if (status && STRIPE_GRACE_STATUSES.has(status) && typeof org !== "string") {
+      return withinPaymentGracePeriod(org?.subscriptionUpdatedAt, getPaymentGraceDays(org?.paymentGraceDays));
     }
-    return org?.active === false ? "inactive" : "active";
+    return false;
+  };
+  const parseManualAccessUntil = (value: unknown): Date | null => {
+    if (!value) return null;
+    const date = value instanceof Date ? new Date(value) : new Date(String(value));
+    return Number.isNaN(date.getTime()) ? null : date;
+  };
+  const manualAccessExpired = (value: unknown, now = new Date()) => {
+    const accessUntil = parseManualAccessUntil(value);
+    return Boolean(accessUntil && accessUntil.getTime() < now.getTime());
+  };
+
+  const normalizeOrgStatus = (org?: {
+    status?: unknown;
+    active?: unknown;
+    stripeSubscriptionStatus?: string | null;
+    subscriptionUpdatedAt?: unknown;
+    paymentGraceDays?: unknown;
+    manualAccessUntil?: unknown;
+  }): OrgStatus => {
+    const raw = typeof org?.status === "string" ? org.status.trim().toLowerCase() : "";
+    const normalized = raw === "active" || raw === "inactive" || raw === "restricted"
+      ? raw
+      : org?.active === false ? "inactive" : "active";
+    if (normalized === "restricted" && stripeSubscriptionAllowsAccess(org)) {
+      return "active";
+    }
+    const hasStripeStatus = typeof org?.stripeSubscriptionStatus === "string" && org.stripeSubscriptionStatus.trim().length > 0;
+    if (
+      normalized === "active"
+      && !stripeSubscriptionAllowsAccess(org)
+      && (manualAccessExpired(org?.manualAccessUntil) || hasStripeStatus)
+    ) {
+      return "restricted";
+    }
+    return normalized;
   };
   const parseOrgStatusInput = (value: unknown): OrgStatus | null => {
     if (typeof value !== "string") return null;
@@ -132,6 +236,443 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return ORG_STATUS_VALUES.includes(normalized as OrgStatus)
       ? normalized as OrgStatus
       : null;
+  };
+  const BILLING_API_PATH_PREFIX = "/api/billing";
+  const STRIPE_WEBHOOK_PATH = "/api/stripe/webhook";
+  const isBillingApiPath = (path: string) => path.startsWith(BILLING_API_PATH_PREFIX);
+  const BILLING_PLAN_VALUES = ["monthly", "semiannual", "annual"] as const;
+  type BillingPlan = typeof BILLING_PLAN_VALUES[number];
+  const BILLING_PLAN_PATIENT_LIMITS: Record<BillingPlan, number> = {
+    monthly: 30,
+    semiannual: 40,
+    annual: 60,
+  };
+  const parseBillingPlanInput = (value: unknown): BillingPlan =>
+    typeof value === "string" && BILLING_PLAN_VALUES.includes(value as BillingPlan)
+      ? value as BillingPlan
+      : "monthly";
+  const getBillingPlanLabel = (plan: BillingPlan) =>
+    plan === "annual" ? "anual" : plan === "semiannual" ? "semestral" : "mensal";
+  const getBillingPlanPatientLimit = (plan: BillingPlan) => BILLING_PLAN_PATIENT_LIMITS[plan];
+  const getBillingPlanForStripePriceId = (priceId?: string | null): BillingPlan | null => {
+    const normalized = priceId?.trim();
+    if (!normalized) return null;
+
+    const configuredPriceIds: Array<[BillingPlan, string]> = [
+      ["monthly", process.env.STRIPE_MONTHLY_PRICE_ID?.trim() || process.env.STRIPE_PRICE_ID?.trim() || ""],
+      ["semiannual", process.env.STRIPE_SEMIANNUAL_PRICE_ID?.trim() || ""],
+      ["annual", process.env.STRIPE_ANNUAL_PRICE_ID?.trim() || ""],
+    ];
+
+    return configuredPriceIds.find(([, configuredPriceId]) => configuredPriceId === normalized)?.[0] ?? null;
+  };
+  let stripeClient: Stripe | null = null;
+  const getStripeClient = () => {
+    const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+    if (!stripeSecretKey) {
+      throw new Error("STRIPE_SECRET_KEY não configurada.");
+    }
+    if (!stripeClient) {
+      stripeClient = new Stripe(stripeSecretKey);
+    }
+    return stripeClient;
+  };
+  const getStripeMonthlyPriceId = () => {
+    const priceId = process.env.STRIPE_MONTHLY_PRICE_ID?.trim() || process.env.STRIPE_PRICE_ID?.trim();
+    if (!priceId) {
+      throw new Error("STRIPE_PRICE_ID não configurado.");
+    }
+    return priceId;
+  };
+  const getStripeSemiannualPriceId = () => process.env.STRIPE_SEMIANNUAL_PRICE_ID?.trim() || "";
+  const getStripeAnnualPriceId = () => process.env.STRIPE_ANNUAL_PRICE_ID?.trim() || "";
+  const getStripePortalConfigurationIdFromEnv = () => process.env.STRIPE_PORTAL_CONFIGURATION_ID?.trim() || "";
+  const getStripePriceIdForPlan = (plan: BillingPlan) => {
+    if (plan === "annual") {
+      const priceId = getStripeAnnualPriceId();
+      if (!priceId) {
+        throw new Error("STRIPE_ANNUAL_PRICE_ID não configurado.");
+      }
+      return priceId;
+    }
+    if (plan === "semiannual") {
+      const priceId = getStripeSemiannualPriceId();
+      if (!priceId) {
+        throw new Error("STRIPE_SEMIANNUAL_PRICE_ID não configurado.");
+      }
+      return priceId;
+    }
+    return getStripeMonthlyPriceId();
+  };
+  const getConfiguredStripePlanPriceIds = () => {
+    const priceIds = [
+      getStripeMonthlyPriceId(),
+      getStripeSemiannualPriceId(),
+      getStripeAnnualPriceId(),
+    ].filter((priceId): priceId is string => Boolean(priceId));
+    return Array.from(new Set(priceIds));
+  };
+  const formatStripeAmount = (amount: number | null | undefined, currency: string | null | undefined) => {
+    if (typeof amount !== "number" || !currency) return null;
+    return new Intl.NumberFormat("pt-BR", {
+      style: "currency",
+      currency: currency.toUpperCase(),
+    }).format(amount / 100);
+  };
+  const buildBillingPlanOption = async (plan: BillingPlan) => {
+    const stripe = getStripeClient();
+    const fallbackName =
+      plan === "annual" ? "Plano anual" : plan === "semiannual" ? "Plano semestral" : "Plano mensal";
+    const fallbackInterval = plan === "annual" ? "year" : "month";
+    const fallbackIntervalCount = plan === "semiannual" ? 6 : 1;
+    const priceId =
+      plan === "annual"
+        ? getStripeAnnualPriceId()
+        : plan === "semiannual"
+          ? getStripeSemiannualPriceId()
+          : getStripeMonthlyPriceId();
+    if (!priceId) {
+      return {
+        id: plan,
+        name: fallbackName,
+        configured: false,
+        patientLimit: getBillingPlanPatientLimit(plan),
+        amount: null,
+        currency: "brl",
+        interval: fallbackInterval,
+        intervalCount: fallbackIntervalCount,
+        formattedAmount: null,
+      };
+    }
+
+    const price = await stripe.prices.retrieve(priceId);
+    const currency = price.currency || "brl";
+    return {
+      id: plan,
+      name: price.nickname || fallbackName,
+      configured: true,
+      patientLimit: getBillingPlanPatientLimit(plan),
+      amount: price.unit_amount ?? null,
+      currency,
+      interval: price.recurring?.interval ?? fallbackInterval,
+      intervalCount: price.recurring?.interval_count ?? fallbackIntervalCount,
+      formattedAmount: formatStripeAmount(price.unit_amount, currency),
+    };
+  };
+  const getAppBaseUrl = (req: Request) => {
+    const configuredUrl = process.env.APP_PUBLIC_URL?.trim().replace(/\/+$/, "");
+    if (configuredUrl) return configuredUrl;
+    return `${req.protocol}://${req.get("host")}`;
+  };
+  let stripePortalConfigurationId: string | null = null;
+  const buildStripePortalFeatures = (
+    productId: string,
+    priceIds: string[],
+  ): Stripe.BillingPortal.ConfigurationCreateParams.Features => ({
+    customer_update: {
+      enabled: true,
+      allowed_updates: ["name", "email", "phone", "address", "tax_id"],
+    },
+    invoice_history: { enabled: true },
+    payment_method_update: { enabled: true },
+    subscription_cancel: {
+      enabled: true,
+      mode: "at_period_end",
+      proration_behavior: "none",
+      cancellation_reason: {
+        enabled: true,
+        options: ["too_expensive", "missing_features", "unused", "customer_service", "other"],
+      },
+    },
+    subscription_update: {
+      enabled: true,
+      default_allowed_updates: ["price"],
+      products: [{
+        product: productId,
+        prices: priceIds,
+      }],
+      proration_behavior: "always_invoice",
+      billing_cycle_anchor: "now",
+      trial_update_behavior: "continue_trial",
+      schedule_at_period_end: {
+        conditions: [
+          { type: "decreasing_item_amount" },
+          { type: "shortening_interval" },
+        ],
+      },
+    },
+  });
+  const getEasyCareStripePortalConfigurationId = async (req: Request) => {
+    const configuredPortalId = getStripePortalConfigurationIdFromEnv();
+    if (configuredPortalId) return configuredPortalId;
+    if (stripePortalConfigurationId) return stripePortalConfigurationId;
+
+    const stripe = getStripeClient();
+    const priceIds = getConfiguredStripePlanPriceIds();
+    const prices = await Promise.all(priceIds.map((priceId) => stripe.prices.retrieve(priceId)));
+    const productIds = new Set(
+      prices.map((price) => typeof price.product === "string" ? price.product : price.product.id),
+    );
+    if (productIds.size !== 1) {
+      throw new Error("Os preços mensal, semestral e anual precisam estar no mesmo produto Stripe para permitir troca de plano.");
+    }
+
+    const productId = Array.from(productIds)[0];
+    const configurationName = "EasyCare - Portal de assinaturas";
+    const portalPayload: Stripe.BillingPortal.ConfigurationCreateParams = {
+      name: configurationName,
+      default_return_url: `${getAppBaseUrl(req)}/billing`,
+      metadata: {
+        easycare: "subscription_portal",
+        policy: "upgrade_now_downgrade_period_end",
+      },
+      business_profile: {
+        headline: "Gerencie sua assinatura EasyCare",
+      },
+      features: buildStripePortalFeatures(productId, priceIds),
+    };
+
+    const existingConfigurations = await stripe.billingPortal.configurations.list({
+      active: true,
+      limit: 100,
+    });
+    const existing = existingConfigurations.data.find((configuration) =>
+      configuration.metadata?.easycare === "subscription_portal"
+      || configuration.name === configurationName
+    );
+
+    if (existing) {
+      const updated = await stripe.billingPortal.configurations.update(existing.id, portalPayload);
+      stripePortalConfigurationId = updated.id;
+      return updated.id;
+    }
+
+    const created = await stripe.billingPortal.configurations.create(portalPayload);
+    stripePortalConfigurationId = created.id;
+    return created.id;
+  };
+  const orgStatusForStripeSubscription = (status: string | null | undefined): OrgStatus =>
+    status && (STRIPE_ACCESS_STATUSES.has(status) || STRIPE_GRACE_STATUSES.has(status))
+      ? "active"
+      : "restricted";
+  const resolveBillingAccessState = (org: {
+    status?: unknown;
+    stripeSubscriptionStatus?: string | null;
+    stripeCancelAtPeriodEnd?: boolean | null;
+    manualAccessUntil?: unknown;
+    billingMethod?: string | null;
+  }, normalizedStatus: OrgStatus) => {
+    if (normalizedStatus === "inactive") return "inactive";
+    if (normalizedStatus === "restricted") return "restricted";
+    if (org.stripeCancelAtPeriodEnd) return "cancel_scheduled";
+    if (org.stripeSubscriptionStatus === "trialing") return "trialing";
+    if (isStripePaymentIssueStatus(org.stripeSubscriptionStatus)) return "grace_period";
+    if (!org.stripeSubscriptionStatus && org.manualAccessUntil) return org.billingMethod === "manual_boleto" ? "manual_boleto" : "manual_access";
+    return "active";
+  };
+  const isStripePaymentIssueStatus = (status?: string | null) =>
+    Boolean(status && STRIPE_GRACE_STATUSES.has(status));
+  const getOrganizationOnboardingSummary = async (organizationId: number) => {
+    const organization = await storage.getOrganization(organizationId);
+    if (!organization) return null;
+
+    const [staffMembers, residents, shifts, locations, contracts, medications] = await Promise.all([
+      storage.getStaff(organizationId),
+      storage.getResidents(organizationId, { search: "", status: "active" }),
+      storage.getShiftAssignments(organizationId),
+      storage.getTimeClockLocations(organizationId),
+      storage.getContracts(organizationId),
+      storage.getMedications(organizationId),
+    ]);
+    const familyGroups = await Promise.all(
+      residents.map((resident) => storage.getFamilyMembers(organizationId, resident.id)),
+    );
+    const family = familyGroups.flat();
+    const checks = {
+      billing: normalizeOrgStatus(organization) === "active",
+      staff: staffMembers.some((member) => member.active !== false),
+      residents: residents.length > 0,
+      shifts: shifts.length > 0,
+      timeClock: locations.length > 0,
+      clinical: medications.some((medication) => medication.status === "active"),
+      finance: contracts.some((contract) => contract.status === "active"),
+      familyPortal: family.some((member) => member.portalAccess || member.portalInvitedAt),
+    };
+    const total = Object.keys(checks).length;
+    const completed = Object.values(checks).filter(Boolean).length;
+
+    return {
+      organizationId,
+      completed,
+      total,
+      percent: Math.round((completed / total) * 100),
+      checks,
+    };
+  };
+  const getStripeCustomerId = (customer: string | Stripe.Customer | Stripe.DeletedCustomer | null) => {
+    if (typeof customer === "string") return customer;
+    return customer?.id ?? null;
+  };
+  const getStripeSubscriptionPriceId = (subscription: Stripe.Subscription) =>
+    subscription.items.data[0]?.price?.id ?? null;
+  const stripeTimestampToDate = (timestamp?: number | null) =>
+    typeof timestamp === "number" ? new Date(timestamp * 1000) : null;
+  const getStripeSubscriptionPeriodEnd = (subscription: Stripe.Subscription) => {
+    const rawSubscription = subscription as Stripe.Subscription & { current_period_end?: number | null };
+    return stripeTimestampToDate(rawSubscription.current_period_end);
+  };
+  const getStripeSubscriptionCancelAt = (subscription: Stripe.Subscription) => {
+    const rawSubscription = subscription as Stripe.Subscription & {
+      cancel_at?: number | null;
+      cancel_at_period_end?: boolean | null;
+      current_period_end?: number | null;
+    };
+    const timestamp = rawSubscription.cancel_at ?? (rawSubscription.cancel_at_period_end ? rawSubscription.current_period_end : null);
+    return typeof timestamp === "number" ? new Date(timestamp * 1000) : null;
+  };
+  const checkoutConfigured = () => Boolean(process.env.STRIPE_SECRET_KEY && (process.env.STRIPE_MONTHLY_PRICE_ID || process.env.STRIPE_PRICE_ID));
+  const portalConfigured = () => Boolean(process.env.STRIPE_SECRET_KEY);
+  const toBillingClientErrorMessage = (error: unknown, fallback: string) => {
+    const raw = error instanceof Error ? error.message : "";
+    const normalized = raw.toLowerCase();
+    if (normalized.includes("stripe_secret_key") || normalized.includes("price_id") || normalized.includes("não configurad")) {
+      return "O checkout ainda não está pronto para uso. Fale com o suporte EasyCare para concluir a ativação.";
+    }
+    if (normalized.includes("mesmo produto stripe")) {
+      return "A troca de plano ainda precisa de um ajuste na Stripe. Fale com o suporte EasyCare para continuar.";
+    }
+    if (normalized.includes("não retornou")) {
+      return "Não conseguimos abrir o checkout agora. Tente novamente em instantes ou fale com o suporte.";
+    }
+    if (normalized.includes("cliente stripe ainda não vinculado")) {
+      return "A assinatura ainda não foi criada. Ative um plano antes de abrir o portal da Stripe.";
+    }
+    return raw || fallback;
+  };
+  const getStripeTrialDays = () => {
+    const rawTrialDays = process.env.STRIPE_TRIAL_DAYS?.trim();
+    const parsedTrialDays = rawTrialDays ? Number(rawTrialDays) : 7;
+    if (!Number.isInteger(parsedTrialDays) || parsedTrialDays < 0) return 7;
+    return Math.min(parsedTrialDays, 365);
+  };
+  const FAMILY_PORTAL_INVITE_DAYS = 14;
+  const hashFamilyPortalInviteToken = (token: string) =>
+    createHash("sha256").update(token).digest("hex");
+  const buildFamilyPortalInviteUrl = (req: Request, token: string) =>
+    `${getAppBaseUrl(req)}/portal/convite/${token}`;
+  const buildFamilyPortalSession = (
+    member: { id: number; name: string; relationship: string; residentId: number; organizationId: number },
+    organization: { name: string; phone?: string | null },
+  ): FamilyPortalSession => ({
+    id: member.id,
+    name: member.name,
+    relationship: member.relationship,
+    residentId: member.residentId,
+    organizationId: member.organizationId,
+    organizationName: organization.name,
+    organizationPhone: organization.phone ?? null,
+  });
+  const createCheckoutSessionForOrganization = async (
+    req: Request,
+    organization: {
+      id: number;
+      name: string;
+      email?: string | null;
+      stripeCustomerId?: string | null;
+    },
+    options?: { includeTrial?: boolean; embedded?: boolean; plan?: BillingPlan },
+  ) => {
+    const stripe = getStripeClient();
+    const baseUrl = getAppBaseUrl(req);
+    const plan = options?.plan ?? "monthly";
+    const priceId = getStripePriceIdForPlan(plan);
+    const patientLimit = getBillingPlanPatientLimit(plan);
+    const subscriptionData: Stripe.Checkout.SessionCreateParams.SubscriptionData = {
+      metadata: {
+        organizationId: String(organization.id),
+        billingPlan: plan,
+        patientLimit: String(patientLimit),
+      },
+    };
+    const trialDays = options?.includeTrial ? getStripeTrialDays() : 0;
+    if (trialDays > 0) {
+      subscriptionData.trial_period_days = trialDays;
+    }
+
+    const baseSessionParams: Stripe.Checkout.SessionCreateParams = {
+      mode: "subscription",
+      customer: organization.stripeCustomerId ?? undefined,
+      customer_email: organization.stripeCustomerId ? undefined : organization.email ?? undefined,
+      client_reference_id: String(organization.id),
+      line_items: [{ price: priceId, quantity: 1 }],
+      metadata: {
+        organizationId: String(organization.id),
+        billingPlan: plan,
+        stripePriceId: priceId,
+        patientLimit: String(patientLimit),
+      },
+      subscription_data: subscriptionData,
+      allow_promotion_codes: process.env.STRIPE_ALLOW_PROMOTION_CODES === "true",
+      locale: "pt-BR",
+    };
+
+    if (options?.embedded) {
+      return await stripe.checkout.sessions.create({
+        ...baseSessionParams,
+        ui_mode: "embedded_page",
+        return_url: `${baseUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
+        redirect_on_completion: "if_required",
+      });
+    }
+
+    return await stripe.checkout.sessions.create({
+      ...baseSessionParams,
+      success_url: `${baseUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${baseUrl}/billing?checkout=cancelled`,
+    });
+  };
+  const parseManualAccessUntilInput = (value: unknown): Date | null | undefined => {
+    if (value === undefined) return undefined;
+    if (value === null || value === "") return null;
+    if (typeof value !== "string" && !(value instanceof Date)) {
+      throw new Error("Data de acesso manual inválida.");
+    }
+
+    const raw = value instanceof Date ? value.toISOString() : value.trim();
+    const dateOnlyMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const parsed = dateOnlyMatch
+      ? new Date(Number(dateOnlyMatch[1]), Number(dateOnlyMatch[2]) - 1, Number(dateOnlyMatch[3]), 23, 59, 59, 999)
+      : new Date(raw);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new Error("Data de acesso manual inválida.");
+    }
+    return parsed;
+  };
+  const BILLING_METHOD_VALUES = ["stripe", "manual_boleto"] as const;
+  type BillingMethod = typeof BILLING_METHOD_VALUES[number];
+  const parseBillingMethodInput = (value: unknown): BillingMethod | undefined => {
+    if (value === undefined) return undefined;
+    if (value === null || value === "") return "stripe";
+    if (typeof value !== "string") throw new Error("Forma de cobrança inválida.");
+    const normalized = value.trim().toLowerCase();
+    if (!BILLING_METHOD_VALUES.includes(normalized as BillingMethod)) {
+      throw new Error("Forma de cobrança inválida.");
+    }
+    return normalized as BillingMethod;
+  };
+  const parseNullableBoundedInteger = (
+    value: unknown,
+    fieldLabel: string,
+    min: number,
+    max: number,
+  ): number | null | undefined => {
+    if (value === undefined) return undefined;
+    if (value === null || value === "") return null;
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+      throw new Error(`${fieldLabel} deve ser um número entre ${min} e ${max}.`);
+    }
+    return parsed;
   };
   const ENV_SETTINGS_API_PATH = "/api/environment-settings";
   const API_MODULE_ROUTE_RULES: Array<{ pattern: RegExp; route: ModuleRoute }> = [
@@ -235,7 +776,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   };
   const getBlockedOrganizationMessage = (status: OrgStatus): string =>
     status === "restricted"
-      ? "Acesso da organização restrito. Entre em contato com o suporte."
+      ? "Pagamento pendente. Acesse a cobrança para liberar o sistema."
       : "Organização inativa. Acesso bloqueado.";
   const destroySession = (req: Request) =>
     new Promise<void>((resolve) => {
@@ -256,7 +797,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       const organizationStatus = normalizeOrgStatus(organization);
-      if (organizationStatus !== "active") {
+      if (organizationStatus === "inactive") {
         await destroySession(req);
         res.clearCookie("easycare.sid");
         return res.status(403).json({ message: getBlockedOrganizationMessage(organizationStatus) });
@@ -264,6 +805,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const environmentSettings = parseEnvironmentSettingsFromOrganization(organization);
       res.locals.environmentSettings = environmentSettings;
+      if (organizationStatus === "restricted") {
+        req.session.user = {
+          ...user,
+          organizationName: organization.name,
+          organizationStatus,
+          stripeSubscriptionStatus: organization.stripeSubscriptionStatus ?? null,
+        };
+
+        if (isBillingApiPath(req.path)) return next();
+        return res.status(402).json({ message: getBlockedOrganizationMessage(organizationStatus) });
+      }
+
+      req.session.user = {
+        ...user,
+        organizationName: organization.name,
+        organizationStatus,
+        stripeSubscriptionStatus: organization.stripeSubscriptionStatus ?? null,
+      };
       const moduleRoute = resolveModuleRouteFromApiPath(req.path);
       const permissionAction = resolveModulePermissionActionFromMethod(req.method);
       const allowEnvironmentSettingsRead =
@@ -469,6 +1028,62 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       console.error("[notifications] erro ao criar notificações internas", error);
     }
   };
+  const ensureBillingStatusNotification = async (
+    orgId: number,
+    userId: number,
+    organization: {
+      id: number;
+      status?: unknown;
+      active?: unknown;
+      stripeSubscriptionStatus?: string | null;
+      stripeCancelAtPeriodEnd?: boolean | null;
+      subscriptionUpdatedAt?: unknown;
+      paymentGraceDays?: unknown;
+      manualAccessUntil?: unknown;
+      billingMethod?: string | null;
+    },
+  ) => {
+    const normalizedStatus = normalizeOrgStatus(organization);
+    const billingAccessState = resolveBillingAccessState(organization, normalizedStatus);
+    const graceDays = getPaymentGraceDays(organization.paymentGraceDays);
+    const graceEndsAt = isStripePaymentIssueStatus(organization.stripeSubscriptionStatus)
+      ? getPaymentGraceEndsAt(organization.subscriptionUpdatedAt, graceDays)
+      : null;
+    const daysLeft = daysUntilDate(graceEndsAt);
+
+    let payload: Omit<InternalNotificationPayload, "userId"> | null = null;
+    if (billingAccessState === "restricted") {
+      payload = {
+        type: NOTIFICATION_TYPES.billingAccessRestricted,
+        severity: "error",
+        sourceModule: "billing",
+        title: "Acesso restrito",
+        message: "O acesso da organização está restrito por pagamento pendente. Regularize a assinatura para liberar os módulos.",
+        actionUrl: "/billing",
+        entityType: "organization",
+        entityId: orgId,
+        dedupeKey: `billing:restricted:${new Date().toISOString().slice(0, 10)}`,
+      };
+    } else if (billingAccessState === "grace_period") {
+      const daysText = typeof daysLeft === "number" && daysLeft > 0
+        ? `Faltam ${daysLeft} dia${daysLeft === 1 ? "" : "s"} para o bloqueio.`
+        : "O prazo de regularização está no limite.";
+      payload = {
+        type: NOTIFICATION_TYPES.billingGracePeriod,
+        severity: "warning",
+        sourceModule: "billing",
+        title: "Pagamento venceu",
+        message: `${daysText} Atualize o pagamento para manter o acesso sem interrupção.`,
+        actionUrl: "/billing",
+        entityType: "organization",
+        entityId: orgId,
+        dedupeKey: `billing:grace:${daysLeft ?? "unknown"}`,
+      };
+    }
+
+    if (!payload) return;
+    await safeCreateInternalNotifications(orgId, [{ ...payload, userId }]);
+  };
   const notifyUsers = async (
     orgId: number,
     userIds: Array<number | null | undefined>,
@@ -616,6 +1231,99 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return linkedStaff.id;
   };
 
+  const resolveOrganizationForStripeSubscription = async (subscription: Stripe.Subscription) => {
+    const metadataOrgId = Number(subscription.metadata?.organizationId);
+    if (Number.isInteger(metadataOrgId) && metadataOrgId > 0) {
+      const organization = await storage.getOrganization(metadataOrgId);
+      if (organization) return organization;
+    }
+
+    const bySubscription = await storage.getOrganizationByStripeSubscriptionId(subscription.id);
+    if (bySubscription) return bySubscription;
+
+    const customerId = getStripeCustomerId(subscription.customer);
+    if (!customerId) return undefined;
+    return await storage.getOrganizationByStripeCustomerId(customerId);
+  };
+
+  const syncStripeSubscriptionToOrganization = async (subscription: Stripe.Subscription) => {
+    const organization = await resolveOrganizationForStripeSubscription(subscription);
+    if (!organization) {
+      console.warn(`[stripe] organização não encontrada para assinatura ${subscription.id}`);
+      return;
+    }
+
+    const customerId = getStripeCustomerId(subscription.customer);
+    const subscriptionStatus = subscription.status ?? "unknown";
+    const stripePriceId = getStripeSubscriptionPriceId(subscription) ?? organization.stripePriceId ?? null;
+    const billingPlan = getBillingPlanForStripePriceId(stripePriceId);
+    const planPatientLimit = billingPlan ? getBillingPlanPatientLimit(billingPlan) : null;
+    const subscriptionCancelAtPeriodEnd = Boolean(subscription.cancel_at_period_end);
+    const nextOrgStatus = orgStatusForStripeSubscription(subscriptionStatus);
+    const previousStatusWasGrace = isStripePaymentIssueStatus(organization.stripeSubscriptionStatus);
+    const nextStatusIsGrace = isStripePaymentIssueStatus(subscriptionStatus);
+    const subscriptionUpdatedAt =
+      nextStatusIsGrace && previousStatusWasGrace && organization.subscriptionUpdatedAt
+        ? organization.subscriptionUpdatedAt
+        : new Date();
+    return await storage.updateOrganization(organization.id, {
+      stripeCustomerId: customerId ?? organization.stripeCustomerId ?? null,
+      stripeSubscriptionId: subscription.id,
+      stripePriceId,
+      stripeSubscriptionStatus: subscriptionStatus,
+      stripeCancelAtPeriodEnd: subscriptionCancelAtPeriodEnd,
+      stripeCancelAt: subscriptionCancelAtPeriodEnd ? getStripeSubscriptionCancelAt(subscription) : null,
+      subscriptionCurrentPeriodEnd: getStripeSubscriptionPeriodEnd(subscription),
+      subscriptionUpdatedAt,
+      ...(planPatientLimit ? { capacity: planPatientLimit } : {}),
+      status: nextOrgStatus,
+      active: nextOrgStatus === "active",
+    });
+  };
+
+  const resolveOrganizationForCheckoutSession = async (session: Stripe.Checkout.Session) => {
+    const metadataOrgId = Number(session.metadata?.organizationId || session.client_reference_id);
+    if (Number.isInteger(metadataOrgId) && metadataOrgId > 0) {
+      const organization = await storage.getOrganization(metadataOrgId);
+      if (organization) return organization;
+    }
+
+    const subscriptionId = typeof session.subscription === "string" ? session.subscription : session.subscription?.id;
+    if (subscriptionId) {
+      const bySubscription = await storage.getOrganizationByStripeSubscriptionId(subscriptionId);
+      if (bySubscription) return bySubscription;
+    }
+
+    const customerId = getStripeCustomerId(session.customer);
+    if (!customerId) return undefined;
+    return await storage.getOrganizationByStripeCustomerId(customerId);
+  };
+
+  const syncCheckoutSessionToOrganization = async (session: Stripe.Checkout.Session) => {
+    const stripe = getStripeClient();
+    const organization = await resolveOrganizationForCheckoutSession(session);
+    if (!organization) {
+      console.warn(`[stripe] organização não encontrada para checkout session ${session.id}`);
+      return;
+    }
+
+    const customerId = getStripeCustomerId(session.customer);
+    const subscriptionId = typeof session.subscription === "string" ? session.subscription : session.subscription?.id;
+    if (subscriptionId) {
+      const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+      await syncStripeSubscriptionToOrganization(subscription);
+      return;
+    }
+
+    await storage.updateOrganization(organization.id, {
+      stripeCustomerId: customerId ?? organization.stripeCustomerId ?? null,
+      stripeSubscriptionStatus: session.payment_status ?? "checkout_completed",
+      subscriptionUpdatedAt: new Date(),
+      status: session.payment_status === "paid" ? "active" : "restricted",
+      active: session.payment_status === "paid",
+    });
+  };
+
   // ===== AUTH =====
   app.post("/api/auth/login", authLoginRateLimiter, async (req, res) => {
     const { username, password, organizationCnpj, organizationId } = req.body;
@@ -644,7 +1352,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     if (organization) {
       const organizationStatus = normalizeOrgStatus(organization);
-      if (organizationStatus !== "active") {
+      if (organizationStatus === "inactive") {
         return res.status(403).json({ message: getBlockedOrganizationMessage(organizationStatus) });
       }
 
@@ -668,8 +1376,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         role: user.role,
         organizationId: organization.id,
         organizationName: organization.name,
+        organizationStatus,
+        stripeSubscriptionStatus: organization.stripeSubscriptionStatus ?? null,
         isSuperAdmin: false,
       };
+      await logAudit(req, {
+        action: "login",
+        entityType: "user",
+        entityId: user.id,
+        organizationId: organization.id,
+        message: `${user.name} entrou no sistema.`,
+      });
       return res.json({ success: true, user: req.session.user });
     }
 
@@ -698,16 +1415,472 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       organizationName: undefined,
       isSuperAdmin: true,
     };
+    await logAudit(req, {
+      action: "login",
+      entityType: "superadmin",
+      entityId: superAdmin.id,
+      organizationId: null,
+      message: `${superAdmin.name} entrou como superadmin.`,
+    });
     res.json({ success: true, user: req.session.user });
   });
 
-  app.post("/api/auth/logout", (req, res) => {
+  app.post("/api/auth/logout", async (req, res) => {
+    if (req.session.user) {
+      await logAudit(req, {
+        action: "logout",
+        entityType: req.session.user.isSuperAdmin ? "superadmin" : "user",
+        entityId: req.session.user.id ?? null,
+        message: `${req.session.user.name} saiu do sistema.`,
+      });
+    }
     req.session.destroy(() => {
       res.clearCookie("easycare.sid");
       res.json({ success: true });
     });
   });
-  app.get("/api/auth/me", (req, res) => { res.json(req.session.user || null); });
+  app.get("/api/auth/me", async (req, res) => {
+    const sessionUser = req.session.user;
+    if (!sessionUser) return res.json(null);
+    if (sessionUser.isSuperAdmin || !sessionUser.organizationId) {
+      return res.json(sessionUser);
+    }
+
+    const organization = await storage.getOrganization(sessionUser.organizationId);
+    if (!organization) {
+      await destroySession(req);
+      res.clearCookie("easycare.sid");
+      return res.json(null);
+    }
+
+    const organizationStatus = normalizeOrgStatus(organization);
+    if (organizationStatus === "inactive") {
+      await destroySession(req);
+      res.clearCookie("easycare.sid");
+      return res.json(null);
+    }
+
+    req.session.user = {
+      ...sessionUser,
+      organizationName: organization.name,
+      organizationStatus,
+      stripeSubscriptionStatus: organization.stripeSubscriptionStatus ?? null,
+    };
+    res.json(req.session.user);
+  });
+
+  app.get("/api/audit-logs", requireAuth, async (req, res) => {
+    const sessionUser = req.session.user;
+    if (!sessionUser) return res.status(401).json({ message: "Não autorizado" });
+
+    const requestedOrgId = Number(req.query.organizationId);
+    const organizationId = sessionUser.isSuperAdmin
+      ? Number.isInteger(requestedOrgId) && requestedOrgId > 0 ? requestedOrgId : undefined
+      : sessionUser.organizationId;
+
+    const action = typeof req.query.action === "string" && req.query.action.trim()
+      ? req.query.action.trim()
+      : undefined;
+    const entityType = typeof req.query.entityType === "string" && req.query.entityType.trim()
+      ? req.query.entityType.trim()
+      : undefined;
+    const limitValue = Number(req.query.limit);
+
+    const logs = await storage.getAuditLogs({
+      organizationId,
+      action,
+      entityType,
+      limit: Number.isFinite(limitValue) ? limitValue : 100,
+    });
+    res.json(logs);
+  });
+
+  // ===== BILLING / STRIPE =====
+  app.get("/api/billing/plans", requireAuth, async (req, res) => {
+    try {
+      const sessionUser = req.session.user;
+      if (!sessionUser?.organizationId || sessionUser.isSuperAdmin) {
+        return res.status(400).json({ message: "Planos disponíveis apenas para organizações." });
+      }
+
+      if (!process.env.STRIPE_SECRET_KEY || !(process.env.STRIPE_MONTHLY_PRICE_ID || process.env.STRIPE_PRICE_ID)) {
+        return res.json({
+          plans: [
+            { id: "monthly", name: "Plano mensal", configured: false, patientLimit: getBillingPlanPatientLimit("monthly"), amount: null, currency: "brl", interval: "month", intervalCount: 1, formattedAmount: null },
+            { id: "semiannual", name: "Plano semestral", configured: false, patientLimit: getBillingPlanPatientLimit("semiannual"), amount: null, currency: "brl", interval: "month", intervalCount: 6, formattedAmount: null },
+            { id: "annual", name: "Plano anual", configured: false, patientLimit: getBillingPlanPatientLimit("annual"), amount: null, currency: "brl", interval: "year", intervalCount: 1, formattedAmount: null },
+          ],
+          savings: null,
+          savingsByPlan: { semiannual: null, annual: null },
+        });
+      }
+
+      const monthlyPlan = await buildBillingPlanOption("monthly");
+      const semiannualPlan = getStripeSemiannualPriceId()
+        ? await buildBillingPlanOption("semiannual")
+        : {
+          id: "semiannual" as BillingPlan,
+          name: "Plano semestral",
+          configured: false,
+          patientLimit: getBillingPlanPatientLimit("semiannual"),
+          amount: null,
+          currency: monthlyPlan.currency ?? "brl",
+          interval: "month",
+          intervalCount: 6,
+          formattedAmount: null,
+        };
+      const annualPlan = getStripeAnnualPriceId()
+        ? await buildBillingPlanOption("annual")
+        : {
+          id: "annual" as BillingPlan,
+          name: "Plano anual",
+          configured: false,
+          patientLimit: getBillingPlanPatientLimit("annual"),
+          amount: null,
+          currency: monthlyPlan.currency ?? "brl",
+          interval: "year",
+          intervalCount: 1,
+          formattedAmount: null,
+        };
+
+      const buildPlanSavings = (
+        plan: typeof monthlyPlan,
+        periodCount: number,
+      ) => {
+        const comparisonTotal = typeof monthlyPlan.amount === "number" ? monthlyPlan.amount * periodCount : null;
+        const planAmount = typeof plan.amount === "number" ? plan.amount : null;
+        const savingsAmount =
+          typeof comparisonTotal === "number" && typeof planAmount === "number"
+            ? Math.max(0, comparisonTotal - planAmount)
+            : null;
+        const savingsPercent =
+          typeof savingsAmount === "number" && comparisonTotal && comparisonTotal > 0
+            ? Math.round((savingsAmount / comparisonTotal) * 100)
+            : null;
+        const monthlyEquivalent =
+          typeof planAmount === "number" ? Math.round(planAmount / periodCount) : null;
+
+        return typeof savingsAmount === "number"
+          ? {
+            amount: savingsAmount,
+            percent: savingsPercent,
+            formattedAmount: formatStripeAmount(savingsAmount, monthlyPlan.currency),
+            monthlyEquivalent,
+            formattedMonthlyEquivalent: formatStripeAmount(monthlyEquivalent, plan.currency),
+            comparisonTotal,
+            formattedComparisonTotal: formatStripeAmount(comparisonTotal, monthlyPlan.currency),
+            periodCount,
+          }
+          : null;
+      };
+      const semiannualSavings = buildPlanSavings(semiannualPlan, 6);
+      const annualSavings = buildPlanSavings(annualPlan, 12);
+
+      res.json({
+        plans: [monthlyPlan, semiannualPlan, annualPlan],
+        savings: annualSavings
+          ? {
+            amount: annualSavings.amount,
+            percent: annualSavings.percent,
+            formattedAmount: annualSavings.formattedAmount,
+            annualMonthlyEquivalent: annualSavings.monthlyEquivalent,
+            formattedAnnualMonthlyEquivalent: annualSavings.formattedMonthlyEquivalent,
+            monthlyYearTotal: annualSavings.comparisonTotal,
+            formattedMonthlyYearTotal: annualSavings.formattedComparisonTotal,
+          }
+          : null,
+        savingsByPlan: {
+          semiannual: semiannualSavings,
+          annual: annualSavings,
+        },
+      });
+    } catch (error) {
+      const message = toBillingClientErrorMessage(error, "Não conseguimos carregar os planos agora.");
+      res.status(500).json({ message });
+    }
+  });
+
+  app.get("/api/billing/subscription", requireAuth, async (req, res) => {
+    const sessionUser = req.session.user;
+    if (!sessionUser?.organizationId || sessionUser.isSuperAdmin) {
+      return res.status(400).json({ message: "Cobrança disponível apenas para organizações." });
+    }
+
+    const organization = await storage.getOrganization(sessionUser.organizationId);
+    if (!organization) {
+      return res.status(404).json({ message: "Organização não encontrada." });
+    }
+
+    const currentBillingPlan = getBillingPlanForStripePriceId(organization.stripePriceId);
+    const normalizedOrganizationStatus = normalizeOrgStatus(organization);
+    const paymentGraceDays = getPaymentGraceDays(organization.paymentGraceDays);
+    const paymentGraceEndsAt = isStripePaymentIssueStatus(organization.stripeSubscriptionStatus)
+      ? getPaymentGraceEndsAt(organization.subscriptionUpdatedAt, paymentGraceDays)
+      : null;
+
+    res.json({
+      organizationName: organization.name,
+      organizationStatus: normalizedOrganizationStatus,
+      stripeSubscriptionStatus: organization.stripeSubscriptionStatus ?? null,
+      stripeCancelAtPeriodEnd: organization.stripeCancelAtPeriodEnd ?? false,
+      stripeCancelAt: organization.stripeCancelAt ?? null,
+      stripePriceId: organization.stripePriceId ?? null,
+      billingPlan: currentBillingPlan,
+      capacity: organization.capacity ?? null,
+      planPatientLimit: currentBillingPlan ? getBillingPlanPatientLimit(currentBillingPlan) : null,
+      subscriptionCurrentPeriodEnd: organization.subscriptionCurrentPeriodEnd ?? null,
+      subscriptionUpdatedAt: organization.subscriptionUpdatedAt ?? null,
+      manualAccessUntil: organization.manualAccessUntil ?? null,
+      billingMethod: organization.billingMethod ?? "stripe",
+      manualBillingDueDay: organization.manualBillingDueDay ?? null,
+      paymentGraceDays,
+      paymentGraceEndsAt,
+      paymentGraceDaysLeft: daysUntilDate(paymentGraceEndsAt),
+      billingAccessState: resolveBillingAccessState(organization, normalizedOrganizationStatus),
+      hasStripeCustomer: Boolean(organization.stripeCustomerId),
+      checkoutConfigured: checkoutConfigured(),
+      portalConfigured: portalConfigured(),
+    });
+  });
+
+  app.post("/api/billing/checkout-session", requireAuth, async (req, res) => {
+    try {
+      const sessionUser = req.session.user;
+      if (!sessionUser?.organizationId || sessionUser.isSuperAdmin) {
+        return res.status(400).json({ message: "Cobrança disponível apenas para organizações." });
+      }
+
+      const organization = await storage.getOrganization(sessionUser.organizationId);
+      if (!organization) {
+        return res.status(404).json({ message: "Organização não encontrada." });
+      }
+      if (normalizeOrgStatus(organization) === "inactive") {
+        return res.status(403).json({ message: getBlockedOrganizationMessage("inactive") });
+      }
+      if (stripeSubscriptionAllowsAccess(organization)) {
+        return res.status(400).json({ message: "Assinatura já ativa. Use o portal da Stripe para gerenciar a cobrança." });
+      }
+
+      const plan = parseBillingPlanInput(req.body?.plan);
+      const checkoutSession = await createCheckoutSessionForOrganization(req, organization, {
+        includeTrial: !organization.stripeCustomerId && !organization.stripeSubscriptionId,
+        plan,
+      });
+      await logAudit(req, {
+        action: "billing.checkout_started",
+        entityType: "organization",
+        entityId: organization.id,
+        organizationId: organization.id,
+        message: `${sessionUser.name} iniciou checkout Stripe (${getBillingPlanLabel(plan)}).`,
+      });
+
+      if (!checkoutSession.url) {
+        return res.status(500).json({ message: "Stripe não retornou URL de checkout." });
+      }
+      res.json({ url: checkoutSession.url });
+    } catch (error) {
+      const message = toBillingClientErrorMessage(error, "Não conseguimos iniciar o checkout agora.");
+      res.status(500).json({ message });
+    }
+  });
+
+  app.post("/api/billing/embedded-checkout-session", requireAuth, async (req, res) => {
+    try {
+      const sessionUser = req.session.user;
+      if (!sessionUser?.organizationId || sessionUser.isSuperAdmin) {
+        return res.status(400).json({ message: "Cobrança disponível apenas para organizações." });
+      }
+
+      const organization = await storage.getOrganization(sessionUser.organizationId);
+      if (!organization) {
+        return res.status(404).json({ message: "Organização não encontrada." });
+      }
+      if (normalizeOrgStatus(organization) === "inactive") {
+        return res.status(403).json({ message: getBlockedOrganizationMessage("inactive") });
+      }
+      if (stripeSubscriptionAllowsAccess(organization)) {
+        return res.status(400).json({ message: "Assinatura já ativa. Use o portal da Stripe para gerenciar a cobrança." });
+      }
+
+      const plan = parseBillingPlanInput(req.body?.plan);
+      const checkoutSession = await createCheckoutSessionForOrganization(req, organization, {
+        includeTrial: !organization.stripeCustomerId && !organization.stripeSubscriptionId,
+        embedded: true,
+        plan,
+      });
+      await logAudit(req, {
+        action: "billing.checkout_started",
+        entityType: "organization",
+        entityId: organization.id,
+        organizationId: organization.id,
+        message: `${sessionUser.name} iniciou checkout Stripe embutido (${getBillingPlanLabel(plan)}).`,
+      });
+
+      if (!checkoutSession.client_secret) {
+        return res.status(500).json({ message: "Stripe não retornou client_secret para checkout embutido." });
+      }
+      res.json({ clientSecret: checkoutSession.client_secret });
+    } catch (error) {
+      const message = toBillingClientErrorMessage(error, "Não conseguimos preparar o checkout agora.");
+      res.status(500).json({ message });
+    }
+  });
+
+  app.post("/api/billing/portal-session", requireAuth, async (req, res) => {
+    try {
+      const sessionUser = req.session.user;
+      if (!sessionUser?.organizationId || sessionUser.isSuperAdmin) {
+        return res.status(400).json({ message: "Cobrança disponível apenas para organizações." });
+      }
+
+      const organization = await storage.getOrganization(sessionUser.organizationId);
+      if (!organization?.stripeCustomerId) {
+        return res.status(400).json({ message: "Cliente Stripe ainda não vinculado a esta organização." });
+      }
+
+      const stripe = getStripeClient();
+      const portalConfigurationId = await getEasyCareStripePortalConfigurationId(req);
+      const portalSession = await stripe.billingPortal.sessions.create({
+        customer: organization.stripeCustomerId,
+        configuration: portalConfigurationId,
+        return_url: `${getAppBaseUrl(req)}/billing`,
+      });
+      await logAudit(req, {
+        action: "billing.portal_opened",
+        entityType: "organization",
+        entityId: organization.id,
+        organizationId: organization.id,
+        message: `${sessionUser.name} abriu o portal da Stripe.`,
+        metadata: { portalConfigurationId },
+      });
+      res.json({ url: portalSession.url });
+    } catch (error) {
+      const message = toBillingClientErrorMessage(error, "Não conseguimos abrir o portal da assinatura agora.");
+      res.status(500).json({ message });
+    }
+  });
+
+  app.post("/api/billing/cancel-subscription", requireAuth, async (req, res) => {
+    try {
+      const sessionUser = req.session.user;
+      if (!sessionUser?.organizationId || sessionUser.isSuperAdmin) {
+        return res.status(400).json({ message: "Cobrança disponível apenas para organizações." });
+      }
+
+      const organization = await storage.getOrganization(sessionUser.organizationId);
+      if (!organization) {
+        return res.status(404).json({ message: "Organização não encontrada." });
+      }
+      if (!organization.stripeSubscriptionId) {
+        return res.status(400).json({ message: "Esta organização ainda não possui assinatura Stripe para cancelar." });
+      }
+
+      const stripe = getStripeClient();
+      const currentSubscription = await stripe.subscriptions.retrieve(organization.stripeSubscriptionId);
+      if (currentSubscription.cancel_at_period_end) {
+        const synced = await syncStripeSubscriptionToOrganization(currentSubscription);
+        return res.json({
+          status: currentSubscription.status,
+          cancelAtPeriodEnd: true,
+          cancelAt: getStripeSubscriptionCancelAt(currentSubscription),
+          subscriptionCurrentPeriodEnd: getStripeSubscriptionPeriodEnd(currentSubscription),
+          organizationStatus: synced ? normalizeOrgStatus(synced) : normalizeOrgStatus(organization),
+        });
+      }
+
+      const cancellableStatuses = new Set(["trialing", "active", "past_due", "unpaid", "incomplete"]);
+      if (!cancellableStatuses.has(currentSubscription.status)) {
+        return res.status(400).json({
+          message: `Esta assinatura não pode ser cancelada neste estado (${currentSubscription.status}).`,
+        });
+      }
+
+      const updatedSubscription = await stripe.subscriptions.update(currentSubscription.id, {
+        cancel_at_period_end: true,
+      });
+      const synced = await syncStripeSubscriptionToOrganization(updatedSubscription);
+
+      await logAudit(req, {
+        action: "billing.subscription_cancel_scheduled",
+        entityType: "organization",
+        entityId: organization.id,
+        organizationId: organization.id,
+        message: `${sessionUser.name} agendou o cancelamento da assinatura Stripe.`,
+        metadata: {
+          subscriptionId: updatedSubscription.id,
+          status: updatedSubscription.status,
+          cancelAt: getStripeSubscriptionCancelAt(updatedSubscription)?.toISOString() ?? null,
+        },
+      });
+
+      res.json({
+        status: updatedSubscription.status,
+        cancelAtPeriodEnd: updatedSubscription.cancel_at_period_end,
+        cancelAt: getStripeSubscriptionCancelAt(updatedSubscription),
+        subscriptionCurrentPeriodEnd: getStripeSubscriptionPeriodEnd(updatedSubscription),
+        organizationStatus: synced ? normalizeOrgStatus(synced) : normalizeOrgStatus(organization),
+      });
+    } catch (error) {
+      const message = toBillingClientErrorMessage(error, "Não conseguimos agendar o cancelamento agora.");
+      res.status(500).json({ message });
+    }
+  });
+
+  app.post(STRIPE_WEBHOOK_PATH, async (req, res) => {
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+      return res.status(500).json({ message: "STRIPE_WEBHOOK_SECRET não configurado." });
+    }
+
+    const signature = req.headers["stripe-signature"];
+    if (typeof signature !== "string") {
+      return res.status(400).json({ message: "Assinatura Stripe ausente." });
+    }
+
+    let event: Stripe.Event;
+    try {
+      const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from("");
+      event = getStripeClient().webhooks.constructEvent(rawBody, signature, webhookSecret);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Webhook inválido.";
+      return res.status(400).json({ message });
+    }
+
+    try {
+      switch (event.type) {
+        case "checkout.session.completed":
+          await syncCheckoutSessionToOrganization(event.data.object as Stripe.Checkout.Session);
+          break;
+        case "customer.subscription.created":
+        case "customer.subscription.updated":
+        case "customer.subscription.deleted":
+          await syncStripeSubscriptionToOrganization(event.data.object as Stripe.Subscription);
+          break;
+        case "invoice.payment_succeeded":
+        case "invoice.payment_failed": {
+          const invoice = event.data.object as Stripe.Invoice & {
+            subscription?: string | Stripe.Subscription | null;
+          };
+          const subscriptionId = typeof invoice.subscription === "string"
+            ? invoice.subscription
+            : invoice.subscription?.id;
+          if (subscriptionId) {
+            const subscription = await getStripeClient().subscriptions.retrieve(subscriptionId);
+            await syncStripeSubscriptionToOrganization(subscription);
+          }
+          break;
+        }
+        default:
+          break;
+      }
+
+      res.json({ received: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao processar webhook Stripe.";
+      console.error("[stripe] erro ao processar webhook", error);
+      res.status(500).json({ message });
+    }
+  });
 
   // ===== NOTIFICATIONS =====
   app.get("/api/notifications", requireAuth, async (req, res, next) => {
@@ -717,6 +1890,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.json({ notifications: [], unreadCount: 0 });
       }
       const input = notificationQuerySchema.parse(req.query);
+      const organization = await storage.getOrganization(sessionUser.organizationId);
+      if (organization) {
+        await ensureBillingStatusNotification(sessionUser.organizationId, sessionUser.id, organization);
+      }
       const [items, unreadCount] = await Promise.all([
         storage.getNotifications(sessionUser.organizationId, sessionUser.id, {
           unreadOnly: input.unreadOnly,
@@ -896,6 +2073,91 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   };
 
+  const familyInvitePasswordSchema = z.object({
+    password: z.string().min(8, "A senha deve ter pelo menos 8 caracteres.").max(128),
+  });
+
+  const resolveFamilyPortalInvite = async (token: string) => {
+    const normalizedToken = token.trim();
+    if (normalizedToken.length < 24 || normalizedToken.length > 160) {
+      return null;
+    }
+
+    const member = await storage.getFamilyMemberByInviteTokenHash(hashFamilyPortalInviteToken(normalizedToken));
+    if (!member?.portalInviteExpiresAt) return null;
+
+    const expiresAt = new Date(member.portalInviteExpiresAt);
+    if (Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() < Date.now()) {
+      return null;
+    }
+
+    const organization = await storage.getOrganization(member.organizationId);
+    if (!organization || normalizeOrgStatus(organization) !== "active") return null;
+
+    const resident = await storage.getResident(member.organizationId, member.residentId);
+    if (!resident) return null;
+
+    return { member, organization, resident, expiresAt };
+  };
+
+  app.get("/api/family-portal/invite/:token", async (req, res) => {
+    const invite = await resolveFamilyPortalInvite(req.params.token);
+    if (!invite) {
+      return res.status(404).json({ message: "Convite inválido ou expirado." });
+    }
+
+    res.json({
+      expiresAt: invite.expiresAt,
+      member: {
+        name: invite.member.name,
+        relationship: invite.member.relationship,
+      },
+      organization: {
+        name: invite.organization.name,
+        phone: invite.organization.phone ?? null,
+      },
+      resident: {
+        name: invite.resident.name,
+      },
+    });
+  });
+
+  app.post("/api/family-portal/invite/:token/accept", familyLoginRateLimiter, async (req, res) => {
+    try {
+      const invite = await resolveFamilyPortalInvite(req.params.token);
+      if (!invite) {
+        return res.status(404).json({ message: "Convite inválido ou expirado." });
+      }
+
+      const input = familyInvitePasswordSchema.parse(req.body);
+      const member = await storage.updateFamilyMember(invite.member.organizationId, invite.member.id, {
+        portalAccess: true,
+        portalPassword: input.password,
+        portalInviteTokenHash: null,
+        portalInviteExpiresAt: null,
+        portalLastLoginAt: new Date(),
+      } as any);
+
+      await regenerateSession(req);
+      req.session.familyMember = buildFamilyPortalSession(member, invite.organization);
+      await logAudit(req, {
+        action: "family.portal_activated",
+        entityType: "family_member",
+        entityId: member.id,
+        organizationId: member.organizationId,
+        message: `${member.name} ativou o acesso ao portal da família.`,
+        metadata: { residentId: member.residentId },
+      });
+      res.json({ success: true, familyMember: req.session.familyMember });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Senha inválida." });
+      }
+      const message = error instanceof Error ? error.message : "Erro ao aceitar convite.";
+      res.status(400).json({ message });
+    }
+  });
+
   app.post("/api/family-portal/login", familyLoginRateLimiter, async (req, res) => {
     const { username, password, organizationCnpj } = req.body;
     if (typeof username !== "string" || typeof password !== "string" || !username || !password) {
@@ -917,7 +2179,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(403).json({ message: getBlockedOrganizationMessage(organizationStatus) });
     }
 
-    const candidates = (await storage.getFamilyMembersByPortalUsername(username))
+    const candidates = (await storage.getFamilyMembersByPortalLogin(username))
       .filter((member) => member.organizationId === organization.id);
 
     const validMatches = candidates
@@ -935,22 +2197,35 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     const { member, passwordCheck } = validMatches[0];
 
+    const memberUpdates: Record<string, unknown> = { portalLastLoginAt: new Date() };
     if (passwordCheck.needsRehash) {
-      await storage.updateFamilyMember(member.organizationId, member.id, { portalPassword: password });
+      memberUpdates.portalPassword = password;
     }
+    const updatedMember = await storage.updateFamilyMember(member.organizationId, member.id, memberUpdates as any);
 
     await regenerateSession(req);
-    req.session.familyMember = {
-      id: member.id,
-      name: member.name,
-      relationship: member.relationship,
-      residentId: member.residentId,
-      organizationId: member.organizationId,
-    };
+    req.session.familyMember = buildFamilyPortalSession(updatedMember, organization);
+    await logAudit(req, {
+      action: "family.portal_login",
+      entityType: "family_member",
+      entityId: updatedMember.id,
+      organizationId: updatedMember.organizationId,
+      message: `${updatedMember.name} entrou no portal da família.`,
+      metadata: { residentId: updatedMember.residentId },
+    });
     res.json({ success: true, familyMember: req.session.familyMember });
   });
 
-  app.post("/api/family-portal/logout", (req, res) => {
+  app.post("/api/family-portal/logout", async (req, res) => {
+    if (req.session.familyMember) {
+      await logAudit(req, {
+        action: "family.portal_logout",
+        entityType: "family_member",
+        entityId: req.session.familyMember.id,
+        organizationId: req.session.familyMember.organizationId,
+        message: `${req.session.familyMember.name} saiu do portal da família.`,
+      });
+    }
     req.session.destroy(() => {
       res.clearCookie("easycare.sid");
       res.json({ success: true });
@@ -1011,6 +2286,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const includeInactive = String(req.query.includeInactive || "").toLowerCase() === "true";
     res.json(await storage.getOrganizations(includeInactive));
   });
+  app.get("/api/onboarding/status", requireAuth, async (req, res) => {
+    const organizationId = req.session.user?.organizationId;
+    if (!organizationId || req.session.user?.isSuperAdmin) {
+      return res.status(400).json({ message: "Organização não encontrada para este usuário." });
+    }
+
+    const summary = await getOrganizationOnboardingSummary(organizationId);
+    if (!summary) {
+      return res.status(404).json({ message: "Organização não encontrada." });
+    }
+    res.json(summary);
+  });
+  app.get("/api/organizations/onboarding-summary", requireAuth, requireSuperAdmin, async (_req, res) => {
+    const organizations = await storage.getOrganizations(true);
+    const summaries = await Promise.all(organizations.map((organization) => getOrganizationOnboardingSummary(organization.id)));
+    res.json(summaries.filter(Boolean));
+  });
   app.get("/api/organizations/:id", requireAuth, requireSuperAdmin, async (req, res) => {
     const organization = await storage.getOrganization(Number(req.params.id));
     if (!organization) {
@@ -1018,17 +2310,97 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
     res.json(organization);
   });
+  app.get("/api/organizations/:id/usage", requireAuth, requireSuperAdmin, async (req, res) => {
+    const orgId = Number(req.params.id);
+    const organization = await storage.getOrganization(orgId);
+    if (!organization) {
+      return res.status(404).json({ message: "Organização não encontrada" });
+    }
+
+    const [users, residents] = await Promise.all([
+      storage.getUsersByOrganization(orgId),
+      storage.getResidents(orgId, { search: "" }),
+    ]);
+    const familyGroups = await Promise.all(
+      residents.map((resident) => storage.getFamilyMembers(orgId, resident.id)),
+    );
+    const members = familyGroups.flat();
+    const lastFamilyPortalLoginAt = members.reduce<Date | null>((latest, member) => {
+      if (!member.portalLastLoginAt) return latest;
+      const parsed = new Date(member.portalLastLoginAt);
+      if (Number.isNaN(parsed.getTime())) return latest;
+      if (!latest || parsed.getTime() > latest.getTime()) return parsed;
+      return latest;
+    }, null);
+
+    res.json({
+      users: users.length,
+      activeUsers: users.filter((user) => user.active !== false).length,
+      residents: residents.length,
+      activeResidents: residents.filter((resident) => resident.status === "active").length,
+      familyMembers: members.length,
+      familyPortalAccess: members.filter((member) => member.portalAccess).length,
+      lastFamilyPortalLoginAt,
+    });
+  });
+  app.post("/api/organizations/:id/billing/sync", requireAuth, requireSuperAdmin, async (req, res) => {
+    try {
+      const orgId = Number(req.params.id);
+      const organization = await storage.getOrganization(orgId);
+      if (!organization) {
+        return res.status(404).json({ message: "Organização não encontrada" });
+      }
+      if (!organization.stripeSubscriptionId && !organization.stripeCustomerId) {
+        return res.status(400).json({ message: "Organização ainda não tem vínculo Stripe." });
+      }
+
+      const stripe = getStripeClient();
+      let subscription: Stripe.Subscription | undefined;
+      if (organization.stripeSubscriptionId) {
+        subscription = await stripe.subscriptions.retrieve(organization.stripeSubscriptionId);
+      } else if (organization.stripeCustomerId) {
+        const subscriptions = await stripe.subscriptions.list({
+          customer: organization.stripeCustomerId,
+          status: "all",
+          limit: 10,
+        });
+        subscription = subscriptions.data.sort((left, right) => right.created - left.created)[0];
+      }
+
+      if (!subscription) {
+        return res.json({ synced: false, organization });
+      }
+
+      const updated = await syncStripeSubscriptionToOrganization(subscription);
+      res.json({ synced: true, organization: updated ?? await storage.getOrganization(orgId) });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao sincronizar assinatura Stripe.";
+      res.status(500).json({ message });
+    }
+  });
   app.post("/api/organizations", requireAuth, requireSuperAdmin, async (req, res) => {
     try {
-      const { name, address, phone, email, cnpj, capacity, status } = req.body;
+      const {
+        name,
+        address,
+        phone,
+        email,
+        cnpj,
+        capacity,
+        status,
+        manualAccessUntil,
+        billingMethod,
+        manualBillingDueDay,
+        paymentGraceDays,
+      } = req.body;
       if (!name || !cnpj || typeof cnpj !== "string" || !cnpj.trim()) {
         return res.status(400).json({ message: "Nome e CNPJ são obrigatórios" });
       }
-      const parsedStatus = status === undefined ? "active" : parseOrgStatusInput(status);
+      const parsedStatus = status === undefined ? "restricted" : parseOrgStatusInput(status);
       if (!parsedStatus) {
         return res.status(400).json({ message: "Status inválido. Use: active, inactive ou restricted." });
       }
-      res.status(201).json(await storage.createOrganization({
+      const organization = await storage.createOrganization({
         name,
         address,
         phone,
@@ -1037,26 +2409,79 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         capacity,
         status: parsedStatus,
         active: parsedStatus === "active",
-      }));
+        manualAccessUntil: parseManualAccessUntilInput(manualAccessUntil) ?? null,
+        billingMethod: parseBillingMethodInput(billingMethod) ?? "stripe",
+        manualBillingDueDay: parseNullableBoundedInteger(manualBillingDueDay, "Dia de vencimento", 1, 31) ?? null,
+        paymentGraceDays: parseNullableBoundedInteger(paymentGraceDays, "Tolerância", 0, 60) ?? DEFAULT_PAYMENT_GRACE_DAYS,
+      });
+      await logAudit(req, {
+        action: "organization.created",
+        entityType: "organization",
+        entityId: organization.id,
+        organizationId: organization.id,
+        message: `Organização ${organization.name} criada pelo superadmin.`,
+      });
+      res.status(201).json(organization);
     } catch { res.status(500).json({ message: "Erro ao criar organização" }); }
   });
   app.put("/api/organizations/:id", requireAuth, requireSuperAdmin, async (req, res) => {
-    const payload = { ...req.body };
-    if (typeof payload.cnpj === "string") payload.cnpj = payload.cnpj.trim();
-    const parsedStatus = parseOrgStatusInput(payload.status);
-    if (payload.status !== undefined && !parsedStatus) {
-      return res.status(400).json({ message: "Status inválido. Use: active, inactive ou restricted." });
+    try {
+      const payload = { ...req.body };
+      const manualAccessReason = typeof payload.manualAccessReason === "string" && payload.manualAccessReason.trim()
+        ? payload.manualAccessReason.trim()
+        : null;
+      delete payload.manualAccessReason;
+      if (typeof payload.cnpj === "string") payload.cnpj = payload.cnpj.trim();
+      if ("manualAccessUntil" in payload) {
+        payload.manualAccessUntil = parseManualAccessUntilInput(payload.manualAccessUntil) ?? null;
+      }
+      if ("billingMethod" in payload) {
+        payload.billingMethod = parseBillingMethodInput(payload.billingMethod) ?? "stripe";
+      }
+      if ("manualBillingDueDay" in payload) {
+        payload.manualBillingDueDay = parseNullableBoundedInteger(payload.manualBillingDueDay, "Dia de vencimento", 1, 31);
+      }
+      if ("paymentGraceDays" in payload) {
+        payload.paymentGraceDays = parseNullableBoundedInteger(payload.paymentGraceDays, "Tolerância", 0, 60) ?? DEFAULT_PAYMENT_GRACE_DAYS;
+      }
+      const parsedStatus = parseOrgStatusInput(payload.status);
+      if (payload.status !== undefined && !parsedStatus) {
+        return res.status(400).json({ message: "Status inválido. Use: active, inactive ou restricted." });
+      }
+      if (parsedStatus) {
+        payload.status = parsedStatus;
+        payload.active = parsedStatus === "active";
+      } else if (typeof payload.active === "boolean") {
+        payload.status = payload.active ? "active" : "inactive";
+      }
+      const organization = await storage.updateOrganization(Number(req.params.id), payload);
+      const manualAccessReleased = Boolean(manualAccessReason && payload.manualAccessUntil && payload.status === "active");
+      await logAudit(req, {
+        action: manualAccessReleased ? "organization.manual_access_released" : "organization.updated",
+        entityType: "organization",
+        entityId: organization.id,
+        organizationId: organization.id,
+        message: manualAccessReleased
+          ? `Acesso manual liberado para ${organization.name} até ${formatAppNotificationDateTime(new Date(payload.manualAccessUntil))}. Motivo: ${manualAccessReason}.`
+          : `Organização ${organization.name} atualizada.`,
+        metadata: { fields: Object.keys(payload), manualAccessReason },
+      });
+      res.json(organization);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao atualizar organização.";
+      res.status(400).json({ message });
     }
-    if (parsedStatus) {
-      payload.status = parsedStatus;
-      payload.active = parsedStatus === "active";
-    } else if (typeof payload.active === "boolean") {
-      payload.status = payload.active ? "active" : "inactive";
-    }
-    res.json(await storage.updateOrganization(Number(req.params.id), payload));
   });
   app.delete("/api/organizations/:id", requireAuth, requireSuperAdmin, async (req, res) => {
-    await storage.deleteOrganization(Number(req.params.id));
+    const orgId = Number(req.params.id);
+    await logAudit(req, {
+      action: "organization.deleted",
+      entityType: "organization",
+      entityId: orgId,
+      organizationId: orgId,
+      message: `Organização ${orgId} removida pelo superadmin.`,
+    });
+    await storage.deleteOrganization(orgId);
     res.status(204).send();
   });
 
@@ -1163,6 +2588,147 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } as any);
   };
 
+  const normalizeCnpjDigits = (value: string) => value.replace(/\D/g, "");
+  const formatCnpj = (value: string) => {
+    const digits = normalizeCnpjDigits(value);
+    if (digits.length !== 14) return value.trim();
+    return `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5, 8)}/${digits.slice(8, 12)}-${digits.slice(12)}`;
+  };
+  const publicSignupSchema = z.object({
+    organizationName: z.string().trim().min(2, "Informe o nome da instituição.").max(140),
+    cnpj: z.string().trim().refine((value) => normalizeCnpjDigits(value).length === 14, {
+      message: "Informe um CNPJ válido.",
+    }),
+    phone: z.string().trim().min(8, "Informe um telefone.").max(30),
+    email: z.string().trim().email("Informe um e-mail válido.").max(160),
+    capacity: z.coerce.number().int().min(1).max(500).optional(),
+    adminName: z.string().trim().min(2, "Informe seu nome.").max(120),
+    username: z.string()
+      .trim()
+      .min(3, "Informe um usuário com pelo menos 3 caracteres.")
+      .max(60)
+      .regex(/^[a-zA-Z0-9._-]+$/, "Use apenas letras, números, ponto, hífen ou underline no usuário."),
+    password: z.string().min(8, "A senha deve ter pelo menos 8 caracteres.").max(128),
+    embeddedCheckout: z.boolean().optional(),
+    deferCheckout: z.boolean().optional(),
+  });
+
+  app.post("/api/public/signup", publicSignupRateLimiter, async (req, res) => {
+    let createdOrganizationId: number | undefined;
+    let createdUserId: number | undefined;
+    let createdStaffId: number | undefined;
+
+    try {
+      if (!checkoutConfigured()) {
+        return res.status(500).json({ message: "Checkout Stripe ainda não configurado." });
+      }
+
+      const input = publicSignupSchema.parse(req.body);
+      const normalizedCnpj = formatCnpj(input.cnpj);
+      const existingOrganization = await storage.getOrganizationByCnpj(normalizedCnpj);
+      if (existingOrganization) {
+        return res.status(409).json({
+          message: "Esta instituição já está cadastrada. Entre pelo login ou fale com o suporte.",
+        });
+      }
+
+      const organization = await storage.createOrganization({
+        name: input.organizationName,
+        cnpj: normalizedCnpj,
+        phone: input.phone,
+        email: input.email,
+        capacity: input.capacity ?? 50,
+        status: "restricted",
+        active: false,
+      });
+      createdOrganizationId = organization.id;
+
+      const usernameValue = normalizePortalUsername(input.username);
+      const user = await storage.createUser({
+        organizationId: organization.id,
+        username: usernameValue,
+        password: input.password,
+        name: input.adminName,
+        email: input.email,
+        phone: input.phone,
+        role: "admin",
+        active: true,
+        isSuperAdmin: false,
+      });
+      createdUserId = user.id;
+
+      const staffMember = await ensureStaffForOrganizationUser(organization.id, user, DEFAULT_ENVIRONMENT_SETTINGS);
+      createdStaffId = staffMember.id;
+
+      let checkoutSession: Stripe.Checkout.Session | null = null;
+      if (input.deferCheckout !== true) {
+        checkoutSession = await createCheckoutSessionForOrganization(req, organization, {
+          includeTrial: true,
+          embedded: input.embeddedCheckout === true,
+        });
+        if (input.embeddedCheckout === true && !checkoutSession.client_secret) {
+          throw new Error("Stripe não retornou client_secret para checkout embutido.");
+        }
+        if (input.embeddedCheckout !== true && !checkoutSession.url) {
+          throw new Error("Stripe não retornou URL de checkout.");
+        }
+      }
+
+      await regenerateSession(req);
+      req.session.user = {
+        id: user.id,
+        username: user.username,
+        name: user.name,
+        role: user.role,
+        organizationId: organization.id,
+        organizationName: organization.name,
+        organizationStatus: "restricted",
+        stripeSubscriptionStatus: null,
+        isSuperAdmin: false,
+      };
+
+      await logAudit(req, {
+        action: "organization.signup",
+        entityType: "organization",
+        entityId: organization.id,
+        organizationId: organization.id,
+        message: `${organization.name} iniciou cadastro self-service.`,
+        metadata: {
+          adminUserId: user.id,
+          checkoutDeferred: input.deferCheckout === true,
+          checkoutSessionId: checkoutSession?.id ?? null,
+        },
+      });
+
+      res.status(201).json({
+        url: checkoutSession?.url,
+        clientSecret: checkoutSession?.client_secret,
+        checkoutPath: input.deferCheckout === true ? "/checkout" : undefined,
+        trialDays: getStripeTrialDays(),
+        user: req.session.user,
+      });
+    } catch (error: any) {
+      if (createdStaffId && createdOrganizationId) {
+        await storage.deleteStaff(createdOrganizationId, createdStaffId).catch(() => undefined);
+      }
+      if (createdUserId) {
+        await storage.deleteUser(createdUserId).catch(() => undefined);
+      }
+      if (createdOrganizationId) {
+        await storage.deleteOrganization(createdOrganizationId).catch(() => undefined);
+      }
+
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados inválidos." });
+      }
+      if (error?.code === "23505") {
+        return res.status(409).json({ message: "Dados já cadastrados. Revise CNPJ e usuário." });
+      }
+      const message = error instanceof Error ? error.message : "Erro ao criar cadastro.";
+      res.status(500).json({ message });
+    }
+  });
+
   app.post("/api/organizations/:id/users", requireAuth, requireSuperAdmin, async (req, res) => {
     try {
       const orgId = Number(req.params.id);
@@ -1207,6 +2773,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         await storage.deleteUser(user.id);
         throw error;
       }
+      await logAudit(req, {
+        action: "user.created",
+        entityType: "user",
+        entityId: user.id,
+        organizationId: orgId,
+        message: `Usuário ${user.name} criado.`,
+        metadata: { role: user.role },
+      });
       res.status(201).json(sanitizeUser(user));
     } catch (err: any) {
       if (err.code === "23505") return res.status(400).json({ message: "Nome de usuário já existe nesta organização" });
@@ -1263,6 +2837,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (settingsResult) {
         await ensureStaffForOrganizationUser(currentUser.organizationId, updated, settingsResult.settings);
       }
+      await logAudit(req, {
+        action: "user.updated",
+        entityType: "user",
+        entityId: updated.id,
+        organizationId: currentUser.organizationId,
+        message: `Usuário ${updated.name} atualizado.`,
+        metadata: { fields: Object.keys(updates) },
+      });
       res.json(sanitizeUser(updated));
     } catch (err: any) {
       res.status(400).json({ message: err.message || "Erro ao atualizar usuário" });
@@ -1272,10 +2854,44 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const user = await storage.getUserById(Number(req.params.id));
     if (user) {
       await detachStaffFromOrganizationUser(user);
+      await logAudit(req, {
+        action: "user.deleted",
+        entityType: "user",
+        entityId: user.id,
+        organizationId: user.organizationId ?? null,
+        message: `Usuário ${user.name} removido.`,
+      });
     }
     await storage.deleteUser(Number(req.params.id));
     res.status(204).send();
   });
+
+  const shouldCountAsActivePatient = (status: unknown) =>
+    typeof status !== "string" || status.trim() === "" || status.trim().toLowerCase() === "active";
+
+  const ensurePatientCapacityAvailable = async (
+    res: Response,
+    orgId: number,
+    excludedResidentId?: number,
+  ) => {
+    const [organization, activeResidents] = await Promise.all([
+      storage.getOrganization(orgId),
+      storage.getResidents(orgId, { search: "", status: "active" }),
+    ]);
+    const capacity = organization?.capacity ?? 50;
+    const activeCount = activeResidents.filter((resident) => resident.id !== excludedResidentId).length;
+
+    if (capacity > 0 && activeCount >= capacity) {
+      res.status(409).json({
+        message: `Limite de pacientes ativos do plano atingido (${capacity}). Faça upgrade para liberar mais pacientes.`,
+        capacity,
+        activePatients: activeCount,
+      });
+      return false;
+    }
+
+    return true;
+  };
 
   // ===== RESIDENTS =====
   app.get("/api/residents", requireAuth, async (req, res) => {
@@ -1291,7 +2907,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/residents", requireAuth, async (req, res) => {
     try {
       const orgId = getOrgId(req);
-      res.status(201).json(await storage.createResident({ ...req.body, organizationId: orgId }));
+      if (shouldCountAsActivePatient(req.body?.status)) {
+        const hasCapacity = await ensurePatientCapacityAvailable(res, orgId);
+        if (!hasCapacity) return;
+      }
+
+      const resident = await storage.createResident({ ...req.body, organizationId: orgId });
+      await logAudit(req, {
+        action: "resident.created",
+        entityType: "resident",
+        entityId: resident.id,
+        organizationId: orgId,
+        message: `Paciente ${resident.name} cadastrado.`,
+      });
+      res.status(201).json(resident);
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
@@ -1299,11 +2928,38 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
   app.put("/api/residents/:id", requireAuth, async (req, res) => {
     const orgId = getOrgId(req);
-    res.json(await storage.updateResident(orgId, Number(req.params.id), req.body));
+    const residentId = Number(req.params.id);
+    const currentResident = await storage.getResident(orgId, residentId);
+    if (!currentResident) return res.status(404).json({ message: "Paciente não encontrado" });
+
+    const nextStatus = typeof req.body?.status === "string" ? req.body.status : currentResident.status;
+    if (currentResident.status !== "active" && shouldCountAsActivePatient(nextStatus)) {
+      const hasCapacity = await ensurePatientCapacityAvailable(res, orgId, residentId);
+      if (!hasCapacity) return;
+    }
+
+    const resident = await storage.updateResident(orgId, residentId, req.body);
+    await logAudit(req, {
+      action: "resident.updated",
+      entityType: "resident",
+      entityId: resident.id,
+      organizationId: orgId,
+      message: `Paciente ${resident.name} atualizado.`,
+      metadata: { fields: Object.keys(req.body ?? {}) },
+    });
+    res.json(resident);
   });
   app.delete("/api/residents/:id", requireAuth, async (req, res) => {
     const orgId = getOrgId(req);
-    await storage.deleteResident(orgId, Number(req.params.id));
+    const residentId = Number(req.params.id);
+    await logAudit(req, {
+      action: "resident.deleted",
+      entityType: "resident",
+      entityId: residentId,
+      organizationId: orgId,
+      message: `Paciente ${residentId} removido.`,
+    });
+    await storage.deleteResident(orgId, residentId);
     res.status(204).send();
   });
 
@@ -1327,6 +2983,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       const member = await storage.createFamilyMember(payload as any);
+      await logAudit(req, {
+        action: "family.created",
+        entityType: "family_member",
+        entityId: member.id,
+        organizationId: orgId,
+        message: `Familiar ${member.name} cadastrado.`,
+        metadata: { residentId: member.residentId },
+      });
       res.status(201).json(sanitizeFamilyMember(member));
     } catch (err) {
       res.status(400).json({
@@ -1345,6 +3009,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       const member = await storage.updateFamilyMember(orgId, memberId, payload as any);
+      await logAudit(req, {
+        action: "family.updated",
+        entityType: "family_member",
+        entityId: member.id,
+        organizationId: orgId,
+        message: `Familiar ${member.name} atualizado.`,
+        metadata: { fields: Object.keys(payload) },
+      });
       res.json(sanitizeFamilyMember(member));
     } catch (err) {
       res.status(400).json({
@@ -1352,9 +3024,71 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
     }
   });
+  app.post("/api/family/:id/portal-invite", requireAuth, async (req, res) => {
+    try {
+      const orgId = getOrgId(req);
+      const memberId = Number(req.params.id);
+      const member = await storage.getFamilyMember(orgId, memberId);
+      if (!member) {
+        return res.status(404).json({ message: "Familiar não encontrado." });
+      }
+
+      const organization = await storage.getOrganization(orgId);
+      const resident = await storage.getResident(orgId, member.residentId);
+      if (!organization || !resident) {
+        return res.status(404).json({ message: "Dados do convite não encontrados." });
+      }
+
+      const token = randomBytes(32).toString("base64url");
+      const expiresAt = new Date(Date.now() + FAMILY_PORTAL_INVITE_DAYS * 24 * 60 * 60 * 1000);
+      await storage.updateFamilyMember(orgId, member.id, {
+        portalInviteTokenHash: hashFamilyPortalInviteToken(token),
+        portalInviteExpiresAt: expiresAt,
+        portalInvitedAt: new Date(),
+      } as any);
+
+      const inviteUrl = buildFamilyPortalInviteUrl(req, token);
+      const whatsappText = [
+        `Olá, ${member.name}.`,
+        `${organization.name} liberou seu acesso ao Portal da Família EasyCare para acompanhar ${resident.name}.`,
+        `Acesse e crie sua senha: ${inviteUrl}`,
+        `Este convite expira em ${FAMILY_PORTAL_INVITE_DAYS} dias.`,
+      ].join("\n");
+
+      await logAudit(req, {
+        action: "family.invite_created",
+        entityType: "family_member",
+        entityId: member.id,
+        organizationId: orgId,
+        message: `Convite familiar gerado para ${member.name}.`,
+        metadata: { residentId: resident.id, expiresAt },
+      });
+
+      res.json({
+        url: inviteUrl,
+        expiresAt,
+        whatsappText,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao gerar convite.";
+      res.status(400).json({ message });
+    }
+  });
   app.delete("/api/family/:id", requireAuth, async (req, res) => {
     const orgId = getOrgId(req);
-    await storage.deleteFamilyMember(orgId, Number(req.params.id));
+    const memberId = Number(req.params.id);
+    const member = await storage.getFamilyMember(orgId, memberId);
+    if (member) {
+      await logAudit(req, {
+        action: "family.deleted",
+        entityType: "family_member",
+        entityId: member.id,
+        organizationId: orgId,
+        message: `Familiar ${member.name} removido.`,
+        metadata: { residentId: member.residentId },
+      });
+    }
+    await storage.deleteFamilyMember(orgId, memberId);
     res.status(204).send();
   });
 
@@ -4418,6 +6152,70 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       bairro?: string;
       localidade?: string;
       uf?: string;
+      latitude?: number | null;
+      longitude?: number | null;
+      source?: string;
+    };
+    type AwesomeApiCepResult = {
+      code?: string;
+      message?: string;
+      cep?: string;
+      address?: string;
+      neighborhood?: string;
+      city?: string;
+      state?: string;
+      lat?: string | number | null;
+      lng?: string | number | null;
+    };
+    type BrasilApiCepV2Result = {
+      cep?: string;
+      state?: string;
+      city?: string;
+      neighborhood?: string;
+      street?: string;
+      service?: string;
+      location?: {
+        coordinates?: {
+          latitude?: string | number | null;
+          longitude?: string | number | null;
+        } | null;
+      } | null;
+    };
+    const parseCoordinate = (value: unknown) => {
+      const coordinate = Number(value);
+      return Number.isFinite(coordinate) ? coordinate : null;
+    };
+    const hasCoordinates = (data: CepLookupResult | null) =>
+      typeof data?.latitude === "number" && typeof data.longitude === "number";
+    const normalizeAwesomeApiResult = (data: AwesomeApiCepResult | null): CepLookupResult | null => {
+      if (!data || data.code === "not_found") return null;
+      if (!data.address && !data.city && !data.state) return null;
+      return {
+        cep: data.cep || normalizedCep,
+        logradouro: data.address || "",
+        bairro: data.neighborhood || "",
+        localidade: data.city || "",
+        uf: data.state || "",
+        latitude: parseCoordinate(data.lat),
+        longitude: parseCoordinate(data.lng),
+        source: "awesomeapi",
+      };
+    };
+    const normalizeBrasilApiResult = (data: BrasilApiCepV2Result | null): CepLookupResult | null => {
+      if (!data) return null;
+      if (!data.street && !data.city && !data.state) return null;
+      const latitude = parseCoordinate(data.location?.coordinates?.latitude);
+      const longitude = parseCoordinate(data.location?.coordinates?.longitude);
+      return {
+        cep: data.cep || normalizedCep,
+        logradouro: data.street || "",
+        bairro: data.neighborhood || "",
+        localidade: data.city || "",
+        uf: data.state || "",
+        latitude,
+        longitude,
+        source: data.service || "brasilapi",
+      };
     };
     const normalizeCepResult = (data: CepLookupResult | null): CepLookupResult | null => {
       if (!data || data.erro) return null;
@@ -4428,8 +6226,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         bairro: data.bairro || "",
         localidade: data.localidade || "",
         uf: data.uf || "",
+        latitude: data.latitude ?? null,
+        longitude: data.longitude ?? null,
+        source: data.source,
       };
     };
+    const awesomeApi = normalizeAwesomeApiResult(await fetchJsonWithTimeout<AwesomeApiCepResult>(
+      `https://cep.awesomeapi.com.br/json/${normalizedCep}`,
+    ));
+    if (hasCoordinates(awesomeApi)) return awesomeApi;
+    const brasilApi = normalizeBrasilApiResult(await fetchJsonWithTimeout<BrasilApiCepV2Result>(
+      `https://brasilapi.com.br/api/cep/v2/${normalizedCep}`,
+    ));
+    if (hasCoordinates(brasilApi)) return brasilApi;
+    if (awesomeApi) return awesomeApi;
+    if (brasilApi) return brasilApi;
     const viaCep = normalizeCepResult(await fetchJsonWithTimeout<CepLookupResult>(
       `https://viacep.com.br/ws/${normalizedCep}/json/`,
     ));
@@ -4476,6 +6287,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       cepAddress?.uf,
       "Brasil",
     ].filter((part) => typeof part === "string" && part.trim().length > 0).join(", ");
+    const cepLatitude = cepAddress?.latitude ?? null;
+    const cepLongitude = cepAddress?.longitude ?? null;
+    const cepLocationResult = Number.isFinite(cepLatitude) && Number.isFinite(cepLongitude)
+      ? {
+        latitude: Number(cepLatitude),
+        longitude: Number(cepLongitude),
+        name: cepStreet || typedAddress || fullAddress || null,
+        address: fullAddress || null,
+        displayName: fullAddress || null,
+      }
+      : null;
     const params = new URLSearchParams({
       format: "jsonv2",
       addressdetails: "1",
@@ -4489,7 +6311,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       name?: string;
       display_name?: string;
       address?: Record<string, string | undefined>;
-    }>>(`https://nominatim.openstreetmap.org/search${params.toString()}`, {
+    }>>(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
       headers: {
         Accept: "application/json",
         "User-Agent": "EasyCare/1.0 address-geocoding",
@@ -4498,7 +6320,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const first = results?.[0];
     const latitude = first?.lat ? Number(first.lat) : NaN;
     const longitude = first?.lon ? Number(first.lon) : NaN;
-    if (!first || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+    if (!first || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return cepLocationResult;
 
     const foundAddress = first.address ?? {};
     const foundCity = foundAddress.city || foundAddress.town || foundAddress.village || foundAddress.municipality;
@@ -4543,6 +6365,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         district: result.bairro || null,
         city: result.localidade || null,
         state: result.uf || null,
+        latitude: result.latitude ?? null,
+        longitude: result.longitude ?? null,
         address: formatTimeClockCepAddress(result, number),
       });
     } catch (error) {
