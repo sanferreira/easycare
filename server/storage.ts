@@ -61,12 +61,17 @@ const manualAccessExpired = (value?: Date | string | null) => {
   const date = value instanceof Date ? new Date(value) : new Date(value);
   return !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
 };
+const manualAccessIsCurrent = (value?: Date | string | null) => {
+  if (!value) return false;
+  const date = value instanceof Date ? new Date(value) : new Date(value);
+  return !Number.isNaN(date.getTime()) && date.getTime() >= Date.now();
+};
 const normalizeOrganizationStatus = (org: Partial<Organization>): "active" | "inactive" | "restricted" => {
   const rawStatus = typeof org.status === "string" ? org.status.toLowerCase().trim() : "";
   const normalized = rawStatus === "active" || rawStatus === "inactive" || rawStatus === "restricted"
     ? rawStatus
     : org.active === false ? "inactive" : "active";
-  if (normalized === "restricted" && stripeAccessIsCurrent(org)) {
+  if (normalized === "restricted" && (stripeAccessIsCurrent(org) || manualAccessIsCurrent(org.manualAccessUntil))) {
     return "active";
   }
   const hasStripeStatus = typeof org.stripeSubscriptionStatus === "string" && org.stripeSubscriptionStatus.trim().length > 0;

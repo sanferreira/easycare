@@ -204,6 +204,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const accessUntil = parseManualAccessUntil(value);
     return Boolean(accessUntil && accessUntil.getTime() < now.getTime());
   };
+  const manualAccessIsCurrent = (value: unknown, now = new Date()) => {
+    const accessUntil = parseManualAccessUntil(value);
+    return Boolean(accessUntil && accessUntil.getTime() >= now.getTime());
+  };
 
   const normalizeOrgStatus = (org?: {
     status?: unknown;
@@ -217,7 +221,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const normalized = raw === "active" || raw === "inactive" || raw === "restricted"
       ? raw
       : org?.active === false ? "inactive" : "active";
-    if (normalized === "restricted" && stripeSubscriptionAllowsAccess(org)) {
+    if (normalized === "restricted" && (stripeSubscriptionAllowsAccess(org) || manualAccessIsCurrent(org?.manualAccessUntil))) {
       return "active";
     }
     const hasStripeStatus = typeof org?.stripeSubscriptionStatus === "string" && org.stripeSubscriptionStatus.trim().length > 0;
