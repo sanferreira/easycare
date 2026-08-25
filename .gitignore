@@ -11,3 +11,6 @@ vite.config.ts.*
 .replit
 
 replit.md
+
+.codex-screenshots/
+.codex-vite-*.log

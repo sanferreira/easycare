@@ -1,4 +1,7 @@
+import { useEffect, useRef } from "react";
 import { Link } from "wouter";
+import gsap from "gsap";
+import { ScrollTrigger } from "gsap/ScrollTrigger";
 import {
   ArrowRight,
   BarChart3,
@@ -11,11 +14,13 @@ import {
   ClipboardCheck,
   Clock3,
   CreditCard,
+  ExternalLink,
   FileText,
   HeartHandshake,
   Home,
   LockKeyhole,
   MessageCircle,
+  Newspaper,
   Pill,
   ShieldCheck,
   Stethoscope,
@@ -34,9 +39,22 @@ type CardItem = {
   icon: LucideIcon;
 };
 
+type MediaArticle = {
+  outlet: string;
+  category: string;
+  url: string;
+  accent: string;
+  rotation: string;
+  className: string;
+  logoSrc?: string;
+  logoTone?: "dark" | "light";
+  featured?: boolean;
+};
+
 const navItems = [
   ["Soluções", "#solucoes"],
   ["Plataforma", "#plataforma"],
+  ["Mídia", "#midia"],
   ["Acessos", "#acessos"],
   ["Segmentos", "#segmentos"],
   ["Plano", "#plano"],
@@ -50,6 +68,198 @@ const proofItems = [
   { label: "DRE, contratos e calculadora automática", value: "Gestor" },
   { label: "Portal com informações compartilhadas", value: "Família" },
 ];
+
+const mediaTitle = "Do campo à tecnologia: como o EasyCare nasce da prática e propõe um novo padrão de gestão no mercado de cuidados";
+
+const mediaArticles: MediaArticle[] = [
+  {
+    outlet: "Folha Negócios",
+    category: "Gestão & inovação",
+    url: "https://folhanegocios.com/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados",
+    accent: "#0B5CAB",
+    rotation: "-1.5deg",
+    logoSrc: "/media-logos/folha-negocios.svg",
+    featured: true,
+    className: "md:col-span-2 lg:absolute lg:left-[45%] lg:top-[82px] lg:z-30 lg:w-[430px] xl:w-[510px]",
+  },
+  {
+    outlet: "IstoÉ Negócios",
+    category: "Inovação",
+    url: "https://istoenegocios.com/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados/",
+    accent: "#C1121F",
+    rotation: "-4deg",
+    logoSrc: "/media-logos/istoe-negocios.png",
+    className: "lg:absolute lg:left-[3%] lg:top-[52px] lg:z-10 lg:w-[300px] xl:w-[350px]",
+  },
+  {
+    outlet: "Correio do Ceará",
+    category: "Tecnologia",
+    url: "https://correiodoceara.com/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados/",
+    accent: "#075DA8",
+    rotation: "1.5deg",
+    logoSrc: "/media-logos/correio-ceara.webp",
+    logoTone: "light",
+    className: "lg:absolute lg:left-[25%] lg:top-[68px] lg:z-20 lg:w-[300px] xl:w-[350px]",
+  },
+  {
+    outlet: "US.News",
+    category: "Tecnologia",
+    url: "https://usnews.com.br/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados/",
+    accent: "#123F74",
+    rotation: "-4deg",
+    logoSrc: "/media-logos/us-news.png",
+    className: "lg:absolute lg:right-[3%] lg:top-[42px] lg:z-10 lg:w-[300px] xl:w-[350px]",
+  },
+  {
+    outlet: "Jornal do Recife",
+    category: "Negócios",
+    url: "https://jornaldorecife.com/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados/",
+    accent: "#075DA8",
+    rotation: "-1deg",
+    logoSrc: "/media-logos/jornal-recife.webp",
+    className: "lg:absolute lg:left-[0%] lg:top-[250px] lg:z-20 lg:w-[310px] xl:w-[360px]",
+  },
+  {
+    outlet: "Success",
+    category: "Negócios",
+    url: "https://successmagazine.com.br/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados/",
+    accent: "#111827",
+    rotation: "0.5deg",
+    logoSrc: "/media-logos/success.webp",
+    className: "lg:absolute lg:left-[25%] lg:top-[258px] lg:z-10 lg:w-[300px] xl:w-[350px]",
+  },
+  {
+    outlet: "Businessweek",
+    category: "Inovação",
+    url: "https://businessweek.com.br/2026/05/06/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados/",
+    accent: "#075DA8",
+    rotation: "4deg",
+    logoSrc: "/media-logos/businessweek.svg",
+    className: "lg:absolute lg:right-[0%] lg:top-[266px] lg:z-20 lg:w-[295px] xl:w-[345px]",
+  },
+  {
+    outlet: "IstoÉ Tech",
+    category: "Tecnologia",
+    url: "https://istoe.tech/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados/",
+    accent: "#0E7490",
+    rotation: "1.5deg",
+    logoSrc: "/media-logos/istoe-tech.png",
+    logoTone: "light",
+    className: "lg:absolute lg:left-[2%] lg:top-[438px] lg:z-10 lg:w-[310px] xl:w-[360px]",
+  },
+  {
+    outlet: "PeopleBrasil",
+    category: "Tecnologia",
+    url: "https://peoplebrasil.com.br/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados/",
+    accent: "#0891B2",
+    rotation: "-1deg",
+    logoSrc: "/media-logos/people-brasil.png",
+    className: "lg:absolute lg:left-[26%] lg:top-[444px] lg:z-10 lg:w-[305px] xl:w-[355px]",
+  },
+  {
+    outlet: "Jurídico.News",
+    category: "Direito & gestão",
+    url: "https://juridico.news/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados/",
+    accent: "#B91C1C",
+    rotation: "0.5deg",
+    logoSrc: "/media-logos/juridico-news.webp",
+    className: "lg:absolute lg:left-[51%] lg:top-[438px] lg:z-10 lg:w-[310px] xl:w-[360px]",
+  },
+  {
+    outlet: "Gazeta de Brasília",
+    category: "Negócios",
+    url: "https://gazetadebrasilia.com/2026/05/06/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados/",
+    accent: "#075DA8",
+    rotation: "4deg",
+    logoSrc: "/media-logos/gazeta-brasilia.png",
+    className: "lg:absolute lg:right-[2%] lg:top-[456px] lg:z-10 lg:w-[305px] xl:w-[355px]",
+  },
+  {
+    outlet: "Correio de Alagoas",
+    category: "Tecnologia",
+    url: "https://correiodealagoas.com/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados/",
+    accent: "#075DA8",
+    rotation: "-2deg",
+    logoSrc: "/media-logos/correio-alagoas.webp",
+    className: "",
+  },
+  {
+    outlet: "Correio do Pará",
+    category: "Tecnologia",
+    url: "https://correiodopara.com/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados/",
+    accent: "#075DA8",
+    rotation: "2deg",
+    logoSrc: "/media-logos/correio-para.webp",
+    className: "",
+  },
+  {
+    outlet: "Business of Fashion",
+    category: "Negócios",
+    url: "https://businessoffashion.com.br/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados/",
+    accent: "#334155",
+    rotation: "-1deg",
+    logoSrc: "/media-logos/business-of-fashion.webp",
+    className: "",
+  },
+  {
+    outlet: "Poder e Negócios",
+    category: "Gestão",
+    url: "https://poderenegocios.com/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados/",
+    accent: "#7C2D12",
+    rotation: "1deg",
+    logoSrc: "/media-logos/poder-negocios.png",
+    className: "",
+  },
+  {
+    outlet: "Justiça.News",
+    category: "Direito & gestão",
+    url: "https://justica.news/2026/05/06/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados/",
+    accent: "#B91C1C",
+    rotation: "-1deg",
+    logoSrc: "/media-logos/justica-news.png",
+    className: "",
+  },
+  {
+    outlet: "IstoÉ Rio",
+    category: "Tecnologia",
+    url: "https://istoerio.com/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados/",
+    accent: "#0E7490",
+    rotation: "1deg",
+    logoSrc: "/media-logos/istoe-rio.png",
+    logoTone: "light",
+    className: "",
+  },
+  {
+    outlet: "IstoÉ SC",
+    category: "Tecnologia",
+    url: "https://istoesc.com/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados/",
+    accent: "#0E7490",
+    rotation: "-1deg",
+    logoSrc: "/media-logos/istoe-sc.webp",
+    className: "",
+  },
+  {
+    outlet: "IstoÉ Bahia",
+    category: "Tecnologia",
+    url: "https://istoebahia.com/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados/",
+    accent: "#0E7490",
+    rotation: "1deg",
+    logoSrc: "/media-logos/istoe-bahia.webp",
+    logoTone: "light",
+    className: "",
+  },
+  {
+    outlet: "IstoÉ Floripa",
+    category: "Tecnologia",
+    url: "https://istoefloripa.com/do-campo-a-tecnologia-como-o-easycare-nasce-da-pratica-e-propoe-um-novo-padrao-de-gestao-no-mercado-de-cuidados/",
+    accent: "#0E7490",
+    rotation: "-1deg",
+    logoSrc: "/media-logos/istoe-floripa.webp",
+    className: "",
+  },
+];
+
+const featuredMediaArticles = mediaArticles.slice(0, 11);
 
 const solutionCards: CardItem[] = [
   {
@@ -310,6 +520,267 @@ function PlatformVisual() {
   );
 }
 
+function MediaOutletBrand({ article }: { article: MediaArticle }) {
+  if (!article.logoSrc) {
+    return (
+      <p
+        className={`font-serif font-extrabold leading-none tracking-normal ${
+          article.featured ? "text-3xl sm:text-4xl" : "text-xl sm:text-2xl"
+        }`}
+        style={{ color: article.accent }}
+      >
+        {article.outlet}
+      </p>
+    );
+  }
+
+  if (article.logoTone === "light") {
+    return (
+      <span
+        className={`media-card-logo-mask ${article.featured ? "media-card-logo-mask-featured" : ""}`}
+        role="img"
+        aria-label={article.outlet}
+        style={
+          {
+            "--card-logo-url": `url(${article.logoSrc})`,
+            "--card-logo-color": article.accent,
+          } as React.CSSProperties
+        }
+      />
+    );
+  }
+
+  return (
+    <span className={`media-card-logo-shell ${article.featured ? "media-card-logo-shell-featured" : ""}`}>
+      <img src={article.logoSrc} alt={article.outlet} loading="lazy" className="media-card-logo-image" />
+    </span>
+  );
+}
+
+function MediaCard({ article }: { article: MediaArticle }) {
+  return (
+    <div
+      data-media-card
+      data-media-featured={article.featured ? "true" : undefined}
+      className={`media-scroll-card relative mx-auto w-[calc(100vw-40px)] max-w-full md:mx-0 md:w-auto ${
+        article.featured ? "md:col-span-2" : ""
+      } ${article.className}`}
+    >
+      <div className="media-card group">
+        <a
+          href={article.url}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={`Abrir matéria do ${article.outlet}`}
+          className={`media-paper block min-h-[238px] rounded-sm border border-black/10 px-5 pb-8 pt-4 text-left text-[#111827] shadow-[0_18px_45px_rgba(0,0,0,0.26)] outline-none transition ${
+            article.featured ? "min-h-[330px] px-6 pb-10 pt-6 lg:min-h-[330px]" : "lg:min-h-[214px]"
+          }`}
+          style={
+            {
+              "--paper-accent": article.accent,
+              "--paper-rotate": article.rotation,
+            } as React.CSSProperties
+          }
+        >
+          <div className="flex items-start justify-between gap-4 border-b border-[#111827]/25 pb-2">
+            <MediaOutletBrand article={article} />
+            <time className="shrink-0 pt-1 text-[10px] font-bold uppercase tracking-normal text-[#111827]/70">
+              06 MAI 2026
+            </time>
+          </div>
+
+          <p className="mt-4 text-[11px] font-extrabold uppercase tracking-normal text-[var(--paper-accent)]">
+            {article.category}
+          </p>
+          <h3
+            className={`mt-2 break-words font-serif font-extrabold tracking-normal text-[#111827] ${
+              article.featured
+                ? "max-w-[29rem] text-2xl leading-[1.12] sm:text-3xl"
+                : "line-clamp-4 text-base leading-[1.2] sm:text-lg"
+            }`}
+          >
+            {mediaTitle}
+          </h3>
+
+          {article.featured ? (
+            <p className="mt-5 max-w-[27rem] text-sm font-medium leading-6 text-[#263342]">
+              Plataforma desenvolvida no dia a dia de instituições de cuidado propõe transformar a gestão com
+              tecnologia, simplicidade e foco em pessoas.
+            </p>
+          ) : null}
+
+          <div className="mt-5 flex items-center justify-between gap-3 text-xs font-semibold text-[#263342]">
+            <span>Por {article.outlet}</span>
+            <span className="inline-flex items-center gap-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
+              Ler
+              <ExternalLink className="h-3.5 w-3.5" />
+            </span>
+          </div>
+        </a>
+      </div>
+    </div>
+  );
+}
+
+function MediaLogoLink({ article }: { article: MediaArticle }) {
+  return (
+    <a
+      href={article.url}
+      target="_blank"
+      rel="noreferrer"
+      aria-label={`Abrir matéria do ${article.outlet}`}
+      className="media-logo-link group inline-flex h-16 shrink-0 items-center justify-center rounded-md px-5 outline-none transition"
+    >
+      {article.logoSrc ? (
+        <img src={article.logoSrc} alt="" loading="lazy" className="media-logo-image" />
+      ) : (
+        <span className="media-logo-mark font-serif text-2xl font-extrabold leading-none tracking-normal transition">
+          {article.outlet}
+        </span>
+      )}
+    </a>
+  );
+}
+
+function MediaSection() {
+  const sectionRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    if (reducedMotion) {
+      return;
+    }
+
+    gsap.registerPlugin(ScrollTrigger);
+
+    const context = gsap.context(() => {
+      const cards = gsap.utils.toArray<HTMLElement>("[data-media-card]");
+      const introItems = gsap.utils.toArray<HTMLElement>("[data-media-intro] > *");
+      const logoPanel = document.querySelector<HTMLElement>("[data-media-logo-panel]");
+      const desktopOffset = window.matchMedia("(min-width: 1024px)").matches;
+
+      gsap.from(introItems, {
+        autoAlpha: 0,
+        y: 26,
+        duration: 0.72,
+        ease: "power3.out",
+        stagger: 0.08,
+        scrollTrigger: {
+          trigger: sectionRef.current,
+          start: "top 72%",
+        },
+      });
+
+      cards.forEach((card, index) => {
+        const isFeatured = card.dataset.mediaFeatured === "true";
+        const fromX = desktopOffset ? ((index % 3) - 1) * 42 : 0;
+
+        gsap.fromTo(
+          card,
+          {
+            autoAlpha: 0,
+            x: fromX,
+            y: desktopOffset ? 96 : 48,
+            rotate: desktopOffset ? (index % 2 === 0 ? -4 : 4) : 0,
+            scale: isFeatured ? 0.9 : 0.86,
+          },
+          {
+            autoAlpha: 1,
+            x: 0,
+            y: 0,
+            rotate: 0,
+            scale: 1,
+            duration: isFeatured ? 0.95 : 0.78,
+            ease: "power3.out",
+            scrollTrigger: {
+              trigger: card,
+              start: desktopOffset ? "top 82%" : "top 88%",
+              toggleActions: "play none none reverse",
+            },
+          },
+        );
+      });
+
+      if (logoPanel) {
+        gsap.from(logoPanel, {
+          autoAlpha: 0,
+          y: 30,
+          duration: 0.72,
+          ease: "power3.out",
+          scrollTrigger: {
+            trigger: logoPanel,
+            start: "top 88%",
+          },
+        });
+      }
+    }, sectionRef);
+
+    return () => context.revert();
+  }, []);
+
+  return (
+    <section
+      id="midia"
+      ref={sectionRef}
+      className="relative overflow-hidden bg-[#06162D] px-5 py-16 text-white sm:px-8 lg:py-20"
+    >
+      <div className="absolute inset-0 bg-[linear-gradient(180deg,#06162D_0%,#071A34_48%,#031025_100%)]" />
+      <div className="absolute inset-x-0 top-0 h-px bg-white/12" />
+      <div className="absolute inset-x-0 bottom-0 h-px bg-white/12" />
+
+      <div className="relative mx-auto max-w-7xl">
+        <div data-media-intro className="mx-auto max-w-3xl text-center">
+          {/* <p className="inline-flex items-center gap-2 text-sm font-extrabold uppercase tracking-normal text-[#22D3EE]">
+            <Newspaper className="h-4 w-4" />
+            Na mídia
+          </p> */}
+          <h2 className="mx-auto mt-4 max-w-[16rem] text-3xl font-extrabold leading-tight tracking-normal text-white sm:max-w-3xl sm:text-5xl">
+            O{" "}
+            <span>
+              Easy<span className="easycare-care-gradient">Care</span>
+            </span>{" "}
+            na mídia
+          </h2>
+          <p className="mx-auto mt-4 max-w-[19rem] text-base leading-7 text-white/72 sm:max-w-2xl sm:text-lg sm:leading-8">
+            Veja como veículos de diferentes regiões destacaram nossa história e o impacto da tecnologia na
+            gestão do cuidado.
+          </p>
+        </div>
+
+        <div className="relative mt-11 grid gap-4 md:grid-cols-2 lg:block lg:min-h-[690px] xl:min-h-[720px]">
+          <div className="pointer-events-none absolute inset-x-[16%] top-28 hidden h-[180px] bg-[linear-gradient(90deg,rgba(34,211,238,0),rgba(34,211,238,0.28),rgba(34,211,238,0))] blur-3xl lg:block" />
+          {featuredMediaArticles.map((article) => (
+            <MediaCard key={article.outlet} article={article} />
+          ))}
+        </div>
+
+        <div
+          data-media-logo-panel
+          className="mt-8 overflow-hidden rounded-md border border-white/12 bg-white/[0.045] py-5 backdrop-blur"
+        >
+          <div className="mb-3 flex items-center justify-between gap-4 px-5">
+            <p className="text-xs font-bold uppercase tracking-normal text-white/58">
+              Veículos que já falaram sobre nós
+            </p>
+          </div>
+          <div className="media-logo-rail">
+            <div className="media-logo-track flex w-max items-center gap-3">
+              {[...mediaArticles, ...mediaArticles].map((article, index) => (
+                <MediaLogoLink key={`${article.url}-${index}`} article={article} />
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function LandingPage() {
   return (
     <div className="min-h-screen bg-white text-[#05203C]">
@@ -403,6 +874,8 @@ export default function LandingPage() {
             ))}
           </div>
         </section>
+
+        <MediaSection />
 
         <section id="solucoes" className="bg-white px-5 py-16 sm:px-8 lg:py-20">
           <div className="mx-auto max-w-7xl">

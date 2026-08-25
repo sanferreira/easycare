@@ -132,6 +132,13 @@
     background-clip: text;
   }
 
+  .easycare-care-gradient {
+    background: linear-gradient(135deg, #22D3EE 0%, #18D7C5 48%, #7C3AED 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
   .easycare-brand-panel {
     position: relative;
     overflow: hidden;
@@ -152,6 +159,237 @@
   .easycare-brand-panel > * {
     position: relative;
     z-index: 1;
+  }
+
+  .media-scroll-card {
+    isolation: isolate;
+    will-change: transform, opacity;
+  }
+
+  .media-scroll-card:hover,
+  .media-scroll-card:focus-within {
+    z-index: 70;
+  }
+
+  .media-card {
+    isolation: isolate;
+    transition: transform 240ms ease, filter 240ms ease, z-index 240ms ease;
+  }
+
+  .media-card:hover,
+  .media-card:focus-within {
+    z-index: 70;
+    transform: translateY(-8px) scale(1.035);
+    filter: drop-shadow(0 28px 34px rgba(0, 0, 0, 0.36));
+  }
+
+  .media-paper {
+    position: relative;
+    overflow: hidden;
+    transform: rotate(0deg);
+    transform-origin: center;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(232, 227, 217, 0.62)),
+      repeating-linear-gradient(0deg, rgba(5, 32, 60, 0.045) 0 1px, transparent 1px 5px),
+      #f4efe6;
+    transition: transform 240ms ease, box-shadow 240ms ease, border-color 240ms ease;
+  }
+
+  .media-paper::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(90deg, rgba(255, 255, 255, 0.2), transparent 32%, rgba(5, 32, 60, 0.08) 100%),
+      radial-gradient(circle at 20% 20%, rgba(5, 32, 60, 0.08), transparent 18%),
+      radial-gradient(circle at 80% 65%, rgba(5, 32, 60, 0.07), transparent 22%);
+    mix-blend-mode: multiply;
+    opacity: 0.46;
+  }
+
+  .media-paper::after {
+    content: "";
+    position: absolute;
+    left: -3%;
+    right: -3%;
+    bottom: -1px;
+    height: 28px;
+    pointer-events: none;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0), rgba(147, 137, 119, 0.2)),
+      #ebe5d9;
+    clip-path: polygon(
+      0 28%,
+      4% 44%,
+      8% 28%,
+      12% 58%,
+      16% 38%,
+      21% 68%,
+      26% 43%,
+      31% 62%,
+      36% 36%,
+      41% 64%,
+      46% 44%,
+      51% 70%,
+      56% 38%,
+      61% 62%,
+      66% 42%,
+      71% 66%,
+      76% 36%,
+      82% 60%,
+      88% 38%,
+      94% 58%,
+      100% 34%,
+      100% 100%,
+      0 100%
+    );
+  }
+
+  .media-paper > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .media-card:hover .media-paper,
+  .media-card:focus-within .media-paper {
+    border-color: color-mix(in srgb, var(--paper-accent) 56%, white);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--paper-accent) 50%, transparent), 0 0 34px color-mix(in srgb, var(--paper-accent) 42%, transparent);
+    transform: scale(1.02);
+  }
+
+  .media-paper:focus-visible {
+    box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.64), 0 24px 64px rgba(0, 0, 0, 0.38);
+  }
+
+  .media-card-logo-shell,
+  .media-card-logo-mask {
+    display: inline-flex;
+    height: 34px;
+    width: min(210px, calc(100% - 76px));
+    align-items: center;
+  }
+
+  .media-card-logo-shell-featured,
+  .media-card-logo-mask-featured {
+    height: 46px;
+    width: min(320px, calc(100% - 84px));
+  }
+
+  .media-card-logo-image {
+    display: block;
+    max-height: 100%;
+    max-width: 100%;
+    object-fit: contain;
+    object-position: left center;
+  }
+
+  .media-card-logo-mask {
+    background-color: var(--card-logo-color);
+    mask: var(--card-logo-url) left center / contain no-repeat;
+    -webkit-mask: var(--card-logo-url) left center / contain no-repeat;
+  }
+
+  .media-logo-rail {
+    overflow: hidden;
+    mask-image: linear-gradient(90deg, transparent 0, #000 8%, #000 92%, transparent 100%);
+  }
+
+  .media-logo-track {
+    animation: mediaLogoSlide 46s linear infinite;
+  }
+
+  .media-logo-rail:hover .media-logo-track,
+  .media-logo-rail:focus-within .media-logo-track {
+    animation-play-state: paused;
+  }
+
+  .media-logo-link {
+    border: 1px solid transparent;
+    width: 210px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+
+  .media-logo-link:hover,
+  .media-logo-link:focus-visible {
+    border-color: rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.06);
+    transform: translateY(-1px);
+  }
+
+  .media-logo-image {
+    display: block;
+    max-height: 38px;
+    max-width: 165px;
+    object-fit: contain;
+    opacity: 0.78;
+    filter: grayscale(1) invert(1) contrast(1.45) brightness(1.25);
+    mix-blend-mode: screen;
+    transition: filter 200ms ease, opacity 200ms ease, transform 200ms ease;
+  }
+
+  .media-logo-mark {
+    color: #EAF5FF;
+    opacity: 0.78;
+  }
+
+  .media-logo-link:hover .media-logo-mark,
+  .media-logo-link:focus-visible .media-logo-mark {
+    opacity: 1;
+  }
+
+  .media-logo-link:hover .media-logo-image,
+  .media-logo-link:focus-visible .media-logo-image {
+    opacity: 1;
+    transform: scale(1.03);
+  }
+
+  @keyframes mediaLogoSlide {
+    from {
+      transform: translateX(0);
+    }
+
+    to {
+      transform: translateX(-50%);
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .media-paper {
+      transform: rotate(var(--paper-rotate));
+    }
+
+    .media-card:hover .media-paper,
+    .media-card:focus-within .media-paper {
+      transform: rotate(var(--paper-rotate)) scale(1.03);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .media-card,
+    .media-scroll-card,
+    .media-paper,
+    .media-logo-track {
+      transition: none;
+      animation: none;
+    }
+
+    .media-card:hover,
+    .media-card:focus-within {
+      transform: none;
+    }
+
+    .media-card:hover .media-paper,
+    .media-card:focus-within .media-paper {
+      transform: none;
+    }
+  }
+
+  @media (min-width: 1024px) and (prefers-reduced-motion: reduce) {
+    .media-card:hover .media-paper,
+    .media-card:focus-within .media-paper {
+      transform: rotate(var(--paper-rotate));
+    }
   }
 
   /* === Glowing primary button === */
