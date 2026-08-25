@@ -684,16 +684,16 @@ function OrgCard({ org, onboarding }: { org: Organization; onboarding?: Organiza
   }
 
   return (
-    <Card className="overflow-hidden">
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-start gap-3">
+    <Card className="overflow-visible">
+      <CardHeader className="p-4 sm:p-5">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
+          <div className="flex min-w-0 items-start gap-3">
             <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center text-primary shrink-0">
               <Building2 className="h-5 w-5" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="font-semibold text-foreground">{displayOrg.name}</h3>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="max-w-full text-base font-semibold leading-tight text-foreground">{displayOrg.name}</h3>
                 <Badge className={`text-xs ${currentOrgBadge.className}`}>
                   {currentOrgBadge.label}
                 </Badge>
@@ -701,13 +701,13 @@ function OrgCard({ org, onboarding }: { org: Organization; onboarding?: Organiza
                   {subscriptionBadge.label}
                 </Badge>
               </div>
-              {displayOrg.address && <p className="text-xs text-muted-foreground mt-0.5">{displayOrg.address}</p>}
+              {displayOrg.address && <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">{displayOrg.address}</p>}
               <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
                 {displayOrg.phone && <span>{maskPhoneBR(displayOrg.phone)}</span>}
                 {displayOrg.email && <span>{displayOrg.email}</span>}
                 {displayOrg.cnpj && <span>CNPJ: {maskCnpj(displayOrg.cnpj)}</span>}
               </div>
-              <p className="text-xs text-muted-foreground mt-0.5">
+              <p className="mt-1 max-w-4xl text-xs leading-5 text-muted-foreground">
                 Assinatura: <span className="font-medium text-foreground">{getSubscriptionLabel(displayOrg.stripeSubscriptionStatus)}</span>
                 {displayOrg.subscriptionCurrentPeriodEnd && (
                   <span> · período até {formatShortDate(displayOrg.subscriptionCurrentPeriodEnd)}</span>
@@ -731,7 +731,7 @@ function OrgCard({ org, onboarding }: { org: Organization; onboarding?: Organiza
                 <span className="font-medium text-foreground">{displayOrg.capacity ?? 50}</span> vagas disponíveis · criado em {formatShortDate(displayOrg.createdAt)}
               </p>
               {onboarding && (
-                <div className="mt-3 max-w-sm">
+                <div className="mt-3 max-w-md">
                   <div className="mb-1 flex items-center justify-between text-xs">
                     <span className="font-medium text-muted-foreground">Implantação</span>
                     <span className="font-semibold text-foreground">{onboarding.percent}%</span>
@@ -741,7 +741,7 @@ function OrgCard({ org, onboarding }: { org: Organization; onboarding?: Organiza
               )}
             </div>
           </div>
-          <div className="flex flex-wrap justify-end gap-2 shrink-0">
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-start xl:max-w-[560px] xl:justify-end">
             {whatsappUrl && (
               <Button
                 asChild
@@ -797,7 +797,7 @@ function OrgCard({ org, onboarding }: { org: Organization; onboarding?: Organiza
               variant="ghost" size="sm"
               onClick={() => setExpanded(!expanded)}
               data-testid={`button-expand-org-${org.id}`}
-              className="gap-1 text-xs"
+              className="h-8 justify-center gap-1 text-xs"
             >
               <Users className="h-3.5 w-3.5" />
               Usuários
@@ -806,7 +806,7 @@ function OrgCard({ org, onboarding }: { org: Organization; onboarding?: Organiza
             <Button
               variant="outline"
               size="sm"
-              className="h-8 gap-1 text-xs"
+              className="h-8 justify-center gap-1 text-xs"
               onClick={openManualRelease}
               data-testid={`button-manual-release-org-${org.id}`}
               title="Liberar acesso manual com data e motivo"
@@ -818,7 +818,7 @@ function OrgCard({ org, onboarding }: { org: Organization; onboarding?: Organiza
               asChild
               variant="ghost"
               size="sm"
-              className="h-8 gap-1 text-xs"
+              className="h-8 justify-center gap-1 text-xs"
               title="Ver histórico da organização"
             >
               <a href={`/audit?organizationId=${displayOrg.id}`} target="_blank" rel="noreferrer">
@@ -1765,7 +1765,7 @@ export default function Admin() {
       </div>
 
       {isLoading ? (
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-4">
           {[1, 2].map((i) => <div key={i} className="h-32 bg-muted animate-pulse rounded-xl" />)}
         </div>
       ) : filteredOrganizations.length === 0 ? (
@@ -1777,8 +1777,10 @@ export default function Admin() {
           </CardContent>
         </Card>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2">
-          {filteredOrganizations.map((org) => <OrgCard key={org.id} org={org} onboarding={onboardingByOrgId.get(org.id)} />)}
+        <div className="max-h-[calc(100vh-280px)] min-h-[280px] overflow-y-auto pr-1">
+          <div className="grid gap-4">
+            {filteredOrganizations.map((org) => <OrgCard key={org.id} org={org} onboarding={onboardingByOrgId.get(org.id)} />)}
+          </div>
         </div>
       )}
 
