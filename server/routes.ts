@@ -534,8 +534,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const timestamp = rawSubscription.cancel_at ?? (rawSubscription.cancel_at_period_end ? rawSubscription.current_period_end : null);
     return typeof timestamp === "number" ? new Date(timestamp * 1000) : null;
   };
-  const checkoutConfigured = () => Boolean(process.env.STRIPE_SECRET_KEY && (process.env.STRIPE_MONTHLY_PRICE_ID || process.env.STRIPE_PRICE_ID));
-  const portalConfigured = () => Boolean(process.env.STRIPE_SECRET_KEY);
+  const envIsConfigured = (key: string) => Boolean(process.env[key]?.trim());
+  const checkoutConfigured = () => envIsConfigured("STRIPE_SECRET_KEY") && (envIsConfigured("STRIPE_MONTHLY_PRICE_ID") || envIsConfigured("STRIPE_PRICE_ID"));
+  const portalConfigured = () => envIsConfigured("STRIPE_SECRET_KEY");
   const toBillingClientErrorMessage = (error: unknown, fallback: string) => {
     const raw = error instanceof Error ? error.message : "";
     const normalized = raw.toLowerCase();
@@ -1497,6 +1498,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       limit: Number.isFinite(limitValue) ? limitValue : 100,
     });
     res.json(logs);
+  });
+
+  app.get("/api/admin/runtime-config", requireAuth, requireSuperAdmin, (_req, res) => {
+    res.json({
+      nodeEnv: process.env.NODE_ENV ?? null,
+      cwd: process.cwd(),
+      entrypoint: process.argv[1] ?? null,
+      stripeSecretKey: envIsConfigured("STRIPE_SECRET_KEY"),
+      stripePriceId: envIsConfigured("STRIPE_PRICE_ID"),
+      stripeMonthlyPriceId: envIsConfigured("STRIPE_MONTHLY_PRICE_ID"),
+      stripeSemiannualPriceId: envIsConfigured("STRIPE_SEMIANNUAL_PRICE_ID"),
+      stripeAnnualPriceId: envIsConfigured("STRIPE_ANNUAL_PRICE_ID"),
+      stripeWebhookSecret: envIsConfigured("STRIPE_WEBHOOK_SECRET"),
+      viteStripePublishableKey: envIsConfigured("VITE_STRIPE_PUBLISHABLE_KEY"),
+      checkoutConfigured: checkoutConfigured(),
+      portalConfigured: portalConfigured(),
+    });
   });
 
   // ===== BILLING / STRIPE =====
