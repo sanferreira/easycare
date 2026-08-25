@@ -1152,7 +1152,7 @@ function OrgCard({ org, onboarding }: { org: Organization; onboarding?: Organiza
                 data-testid="input-edit-org-manual-access-until"
               />
               <p className="text-xs text-muted-foreground mt-1">
-                Use para clientes que pagaram fora da Stripe. Em branco não aplica vencimento manual.
+                Use para migração ou pagamento confirmado fora da Stripe. Ao vencer, o cliente volta para regularização.
               </p>
             </div>
             <div>
@@ -1169,12 +1169,16 @@ function OrgCard({ org, onboarding }: { org: Organization; onboarding?: Organiza
                 Opcional. Quando preenchido, fica registrado no histórico da organização.
               </p>
             </div>
-            <div className="grid gap-3 sm:grid-cols-3">
+            <div className={`grid gap-3 ${editOrgForm.billingMethod === "manual_boleto" ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
               <div>
                 <Label className="text-sm font-medium">Cobrança</Label>
                 <Select
                   value={editOrgForm.billingMethod}
-                  onValueChange={(value) => setEditOrgForm({ ...editOrgForm, billingMethod: value })}
+                  onValueChange={(value) => setEditOrgForm({
+                    ...editOrgForm,
+                    billingMethod: value,
+                    manualBillingDueDay: value === "manual_boleto" ? editOrgForm.manualBillingDueDay : "",
+                  })}
                 >
                   <SelectTrigger className="mt-1.5" data-testid="select-edit-org-billing-method">
                     <SelectValue />
@@ -1184,23 +1188,30 @@ function OrgCard({ org, onboarding }: { org: Organization; onboarding?: Organiza
                     <SelectItem value="manual_boleto">Boleto manual</SelectItem>
                   </SelectContent>
                 </Select>
-              </div>
-              <div>
-                <Label className="text-sm font-medium">Vencimento boleto</Label>
-                <Input
-                  className="mt-1.5"
-                  type="number"
-                  min="1"
-                  max="31"
-                  placeholder="Ex: 15"
-                  value={editOrgForm.manualBillingDueDay}
-                  onChange={(e) => setEditOrgForm({ ...editOrgForm, manualBillingDueDay: e.target.value })}
-                  data-testid="input-edit-org-manual-billing-due-day"
-                />
                 <p className="text-xs text-muted-foreground mt-1">
-                  Dia do mês para cobrar no boleto, de 1 a 31.
+                  {editOrgForm.billingMethod === "manual_boleto"
+                    ? "Use apenas para clientes que continuarão fora da Stripe."
+                    : "Clientes novos e migrações usam checkout da Stripe."}
                 </p>
               </div>
+              {editOrgForm.billingMethod === "manual_boleto" && (
+                <div>
+                  <Label className="text-sm font-medium">Vencimento boleto</Label>
+                  <Input
+                    className="mt-1.5"
+                    type="number"
+                    min="1"
+                    max="31"
+                    placeholder="Ex: 15"
+                    value={editOrgForm.manualBillingDueDay}
+                    onChange={(e) => setEditOrgForm({ ...editOrgForm, manualBillingDueDay: e.target.value })}
+                    data-testid="input-edit-org-manual-billing-due-day"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Dia do mês para cobrar no boleto, de 1 a 31.
+                  </p>
+                </div>
+              )}
               <div>
                 <Label className="text-sm font-medium">Tolerância (dias)</Label>
                 <Input
@@ -1871,15 +1882,19 @@ export default function Admin() {
                 data-testid="input-org-manual-access-until"
               />
               <p className="text-xs text-muted-foreground mt-1">
-                Para clientes pagos fora da Stripe. Em branco não aplica vencimento manual.
+                Use para migração ou pagamento confirmado fora da Stripe. Ao vencer, o cliente volta para regularização.
               </p>
             </div>
-            <div className="grid gap-3 sm:grid-cols-3">
+            <div className={`grid gap-3 ${orgForm.billingMethod === "manual_boleto" ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
               <div>
                 <Label className="text-sm font-medium">Cobrança</Label>
                 <Select
                   value={orgForm.billingMethod}
-                  onValueChange={(value) => setOrgForm({ ...orgForm, billingMethod: value })}
+                  onValueChange={(value) => setOrgForm({
+                    ...orgForm,
+                    billingMethod: value,
+                    manualBillingDueDay: value === "manual_boleto" ? orgForm.manualBillingDueDay : "",
+                  })}
                 >
                   <SelectTrigger className="mt-1.5" data-testid="select-org-billing-method">
                     <SelectValue />
@@ -1889,23 +1904,30 @@ export default function Admin() {
                     <SelectItem value="manual_boleto">Boleto manual</SelectItem>
                   </SelectContent>
                 </Select>
-              </div>
-              <div>
-                <Label className="text-sm font-medium">Vencimento boleto</Label>
-                <Input
-                  className="mt-1.5"
-                  type="number"
-                  min="1"
-                  max="31"
-                  placeholder="Ex: 15"
-                  value={orgForm.manualBillingDueDay}
-                  onChange={(e) => setOrgForm({ ...orgForm, manualBillingDueDay: e.target.value })}
-                  data-testid="input-org-manual-billing-due-day"
-                />
                 <p className="text-xs text-muted-foreground mt-1">
-                  Dia do mês para cobrar no boleto, de 1 a 31.
+                  {orgForm.billingMethod === "manual_boleto"
+                    ? "Use apenas para clientes que continuarão fora da Stripe."
+                    : "Clientes novos e migrações usam checkout da Stripe."}
                 </p>
               </div>
+              {orgForm.billingMethod === "manual_boleto" && (
+                <div>
+                  <Label className="text-sm font-medium">Vencimento boleto</Label>
+                  <Input
+                    className="mt-1.5"
+                    type="number"
+                    min="1"
+                    max="31"
+                    placeholder="Ex: 15"
+                    value={orgForm.manualBillingDueDay}
+                    onChange={(e) => setOrgForm({ ...orgForm, manualBillingDueDay: e.target.value })}
+                    data-testid="input-org-manual-billing-due-day"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Dia do mês para cobrar no boleto, de 1 a 31.
+                  </p>
+                </div>
+              )}
               <div>
                 <Label className="text-sm font-medium">Tolerância (dias)</Label>
                 <Input
