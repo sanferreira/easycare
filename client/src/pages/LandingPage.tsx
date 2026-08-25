@@ -408,7 +408,7 @@ export default function LandingPage() {
           <div className="mx-auto max-w-7xl">
             <SectionHeading
               eyebrow="Soluções"
-              title="A rotina da casa em um só lugar."
+              title="A rotina do atendimento em um só lugar."
               text="O EasyCare ajuda a tirar informações importantes de grupos, cadernos e planilhas, sem complicar o dia da equipe."
               centered
             />
