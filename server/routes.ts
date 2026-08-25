@@ -1474,6 +1474,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(req.session.user);
   });
 
+  app.get("/api/public/stripe-config", (_req, res) => {
+    const publishableKey = process.env.VITE_STRIPE_PUBLISHABLE_KEY?.trim() || "";
+    res.json({
+      publishableKey,
+      publishableKeyConfigured: Boolean(publishableKey),
+    });
+  });
+
   app.get("/api/audit-logs", requireAuth, async (req, res) => {
     const sessionUser = req.session.user;
     if (!sessionUser) return res.status(401).json({ message: "Não autorizado" });

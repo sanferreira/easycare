@@ -21,10 +21,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/use-auth";
-
-const stripePublishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY?.trim();
-const stripePromise = stripePublishableKey ? loadStripe(stripePublishableKey) : null;
-const embeddedCheckoutConfigured = Boolean(stripePublishableKey);
+import { useStripePublicConfig } from "@/lib/stripe-public-config";
 
 type BillingStatus = {
   organizationName: string;
@@ -160,6 +157,12 @@ function CenterMessage({
 export default function CheckoutPage() {
   const { user, isLoading } = useAuth();
   const queryClient = useQueryClient();
+  const stripeConfigQuery = useStripePublicConfig();
+  const stripePromise = useMemo(
+    () => stripeConfigQuery.publishableKey ? loadStripe(stripeConfigQuery.publishableKey) : null,
+    [stripeConfigQuery.publishableKey],
+  );
+  const embeddedCheckoutConfigured = stripeConfigQuery.embeddedCheckoutConfigured;
   const [selectedPlan, setSelectedPlan] = useState<BillingPlanId>("monthly");
   const [planTouched, setPlanTouched] = useState(false);
   const [checkoutStarted, setCheckoutStarted] = useState(false);
@@ -338,7 +341,7 @@ export default function CheckoutPage() {
     );
   }
 
-  if (!embeddedCheckoutConfigured) {
+  if (!stripeConfigQuery.isLoading && !embeddedCheckoutConfigured) {
     return (
       <CenterMessage
         icon={<AlertTriangle className="h-6 w-6" />}
@@ -599,7 +602,7 @@ export default function CheckoutPage() {
 
                 <Button
                   className="relative mt-4 h-12 w-full rounded-md bg-[#0B5CAB] text-base font-extrabold text-white shadow-[0_14px_28px_rgba(11,92,171,0.18)] hover:bg-[#084B8A]"
-                  disabled={!selectedPlanOption?.configured || checkoutStarted || billingPlansQuery.isLoading}
+                  disabled={!selectedPlanOption?.configured || checkoutStarted || billingPlansQuery.isLoading || stripeConfigQuery.isLoading || !embeddedCheckoutConfigured}
                   onClick={() => setCheckoutStarted(true)}
                 >
                   {checkoutStarted ? "Checkout iniciado" : "Começar meus 7 dias grátis"}

@@ -27,9 +27,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { buildSupportWhatsappUrl, supportWhatsappDisplay } from "@/lib/contact";
 import { queryClient } from "@/lib/queryClient";
-
-const stripePublishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY?.trim();
-const embeddedCheckoutConfigured = Boolean(stripePublishableKey);
+import { useStripePublicConfig } from "@/lib/stripe-public-config";
 
 type BillingStatus = {
   organizationName: string;
@@ -220,6 +218,8 @@ async function parseApiResponse<T>(res: Response, fallbackMessage: string): Prom
 export default function Billing() {
   const { user, isLoading } = useAuth();
   const { toast } = useToast();
+  const stripeConfigQuery = useStripePublicConfig();
+  const embeddedCheckoutConfigured = stripeConfigQuery.embeddedCheckoutConfigured;
 
   const billingQuery = useQuery<BillingStatus>({
     queryKey: ["/api/billing/subscription"],
@@ -488,7 +488,7 @@ export default function Billing() {
                       <>
                         <Button
                           className="h-12 rounded-md bg-[#0B5CAB] px-5 text-sm font-extrabold text-white shadow-[0_14px_28px_rgba(11,92,171,0.18)] hover:bg-[#084B8A]"
-                          disabled={!canStartCheckout || !embeddedCheckoutConfigured}
+                          disabled={!canStartCheckout || stripeConfigQuery.isLoading || !embeddedCheckoutConfigured}
                           onClick={openCheckoutTab}
                         >
                           <Gift className="mr-2 h-4 w-4" />
@@ -573,7 +573,7 @@ export default function Billing() {
                 </p>
               )}
 
-              {!embeddedCheckoutConfigured && data?.organizationStatus !== "active" && (
+              {!stripeConfigQuery.isLoading && !embeddedCheckoutConfigured && data?.organizationStatus !== "active" && (
                 <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
                   O checkout integrado não está disponível agora. Use as opções de pagamento ou fale com o suporte para continuar.
                 </p>

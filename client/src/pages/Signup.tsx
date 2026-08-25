@@ -27,9 +27,7 @@ import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/queryClient";
 import { buildSupportWhatsappUrl, supportWhatsappDisplay } from "@/lib/contact";
 import { maskCnpj } from "@/lib/masks";
-
-const stripePublishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY?.trim();
-const embeddedCheckoutConfigured = Boolean(stripePublishableKey);
+import { useStripePublicConfig } from "@/lib/stripe-public-config";
 
 const signupSchema = z.object({
   organizationName: z.string().trim().min(2, "Informe o nome da instituição."),
@@ -72,6 +70,8 @@ async function parseSignupResponse(res: Response): Promise<SignupResponse> {
 export default function Signup() {
   const { toast } = useToast();
   const checkoutWindowRef = useRef<Window | null>(null);
+  const stripeConfigQuery = useStripePublicConfig();
+  const embeddedCheckoutConfigured = stripeConfigQuery.embeddedCheckoutConfigured;
   const supportUrl = useMemo(
     () => buildSupportWhatsappUrl("Olá! Quero ajuda para começar meu teste grátis do EasyCare."),
     [],
@@ -371,7 +371,7 @@ export default function Signup() {
 
                     <Button
                       type="submit"
-                      disabled={signupMutation.isPending}
+                      disabled={signupMutation.isPending || stripeConfigQuery.isLoading}
                       className="h-12 w-full rounded-md border border-[#0A559F] bg-[#0B5CAB] font-bold text-white shadow-[0_12px_24px_rgba(11,92,171,0.18)] transition hover:bg-[#084B8A]"
                     >
                       {signupMutation.isPending ? (
