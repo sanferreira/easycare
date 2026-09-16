@@ -2597,6 +2597,114 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.status(500).json({ message });
     }
   });
+
+  app.post("/api/organizations/:id/trial/notify", requireAuth, requireSuperAdmin, async (req, res) => {
+    try {
+      const orgId = Number(req.params.id);
+      const organization = await storage.getOrganization(orgId);
+      if (!organization) {
+        return res.status(404).json({ message: "Organização não encontrada." });
+      }
+
+      const input = z.object({
+        grantDays: z.coerce.number().int().min(1).max(90).optional(),
+        sendEmail: z.boolean().optional().default(true),
+      }).parse(req.body ?? {});
+
+      let updatedOrganization = organization;
+      let trialEndsAt = organization.manualAccessUntil
+        ? new Date(organization.manualAccessUntil)
+        : null;
+
+      if (input.grantDays) {
+        const endsAt = new Date();
+        endsAt.setHours(23, 59, 59, 999);
+        endsAt.setDate(endsAt.getDate() + input.grantDays);
+        trialEndsAt = endsAt;
+        updatedOrganization = await storage.updateOrganization(orgId, {
+          status: "restricted",
+          active: false,
+          manualAccessUntil: endsAt,
+          paymentGraceDays: organization.paymentGraceDays ?? DEFAULT_PAYMENT_GRACE_DAYS,
+          billingMethod: organization.billingMethod || "stripe",
+          trialReminderSentFor: null,
+        });
+      }
+
+      if (!trialEndsAt || Number.isNaN(trialEndsAt.getTime())) {
+        return res.status(400).json({
+          message: "Esta organização ainda não tem trial ativo. Informe grantDays (ex.: 7) para liberar antes de enviar o e-mail.",
+        });
+      }
+
+      const users = await storage.getUsersByOrganization(orgId);
+      const admin = users.find((user) => user.role === "admin" && user.active !== false && user.email?.trim())
+        || users.find((user) => user.active !== false && user.email?.trim());
+      if (!admin?.email) {
+        return res.status(400).json({
+          message: "Nenhum usuário ativo com e-mail encontrado nesta organização.",
+        });
+      }
+
+      const trialDays = Math.max(
+        1,
+        Math.ceil((trialEndsAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000)),
+      );
+      const paymentMethod = updatedOrganization.billingMethod === "manual_boleto" ? "manual_boleto" : "stripe";
+      const appBaseUrl = getAppBaseUrl(req);
+      const supportWhatsappDisplay = process.env.VITE_SUPPORT_WHATSAPP_DISPLAY?.trim() || null;
+
+      let emailSent = false;
+      if (input.sendEmail !== false) {
+        await sendSignupWelcomeEmail({
+          to: admin.email,
+          adminName: admin.name,
+          organizationName: updatedOrganization.name,
+          cnpj: updatedOrganization.cnpj || "-",
+          username: admin.username,
+          paymentMethod,
+          trialDays,
+          trialEndsAt,
+          loginUrl: `${appBaseUrl}/login`,
+          supportWhatsappDisplay,
+        });
+        emailSent = true;
+      }
+
+      await logAudit(req, {
+        action: input.grantDays ? "organization.trial_granted" : "organization.trial_email_resent",
+        entityType: "organization",
+        entityId: orgId,
+        organizationId: orgId,
+        message: input.grantDays
+          ? `Trial de ${input.grantDays} dias liberado para ${updatedOrganization.name}${emailSent ? " e e-mail enviado" : ""}.`
+          : `E-mail de trial reenviado para ${admin.email} (${updatedOrganization.name}).`,
+        metadata: {
+          adminUserId: admin.id,
+          adminEmail: admin.email,
+          grantDays: input.grantDays ?? null,
+          trialEndsAt: trialEndsAt.toISOString(),
+          emailSent,
+        },
+      });
+
+      res.json({
+        success: true,
+        emailSent,
+        grantDays: input.grantDays ?? null,
+        trialEndsAt: trialEndsAt.toISOString(),
+        recipient: admin.email,
+        organization: updatedOrganization,
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados inválidos." });
+      }
+      const message = error instanceof Error ? error.message : "Erro ao liberar trial / enviar e-mail.";
+      console.error("[trial/notify]", error);
+      res.status(500).json({ message });
+    }
+  });
   app.post("/api/organizations", requireAuth, requireSuperAdmin, async (req, res) => {
     try {
       const {

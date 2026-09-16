@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/select";
 import {
   AlertTriangle, Ban, Building2, ChevronDown, ChevronRight, Clock3, CreditCard,
-  ExternalLink, Eye, EyeOff, History, Mail, MessageCircle, Pencil, Plus, Power, RefreshCw, Search,
+  ExternalLink, Eye, EyeOff, Gift, History, Mail, MessageCircle, Pencil, Plus, Power, RefreshCw, Search,
   ShieldCheck, Trash2, UnlockKeyhole, UserPlus, Users,
 } from "lucide-react";
 import { digitsOnly, maskCep, maskCnpj, maskPhoneBR } from "@/lib/masks";
@@ -525,6 +525,40 @@ function OrgCard({ org, onboarding }: { org: Organization; onboarding?: Organiza
     },
   });
 
+  const trialNotifyMutation = useMutation({
+    mutationFn: async (payload: { grantDays?: number; sendEmail?: boolean }) => {
+      const res = await fetch(`/api/organizations/${org.id}/trial/notify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.message || "Erro ao enviar e-mail / liberar trial");
+      }
+      return res.json() as Promise<{
+        emailSent: boolean;
+        grantDays: number | null;
+        recipient: string;
+        trialEndsAt: string;
+      }>;
+    },
+    onSuccess: (data) => {
+      toast({
+        title: data.grantDays ? "Trial liberado" : "E-mail enviado",
+        description: data.emailSent
+          ? `Enviado para ${data.recipient}${data.grantDays ? ` · ${data.grantDays} dias` : ""}.`
+          : "Ação concluída sem e-mail.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/organizations"] });
+      queryClient.invalidateQueries({ queryKey: [`/api/organizations/${org.id}`] });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Erro no trial/e-mail", description: err.message, variant: "destructive" });
+    },
+  });
+
   const updateOrgMutation = useMutation({
     mutationFn: async () => {
       const composedAddress = composeAddress(editOrgForm.cep, editOrgForm.address);
@@ -813,6 +847,46 @@ function OrgCard({ org, onboarding }: { org: Organization; onboarding?: Organiza
             >
               <UnlockKeyhole className="h-3.5 w-3.5" />
               Liberar manual
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 justify-center gap-1 border-sky-200 bg-sky-50 text-xs text-sky-800 hover:bg-sky-100"
+              disabled={trialNotifyMutation.isPending}
+              onClick={() => {
+                confirm({
+                  title: "Liberar 7 dias e enviar e-mail",
+                  description: `Liberar 7 dias de teste para "${displayOrg.name}" e enviar o e-mail de boas-vindas para o admin?`,
+                  confirmText: "Liberar e enviar",
+                  pendingText: "Enviando...",
+                  onConfirm: () => trialNotifyMutation.mutateAsync({ grantDays: 7, sendEmail: true }),
+                });
+              }}
+              data-testid={`button-grant-trial-org-${org.id}`}
+              title="Liberar 7 dias de trial e enviar e-mail"
+            >
+              <Gift className={`h-3.5 w-3.5 ${trialNotifyMutation.isPending ? "animate-pulse" : ""}`} />
+              7 dias + e-mail
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 justify-center gap-1 text-xs"
+              disabled={trialNotifyMutation.isPending}
+              onClick={() => {
+                confirm({
+                  title: "Reenviar e-mail de trial",
+                  description: `Reenviar o e-mail de trial/boas-vindas de "${displayOrg.name}" para o admin da organização?`,
+                  confirmText: "Reenviar e-mail",
+                  pendingText: "Enviando...",
+                  onConfirm: () => trialNotifyMutation.mutateAsync({ sendEmail: true }),
+                });
+              }}
+              data-testid={`button-resend-trial-email-org-${org.id}`}
+              title="Reenviar e-mail de trial (sem alterar a data)"
+            >
+              <Mail className="h-3.5 w-3.5" />
+              Reenviar e-mail
             </Button>
             <Button
               asChild
