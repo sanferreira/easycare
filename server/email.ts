@@ -1,4 +1,5 @@
 import { Resend } from "resend";
+import { resolveAppPublicUrl } from "./app-url";
 
 export type SignupPaymentMethod = "stripe" | "manual_boleto";
 
@@ -75,6 +76,12 @@ function getCommercialEmail() {
     || "";
 }
 
+function getBrandLogoUrl() {
+  const configured = process.env.EMAIL_LOGO_URL?.trim();
+  if (configured) return configured;
+  return `${resolveAppPublicUrl()}/brand/logo-easycare-header.png`;
+}
+
 function formatDatePtBr(date: Date) {
   return date.toLocaleDateString("pt-BR", {
     day: "2-digit",
@@ -100,19 +107,45 @@ function escapeHtml(value: string) {
 }
 
 function emailShell(title: string, bodyHtml: string) {
+  const logoUrl = escapeHtml(getBrandLogoUrl());
   return `
-    <div style="font-family:Arial,sans-serif;background:#F4F8FC;padding:24px;">
-      <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #D5E4F2;border-radius:12px;overflow:hidden;">
-        <div style="height:4px;background:linear-gradient(90deg,#0B5CAB 0%,#11C5D9 52%,#5F5CFF 100%);"></div>
-        <div style="padding:28px;">
-          <p style="margin:0;color:#0B5CAB;font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;">EasyCare</p>
-          <h1 style="margin:12px 0 0;color:#05203C;font-size:22px;line-height:1.3;">${escapeHtml(title)}</h1>
-          ${bodyHtml}
-          <p style="margin:24px 0 0;color:#93A3B7;font-size:12px;line-height:1.6;">
-            EasyCare — Tecnologia que organiza, cuidado que transforma.
-          </p>
-        </div>
-      </div>
+    <div style="margin:0;padding:0;background:#F4F8FC;font-family:Arial,Helvetica,sans-serif;">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#F4F8FC;padding:24px 12px;">
+        <tr>
+          <td align="center">
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="560" style="max-width:560px;width:100%;border:1px solid #D5E4F2;border-radius:12px;overflow:hidden;background:#ffffff;">
+              <tr>
+                <td style="background:linear-gradient(135deg,#050B1F 0%,#081337 48%,#0D1A40 100%);padding:28px 28px 24px;">
+                  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                    <tr>
+                      <td>
+                        <img src="${logoUrl}" alt="EasyCare" width="168" style="display:block;width:168px;max-width:70%;height:auto;border:0;outline:none;text-decoration:none;" />
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style="padding-top:18px;">
+                        <p style="margin:0;color:#76DFFF;font-size:11px;font-weight:700;letter-spacing:0.16em;text-transform:uppercase;">EasyCare</p>
+                        <h1 style="margin:10px 0 0;color:#ffffff;font-size:22px;line-height:1.35;font-weight:800;">${escapeHtml(title)}</h1>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+              <tr>
+                <td style="height:4px;background:linear-gradient(90deg,#0B5CAB 0%,#11C5D9 52%,#5F5CFF 100%);font-size:0;line-height:0;">&nbsp;</td>
+              </tr>
+              <tr>
+                <td style="padding:28px;background:#ffffff;">
+                  ${bodyHtml}
+                  <p style="margin:28px 0 0;color:#93A3B7;font-size:12px;line-height:1.6;">
+                    EasyCare — Tecnologia que organiza, cuidado que transforma.
+                  </p>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
     </div>
   `;
 }
