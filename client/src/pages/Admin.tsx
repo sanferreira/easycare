@@ -1258,7 +1258,7 @@ function OrgCard({ org, onboarding }: { org: Organization; onboarding?: Organiza
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="stripe">Stripe</SelectItem>
+                    <SelectItem value="stripe">Stripe (cartão ou boleto)</SelectItem>
                     <SelectItem value="manual_boleto">Boleto manual</SelectItem>
                   </SelectContent>
                 </Select>
@@ -1974,7 +1974,7 @@ export default function Admin() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="stripe">Stripe</SelectItem>
+                    <SelectItem value="stripe">Stripe (cartão ou boleto)</SelectItem>
                     <SelectItem value="manual_boleto">Boleto manual</SelectItem>
                   </SelectContent>
                 </Select>

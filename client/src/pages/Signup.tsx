@@ -365,10 +365,10 @@ export default function Signup() {
                               >
                                 <span className="inline-flex items-center gap-2 text-sm font-extrabold text-[#05203C]">
                                   <CreditCard className="h-4 w-4 text-[#0B5CAB]" />
-                                  Cartão de crédito
+                                  Stripe (cartão ou boleto)
                                 </span>
                                 <span className="mt-1 block text-xs leading-5 text-[#65758B]">
-                                  Ative a assinatura online quando o teste terminar.
+                                  Checkout online. No Stripe você escolhe cartão ou boleto.
                                 </span>
                               </button>
                               <button
@@ -383,10 +383,10 @@ export default function Signup() {
                               >
                                 <span className="inline-flex items-center gap-2 text-sm font-extrabold text-[#05203C]">
                                   <FileText className="h-4 w-4 text-[#0B5CAB]" />
-                                  Boleto
+                                  Boleto manual
                                 </span>
                                 <span className="mt-1 block text-xs leading-5 text-[#65758B]">
-                                  Nossa equipe envia o boleto para manter o acesso.
+                                  A equipe EasyCare envia o boleto fora do checkout.
                                 </span>
                               </button>
                             </div>

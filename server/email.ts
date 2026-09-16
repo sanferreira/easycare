@@ -92,8 +92,8 @@ function formatDatePtBr(date: Date) {
 }
 
 function paymentMethodLabel(method: string | null | undefined) {
-  if (method === "manual_boleto") return "Boleto";
-  if (method === "stripe") return "Cartão de crédito";
+  if (method === "manual_boleto") return "Boleto manual (equipe EasyCare)";
+  if (method === "stripe") return "Stripe (cartão ou boleto)";
   return method?.trim() || "Não informado";
 }
 
@@ -164,8 +164,8 @@ export async function sendSignupWelcomeEmail(input: SignupWelcomeEmailInput) {
   const paymentLabel = paymentMethodLabel(input.paymentMethod);
   const trialEnds = formatDatePtBr(input.trialEndsAt);
   const paymentHint = input.paymentMethod === "manual_boleto"
-    ? "No fim do teste, nossa equipe envia o boleto para manter o acesso."
-    : "No fim do teste, ative a assinatura em Cobrança com cartão. Sem cobrança durante o período gratuito.";
+    ? "No fim do teste, nossa equipe envia o boleto manual para manter o acesso."
+    : "No fim do teste, ative a assinatura na Stripe. Lá você pode pagar com cartão ou boleto. Sem cobrança durante o período gratuito.";
   const supportLine = input.supportWhatsappDisplay
     ? `<p style="margin:16px 0 0;color:#405875;font-size:14px;line-height:1.6;">WhatsApp: <strong>${escapeHtml(input.supportWhatsappDisplay)}</strong></p>`
     : "";
@@ -218,8 +218,8 @@ export async function sendSignupCommercialAlertEmail(input: SignupCommercialEmai
   const paymentLabel = paymentMethodLabel(input.paymentMethod);
   const trialEnds = formatDatePtBr(input.trialEndsAt);
   const boletoHint = input.paymentMethod === "manual_boleto"
-    ? "<p style=\"margin:16px 0 0;color:#9A3412;font-size:14px;line-height:1.6;\"><strong>Ação:</strong> cliente escolheu boleto. Enviar cobrança antes do fim do teste.</p>"
-    : "<p style=\"margin:16px 0 0;color:#405875;font-size:14px;line-height:1.6;\">Cliente escolheu cartão. Pode ativar a Stripe em Cobrança após o teste.</p>";
+    ? "<p style=\"margin:16px 0 0;color:#9A3412;font-size:14px;line-height:1.6;\"><strong>Ação:</strong> cliente escolheu boleto manual. Enviar cobrança pela equipe antes do fim do teste.</p>"
+    : "<p style=\"margin:16px 0 0;color:#405875;font-size:14px;line-height:1.6;\">Cliente escolheu Stripe (cartão ou boleto no checkout). Pode ativar em Cobrança após o teste.</p>";
 
   const { error } = await resend.emails.send({
     from: getFromEmail(),
@@ -301,8 +301,8 @@ export async function sendTrialEndingEmail(input: TrialEndingEmailInput) {
   const trialEnds = formatDatePtBr(input.trialEndsAt);
   const paymentLabel = paymentMethodLabel(input.paymentMethod);
   const paymentHint = input.paymentMethod === "manual_boleto"
-    ? "Como você escolheu boleto, fale com o suporte EasyCare para receber a cobrança e manter o acesso."
-    : "Ative a assinatura com cartão em Cobrança para continuar sem interrupção.";
+    ? "Como você escolheu boleto manual, fale com o suporte EasyCare para receber a cobrança e manter o acesso."
+    : "Ative a assinatura na Stripe (cartão ou boleto) em Cobrança para continuar sem interrupção.";
   const supportLine = input.supportWhatsappDisplay
     ? `<p style="margin:16px 0 0;color:#405875;font-size:14px;line-height:1.6;">WhatsApp: <strong>${escapeHtml(input.supportWhatsappDisplay)}</strong></p>`
     : "";

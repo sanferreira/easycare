@@ -2937,7 +2937,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       .regex(/^[a-zA-Z0-9._-]+$/, "Use apenas letras, números, ponto, hífen ou underline no usuário."),
     password: z.string().min(8, "A senha deve ter pelo menos 8 caracteres.").max(128),
     paymentMethod: z.enum(["stripe", "manual_boleto"], {
-      errorMap: () => ({ message: "Escolha cartão ou boleto para o pagamento após o teste." }),
+      errorMap: () => ({ message: "Escolha Stripe (cartão/boleto) ou boleto manual para o pagamento após o teste." }),
     }),
   });
 
@@ -3016,7 +3016,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         entityType: "organization",
         entityId: organization.id,
         organizationId: organization.id,
-        message: `${organization.name} iniciou teste grátis self-service (${billingMethod === "manual_boleto" ? "boleto" : "cartão"}).`,
+        message: `${organization.name} iniciou teste grátis self-service (${billingMethod === "manual_boleto" ? "boleto manual" : "Stripe cartão/boleto"}).`,
         metadata: {
           adminUserId: user.id,
           paymentMethod: billingMethod,
