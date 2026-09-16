@@ -28,6 +28,7 @@ export const organizations = pgTable("organizations", {
   manualBillingDueDay: integer("manual_billing_due_day"),
   paymentGraceDays: integer("payment_grace_days").default(10),
   manualAccessUntil: timestamp("manual_access_until"),
+  trialReminderSentFor: text("trial_reminder_sent_for"), // ISO date of manualAccessUntil already reminded
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -44,6 +45,8 @@ export const users = pgTable("users", {
   phone: text("phone"),
   active: boolean("active").default(true),
   isSuperAdmin: boolean("is_super_admin").default(false),
+  passwordResetTokenHash: text("password_reset_token_hash"),
+  passwordResetExpiresAt: timestamp("password_reset_expires_at"),
 }, (table) => ({
   orgUsernameUnique: uniqueIndex("users_org_username_unique").on(table.organizationId, table.username),
 }));

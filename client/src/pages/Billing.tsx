@@ -104,12 +104,12 @@ function statusView(
 
     if (!subscriptionStatus && manualAccessUntil) {
       return {
-        label: billingMethod === "manual_boleto" ? "Boleto manual" : "Acesso manual",
-        badge: "bg-cyan-100 text-cyan-700 border border-cyan-200",
-        title: "Acesso liberado até a renovação",
+        label: billingMethod === "manual_boleto" ? "Teste grátis · boleto" : "Teste grátis",
+        badge: "bg-sky-100 text-sky-700 border border-sky-200",
+        title: "Seu teste grátis está ativo",
         text: billingMethod === "manual_boleto"
-          ? "Esta organização está em cobrança por boleto. O acesso segue liberado até o fim do prazo de tolerância configurado."
-          : "Esta organização já está liberada por pagamento manual. Ao final do período combinado, regularize pela Stripe para manter o acesso automático.",
+          ? "O acesso já está liberado. No fim do teste, a equipe EasyCare envia o boleto para manter a assinatura."
+          : "O acesso já está liberado. No fim do teste, ative a cobrança com cartão em Cobrança — sem pagamento durante o período gratuito.",
         icon: CheckCircle2,
       };
     }
@@ -315,12 +315,16 @@ export default function Billing() {
   const patientLimit = data?.capacity ?? data?.planPatientLimit ?? 50;
   const planCapacityLabel = planName ? `${planName} · até ${patientLimit} pacientes` : `Até ${patientLimit} pacientes`;
   const stripeLabel = data?.billingMethod === "manual_boleto"
-    ? `Boleto manual${data?.manualBillingDueDay ? ` · dia ${data.manualBillingDueDay}` : ""}`
+    ? `Boleto${data?.manualBillingDueDay ? ` · dia ${data.manualBillingDueDay}` : ""}`
     : data?.stripeCancelAtPeriodEnd
       ? "Cancelamento agendado"
       : data?.stripeSubscriptionStatus === "trialing"
         ? "Teste grátis"
-        : data?.stripeSubscriptionStatus ?? "Sem assinatura";
+        : data?.stripeSubscriptionStatus
+          ? data.stripeSubscriptionStatus
+          : data?.manualAccessUntil
+            ? "Teste grátis"
+            : "Sem assinatura";
   const periodLabel = isPaymentIssue
     ? isActive
       ? `${data?.paymentGraceDaysLeft ?? 0} dia${data?.paymentGraceDaysLeft === 1 ? "" : "s"} para regularizar`
@@ -334,22 +338,30 @@ export default function Billing() {
         : manualAccessEnd ?? periodEnd ?? `Tolerância: ${data?.paymentGraceDays ?? 10} dias`;
   const pageTitle = isRestricted ? "Ative o acesso da sua organização" : view.title;
   const pageText = isRestricted
-    ? "Escolha um plano e conclua a ativação pela Stripe. Assim que o período grátis ou pagamento for confirmado, o EasyCare libera o acesso automaticamente."
+    ? data?.billingMethod === "manual_boleto"
+      ? "Seu período gratuito terminou. Fale com o comercial EasyCare para receber o boleto e liberar o acesso novamente."
+      : "Escolha um plano e conclua a ativação com cartão. Assim que o pagamento for confirmado, o EasyCare libera o acesso automaticamente."
     : view.text;
   const activationTitle = isRestricted
-    ? "Comece agora com 7 dias grátis"
+    ? data?.billingMethod === "manual_boleto"
+      ? "Regularize com boleto"
+      : "Ative sua assinatura"
     : data?.stripeCancelAtPeriodEnd
       ? "Acesso liberado até o encerramento"
       : "Acesso liberado para sua organização";
   const activationText = isRestricted
-    ? "Teste todos os recursos do EasyCare antes da primeira cobrança. Sem compromisso."
+    ? data?.billingMethod === "manual_boleto"
+      ? "Entre em contato pelo WhatsApp para receber o boleto e renovar o acesso."
+      : "Escolha o plano e finalize o pagamento com cartão para continuar usando o EasyCare."
     : data?.stripeCancelAtPeriodEnd
       ? "Você pode usar o EasyCare até o fim do período atual. Depois disso, a assinatura não será renovada."
-      : "Entre no sistema para continuar a operação ou acompanhe a cobrança pelo portal da Stripe.";
+      : data?.billingMethod === "manual_boleto" && !data?.stripeSubscriptionStatus
+        ? "Continue usando o sistema. No fim do teste, nossa equipe envia o boleto."
+        : "Entre no sistema para continuar a operação ou acompanhe a cobrança pelo portal da Stripe.";
   const statusCards = [
     { label: "Organização", value: organizationName, icon: Building2, tone: "bg-indigo-100 text-indigo-700" },
     { label: "Plano / pacientes", value: planCapacityLabel, icon: UsersRound, tone: "bg-blue-100 text-blue-700" },
-    { label: "Stripe", value: stripeLabel, icon: ReceiptText, tone: isRestricted ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700" },
+    { label: "Cobrança", value: stripeLabel, icon: ReceiptText, tone: isRestricted ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700" },
     { label: "Período", value: periodLabel, icon: CalendarDays, tone: "bg-violet-100 text-violet-700" },
   ];
   const nextBillingLabel = data?.stripeCancelAtPeriodEnd
@@ -361,10 +373,12 @@ export default function Billing() {
           ? `Regularize até ${paymentGraceEnd ?? "o fim da tolerância"}`
           : "Tolerância encerrada. Regularize para liberar o acesso."
         : data?.billingMethod === "manual_boleto"
-          ? `Boleto dia ${data.manualBillingDueDay ?? "-"}${manualAccessEnd ? ` · acesso até ${manualAccessEnd}` : ""}`
+          ? `Boleto${data?.manualBillingDueDay ? ` · dia ${data.manualBillingDueDay}` : ""}${manualAccessEnd ? ` · acesso até ${manualAccessEnd}` : ""}`
           : periodEnd
             ? `Próxima renovação em ${periodEnd}`
-            : "Sem próxima cobrança registrada";
+            : manualAccessEnd
+              ? `Teste até ${manualAccessEnd}`
+              : "Sem próxima cobrança registrada";
   const subscriptionSummary = [
     { label: "Plano atual", value: planCapacityLabel },
     { label: "Cobrança", value: nextBillingLabel },
@@ -458,7 +472,11 @@ export default function Billing() {
                       <p className="mt-1.5 max-w-2xl text-sm leading-6 text-[#405875]">{activationText}</p>
                       <div className="mt-3 flex items-center gap-2 text-sm font-semibold text-[#405875]">
                         <CheckCircle2 className="h-4 w-4 text-[#059669]" />
-                        {isRestricted ? "Sem cobrança nos primeiros 7 dias." : "Acesso e dados preservados durante o período contratado."}
+                        {isRestricted
+                          ? (data?.billingMethod === "manual_boleto"
+                            ? "Após o pagamento do boleto, o acesso é renovado pela equipe EasyCare."
+                            : "Ative com cartão para continuar após o teste.")
+                          : "Acesso e dados preservados durante o período contratado."}
                       </div>
                     </div>
                   </div>
@@ -486,15 +504,25 @@ export default function Billing() {
                       </>
                     ) : (
                       <>
-                        <Button
-                          className="h-12 rounded-md bg-[#0B5CAB] px-5 text-sm font-extrabold text-white shadow-[0_14px_28px_rgba(11,92,171,0.18)] hover:bg-[#084B8A]"
-                          disabled={!canStartCheckout || stripeConfigQuery.isLoading || !embeddedCheckoutConfigured}
-                          onClick={openCheckoutTab}
-                        >
-                          <Gift className="mr-2 h-4 w-4" />
-                          {data?.hasStripeCustomer ? "Regularizar assinatura" : "Começar meus 7 dias grátis"}
-                          <ArrowRight className="ml-2 h-4 w-4 shrink-0" />
-                        </Button>
+                        {data?.billingMethod === "manual_boleto" ? (
+                          <Button asChild className="h-12 rounded-md bg-[#0B5CAB] px-5 text-sm font-extrabold text-white shadow-[0_14px_28px_rgba(11,92,171,0.18)] hover:bg-[#084B8A]">
+                            <a href={supportUrl} target="_blank" rel="noreferrer">
+                              <Headphones className="mr-2 h-4 w-4" />
+                              Falar sobre boleto
+                              <ArrowRight className="ml-2 h-4 w-4 shrink-0" />
+                            </a>
+                          </Button>
+                        ) : (
+                          <Button
+                            className="h-12 rounded-md bg-[#0B5CAB] px-5 text-sm font-extrabold text-white shadow-[0_14px_28px_rgba(11,92,171,0.18)] hover:bg-[#084B8A]"
+                            disabled={!canStartCheckout || stripeConfigQuery.isLoading || !embeddedCheckoutConfigured}
+                            onClick={openCheckoutTab}
+                          >
+                            <Gift className="mr-2 h-4 w-4" />
+                            {data?.hasStripeCustomer ? "Regularizar assinatura" : "Ativar assinatura com cartão"}
+                            <ArrowRight className="ml-2 h-4 w-4 shrink-0" />
+                          </Button>
+                        )}
                         {/* <Button
                           variant="outline"
                           className="h-11 rounded-md border-[#0B5CAB] bg-white px-5 text-sm font-bold text-[#0B5CAB] hover:bg-[#EAF5FF]"

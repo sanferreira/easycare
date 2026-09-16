@@ -288,6 +288,12 @@ export interface IStorage {
   // Users
   getSuperAdminByUsername(username: string): Promise<User | undefined>;
   getUserById(id: number): Promise<User | undefined>;
+  getUserByPasswordResetTokenHash(tokenHash: string): Promise<User | undefined>;
+  findOrganizationUserForPasswordReset(input: {
+    organizationCnpj: string;
+    username: string;
+    email: string;
+  }): Promise<{ user: User; organization: Organization } | undefined>;
   getUserByUsernameAndOrganization(username: string, organizationId: number): Promise<User | undefined>;
   getUsersByOrganization(orgId: number): Promise<User[]>;
   createUser(user: InsertUser): Promise<User>;
@@ -549,6 +555,31 @@ export class DatabaseStorage implements IStorage {
   async getUserById(id: number): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.id, id));
     return user;
+  }
+  async getUserByPasswordResetTokenHash(tokenHash: string): Promise<User | undefined> {
+    const normalized = tokenHash.trim();
+    if (!normalized) return undefined;
+    const [user] = await db.select().from(users).where(eq(users.passwordResetTokenHash, normalized));
+    return user;
+  }
+  async findOrganizationUserForPasswordReset(input: {
+    organizationCnpj: string;
+    username: string;
+    email: string;
+  }): Promise<{ user: User; organization: Organization } | undefined> {
+    const organization = await this.getOrganizationByCnpj(input.organizationCnpj);
+    if (!organization) return undefined;
+
+    const username = input.username.trim().toLowerCase();
+    const email = input.email.trim().toLowerCase();
+    const [user] = await db.select().from(users).where(and(
+      eq(users.organizationId, organization.id),
+      eq(users.isSuperAdmin, false),
+      sql`lower(${users.username}) = ${username}`,
+      sql`lower(coalesce(${users.email}, '')) = ${email}`,
+    ));
+    if (!user || user.active === false) return undefined;
+    return { user, organization };
   }
   async getUserByUsernameAndOrganization(username: string, organizationId: number): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(and(

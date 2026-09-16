@@ -13,6 +13,8 @@ import LandingPage from "@/pages/LandingPage";
 import PremiumLandingPage from "@/pages/PremiumLandingPage";
 import Login from "@/pages/Login";
 import Signup from "@/pages/Signup";
+import ForgotPassword from "@/pages/ForgotPassword";
+import ResetPassword from "@/pages/ResetPassword";
 import { PrivacyPage, TermsPage } from "@/pages/LegalPage";
 import Billing from "@/pages/Billing";
 import BillingCancel from "@/pages/BillingCancel";
@@ -105,6 +107,8 @@ function Router() {
       {/* <Route path="/premium" component={PremiumLandingPage} /> */}
       <Route path="/login" component={Login} />
       <Route path="/signup" component={Signup} />
+      <Route path="/esqueci-a-senha" component={ForgotPassword} />
+      <Route path="/redefinir-senha" component={ResetPassword} />
       <Route path="/termos" component={TermsPage} />
       <Route path="/privacidade" component={PrivacyPage} />
       <Route path="/billing/cancelar" component={BillingCancel} />

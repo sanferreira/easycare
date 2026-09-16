@@ -11,6 +11,8 @@ import type { InsertNotification, Medication, SessionUser } from "@shared/schema
 import { verifyPassword } from "./security";
 import { pool } from "./db";
 import { getWebPushPublicKey, isWebPushConfigured, sendWebPushNotifications } from "./web-push";
+import { sendSignupCommercialAlertEmail, sendSignupWelcomeEmail, sendPasswordResetEmail } from "./email";
+import { resolveAppPublicUrl } from "./app-url";
 import {
   DEFAULT_ENVIRONMENT_SETTINGS,
   getShiftProfileRule,
@@ -82,6 +84,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   const authLoginRateLimiter = createLoginRateLimiter();
   const familyLoginRateLimiter = createLoginRateLimiter();
+  const passwordResetRateLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 8,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { message: "Muitas tentativas de redefinição. Tente novamente em alguns minutos." },
+  });
   const publicSignupRateLimiter = rateLimit({
     windowMs: 60 * 60 * 1000,
     max: 8,
@@ -90,8 +99,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     message: { message: "Muitas tentativas de cadastro. Tente novamente em alguns minutos." },
   });
 
-  const sanitizeUser = <T extends { password?: unknown }>(user: T) => {
-    const { password: _password, ...safe } = user;
+  const sanitizeUser = <T extends {
+    password?: unknown;
+    passwordResetTokenHash?: unknown;
+    passwordResetExpiresAt?: unknown;
+  }>(user: T) => {
+    const {
+      password: _password,
+      passwordResetTokenHash: _passwordResetTokenHash,
+      passwordResetExpiresAt: _passwordResetExpiresAt,
+      ...safe
+    } = user;
     return safe;
   };
 
@@ -291,6 +309,46 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   const getStripeSemiannualPriceId = () => process.env.STRIPE_SEMIANNUAL_PRICE_ID?.trim() || "";
   const getStripeAnnualPriceId = () => process.env.STRIPE_ANNUAL_PRICE_ID?.trim() || "";
   const getStripePortalConfigurationIdFromEnv = () => process.env.STRIPE_PORTAL_CONFIGURATION_ID?.trim() || "";
+  const STRIPE_DEFAULT_REVENUE_SHARE_PERCENT = 15;
+  const getStripeRevenueShareAccountId = () => {
+    const accountId = process.env.STRIPE_REVENUE_SHARE_ACCOUNT_ID?.trim() || "";
+    if (accountId && !/^acct_[A-Za-z0-9]+$/.test(accountId)) {
+      throw new Error("STRIPE_REVENUE_SHARE_ACCOUNT_ID deve ser uma conta Connect Stripe no formato acct_...");
+    }
+    return accountId;
+  };
+  const getStripeRevenueSharePercent = () => {
+    const rawPercent = process.env.STRIPE_REVENUE_SHARE_PERCENT?.trim();
+    if (!rawPercent) return STRIPE_DEFAULT_REVENUE_SHARE_PERCENT;
+
+    const normalizedPercent = rawPercent.replace(",", ".");
+    if (!/^\d+(?:\.\d{1,2})?$/.test(normalizedPercent)) {
+      throw new Error("STRIPE_REVENUE_SHARE_PERCENT deve ser um percentual entre 0 e 100 com no máximo 2 casas decimais.");
+    }
+
+    const parsedPercent = Number(normalizedPercent);
+    if (!Number.isFinite(parsedPercent) || parsedPercent <= 0 || parsedPercent > 100) {
+      throw new Error("STRIPE_REVENUE_SHARE_PERCENT deve ser maior que 0 e menor ou igual a 100.");
+    }
+    return parsedPercent;
+  };
+  const applyStripeRevenueShareToSubscriptionData = (
+    subscriptionData: Stripe.Checkout.SessionCreateParams.SubscriptionData,
+  ) => {
+    const destinationAccountId = getStripeRevenueShareAccountId();
+    if (!destinationAccountId) return;
+
+    const revenueSharePercent = getStripeRevenueSharePercent();
+    subscriptionData.transfer_data = {
+      destination: destinationAccountId,
+      amount_percent: revenueSharePercent,
+    };
+    subscriptionData.metadata = {
+      ...subscriptionData.metadata,
+      revenueShareAccountId: destinationAccountId,
+      revenueSharePercent: String(revenueSharePercent),
+    };
+  };
   const getStripePriceIdForPlan = (plan: BillingPlan) => {
     if (plan === "annual") {
       const priceId = getStripeAnnualPriceId();
@@ -363,11 +421,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       formattedAmount: formatStripeAmount(price.unit_amount, currency),
     };
   };
-  const getAppBaseUrl = (req: Request) => {
-    const configuredUrl = process.env.APP_PUBLIC_URL?.trim().replace(/\/+$/, "");
-    if (configuredUrl) return configuredUrl;
-    return `${req.protocol}://${req.get("host")}`;
-  };
+  const getAppBaseUrl = (req: Request) => resolveAppPublicUrl(req);
   let stripePortalConfigurationId: string | null = null;
   const buildStripePortalFeatures = (
     productId: string,
@@ -543,6 +597,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (normalized.includes("stripe_secret_key") || normalized.includes("price_id") || normalized.includes("não configurad")) {
       return "O checkout ainda não está pronto para uso. Fale com o suporte EasyCare para concluir a ativação.";
     }
+    if (normalized.includes("stripe_revenue_share")) {
+      return "O checkout ainda precisa de um ajuste de repasse na Stripe. Fale com o suporte EasyCare para continuar.";
+    }
     if (normalized.includes("mesmo produto stripe")) {
       return "A troca de plano ainda precisa de um ajuste na Stripe. Fale com o suporte EasyCare para continuar.";
     }
@@ -603,6 +660,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (trialDays > 0) {
       subscriptionData.trial_period_days = trialDays;
     }
+    applyStripeRevenueShareToSubscriptionData(subscriptionData);
 
     const baseSessionParams: Stripe.Checkout.SessionCreateParams = {
       mode: "subscription",
@@ -1474,6 +1532,135 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(req.session.user);
   });
 
+  const PASSWORD_RESET_TTL_MINUTES = 60;
+  const hashPasswordResetToken = (token: string) =>
+    createHash("sha256").update(token).digest("hex");
+
+  app.post("/api/auth/forgot-password", passwordResetRateLimiter, async (req, res) => {
+    try {
+      const input = z.object({
+        organizationCnpj: z.string().trim().min(14, "Informe o CNPJ da instituição."),
+        username: z.string().trim().min(1, "Informe o usuário."),
+        email: z.string().trim().email("Informe um e-mail válido."),
+      }).parse(req.body);
+
+      const match = await storage.findOrganizationUserForPasswordReset({
+        organizationCnpj: input.organizationCnpj,
+        username: input.username,
+        email: input.email,
+      });
+
+      // Always return the same message to avoid account enumeration.
+      const genericResponse = {
+        success: true,
+        message: "Se os dados estiverem corretos, enviamos um link de redefinição para o e-mail informado.",
+      };
+
+      if (!match) {
+        return res.json(genericResponse);
+      }
+
+      const rawToken = randomBytes(32).toString("hex");
+      const tokenHash = hashPasswordResetToken(rawToken);
+      const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MINUTES * 60 * 1000);
+
+      await storage.updateUser(match.user.id, {
+        passwordResetTokenHash: tokenHash,
+        passwordResetExpiresAt: expiresAt,
+      } as any);
+
+      const resetUrl = `${getAppBaseUrl(req)}/redefinir-senha?token=${rawToken}`;
+      await sendPasswordResetEmail({
+        to: match.user.email!,
+        name: match.user.name,
+        organizationName: match.organization.name,
+        username: match.user.username,
+        resetUrl,
+        expiresInMinutes: PASSWORD_RESET_TTL_MINUTES,
+      });
+
+      await logAudit(req, {
+        action: "auth.password_reset_requested",
+        entityType: "user",
+        entityId: match.user.id,
+        organizationId: match.organization.id,
+        message: `${match.user.name} solicitou redefinição de senha.`,
+      });
+
+      res.json(genericResponse);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados inválidos." });
+      }
+      const message = error instanceof Error ? error.message : "Não foi possível enviar o e-mail agora.";
+      console.error("[auth] forgot-password", error);
+      res.status(500).json({ message });
+    }
+  });
+
+  app.get("/api/auth/reset-password/:token", passwordResetRateLimiter, async (req, res) => {
+    try {
+      const token = String(req.params.token || "").trim();
+      if (!token) return res.status(400).json({ valid: false, message: "Token inválido." });
+
+      const user = await storage.getUserByPasswordResetTokenHash(hashPasswordResetToken(token));
+      if (!user?.passwordResetExpiresAt || user.active === false) {
+        return res.json({ valid: false, message: "Link inválido ou expirado." });
+      }
+      if (new Date(user.passwordResetExpiresAt).getTime() < Date.now()) {
+        return res.json({ valid: false, message: "Link expirado. Solicite uma nova redefinição." });
+      }
+
+      res.json({
+        valid: true,
+        username: user.username,
+        name: user.name,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Não foi possível validar o link.";
+      res.status(500).json({ valid: false, message });
+    }
+  });
+
+  app.post("/api/auth/reset-password", passwordResetRateLimiter, async (req, res) => {
+    try {
+      const input = z.object({
+        token: z.string().trim().min(20, "Token inválido."),
+        password: z.string().min(8, "A senha deve ter pelo menos 8 caracteres.").max(128),
+      }).parse(req.body);
+
+      const user = await storage.getUserByPasswordResetTokenHash(hashPasswordResetToken(input.token));
+      if (!user?.passwordResetExpiresAt || user.active === false) {
+        return res.status(400).json({ message: "Link inválido ou expirado." });
+      }
+      if (new Date(user.passwordResetExpiresAt).getTime() < Date.now()) {
+        return res.status(400).json({ message: "Link expirado. Solicite uma nova redefinição." });
+      }
+
+      await storage.updateUser(user.id, {
+        password: input.password,
+        passwordResetTokenHash: null,
+        passwordResetExpiresAt: null,
+      } as any);
+
+      await logAudit(req, {
+        action: "auth.password_reset_completed",
+        entityType: "user",
+        entityId: user.id,
+        organizationId: user.organizationId ?? undefined,
+        message: `${user.name} redefiniu a senha.`,
+      });
+
+      res.json({ success: true, message: "Senha atualizada. Você já pode entrar." });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message || "Dados inválidos." });
+      }
+      const message = error instanceof Error ? error.message : "Não foi possível redefinir a senha.";
+      res.status(500).json({ message });
+    }
+  });
+
   app.get("/api/public/stripe-config", (_req, res) => {
     const publishableKey = process.env.VITE_STRIPE_PUBLISHABLE_KEY?.trim() || "";
     res.json({
@@ -1692,8 +1879,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       const plan = parseBillingPlanInput(req.body?.plan);
+      const alreadyReceivedTrial = Boolean(organization.manualAccessUntil || organization.stripeSubscriptionId);
       const checkoutSession = await createCheckoutSessionForOrganization(req, organization, {
-        includeTrial: !organization.stripeCustomerId && !organization.stripeSubscriptionId,
+        includeTrial: !organization.stripeCustomerId && !alreadyReceivedTrial,
         plan,
       });
       await logAudit(req, {
@@ -1733,8 +1921,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       const plan = parseBillingPlanInput(req.body?.plan);
+      const alreadyReceivedTrial = Boolean(organization.manualAccessUntil || organization.stripeSubscriptionId);
       const checkoutSession = await createCheckoutSessionForOrganization(req, organization, {
-        includeTrial: !organization.stripeCustomerId && !organization.stripeSubscriptionId,
+        includeTrial: !organization.stripeCustomerId && !alreadyReceivedTrial,
         embedded: true,
         plan,
       });
@@ -2639,8 +2828,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       .max(60)
       .regex(/^[a-zA-Z0-9._-]+$/, "Use apenas letras, números, ponto, hífen ou underline no usuário."),
     password: z.string().min(8, "A senha deve ter pelo menos 8 caracteres.").max(128),
-    embeddedCheckout: z.boolean().optional(),
-    deferCheckout: z.boolean().optional(),
+    paymentMethod: z.enum(["stripe", "manual_boleto"], {
+      errorMap: () => ({ message: "Escolha cartão ou boleto para o pagamento após o teste." }),
+    }),
   });
 
   app.post("/api/public/signup", publicSignupRateLimiter, async (req, res) => {
@@ -2649,10 +2839,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     let createdStaffId: number | undefined;
 
     try {
-      if (!checkoutConfigured()) {
-        return res.status(500).json({ message: "Checkout Stripe ainda não configurado." });
-      }
-
       const input = publicSignupSchema.parse(req.body);
       const normalizedCnpj = formatCnpj(input.cnpj);
       const existingOrganization = await storage.getOrganizationByCnpj(normalizedCnpj);
@@ -2662,14 +2848,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         });
       }
 
+      const trialDays = getStripeTrialDays();
+      const trialEndsAt = new Date();
+      trialEndsAt.setHours(23, 59, 59, 999);
+      trialEndsAt.setDate(trialEndsAt.getDate() + trialDays);
+      const billingMethod = input.paymentMethod;
+      const manualBillingDueDay = billingMethod === "manual_boleto"
+        ? Math.min(Math.max(new Date().getDate(), 1), 28)
+        : null;
+
       const organization = await storage.createOrganization({
         name: input.organizationName,
         cnpj: normalizedCnpj,
         phone: input.phone,
         email: input.email,
-        capacity: input.capacity ?? 50,
+        capacity: input.capacity ?? 30,
         status: "restricted",
         active: false,
+        billingMethod,
+        manualBillingDueDay,
+        manualAccessUntil: trialEndsAt,
+        paymentGraceDays: DEFAULT_PAYMENT_GRACE_DAYS,
       });
       createdOrganizationId = organization.id;
 
@@ -2690,20 +2889,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const staffMember = await ensureStaffForOrganizationUser(organization.id, user, DEFAULT_ENVIRONMENT_SETTINGS);
       createdStaffId = staffMember.id;
 
-      let checkoutSession: Stripe.Checkout.Session | null = null;
-      if (input.deferCheckout !== true) {
-        checkoutSession = await createCheckoutSessionForOrganization(req, organization, {
-          includeTrial: true,
-          embedded: input.embeddedCheckout === true,
-        });
-        if (input.embeddedCheckout === true && !checkoutSession.client_secret) {
-          throw new Error("Stripe não retornou client_secret para checkout embutido.");
-        }
-        if (input.embeddedCheckout !== true && !checkoutSession.url) {
-          throw new Error("Stripe não retornou URL de checkout.");
-        }
-      }
-
+      const organizationStatus = normalizeOrgStatus(organization);
       await regenerateSession(req);
       req.session.user = {
         id: user.id,
@@ -2712,7 +2898,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         role: user.role,
         organizationId: organization.id,
         organizationName: organization.name,
-        organizationStatus: "restricted",
+        organizationStatus,
         stripeSubscriptionStatus: null,
         isSuperAdmin: false,
       };
@@ -2722,19 +2908,55 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         entityType: "organization",
         entityId: organization.id,
         organizationId: organization.id,
-        message: `${organization.name} iniciou cadastro self-service.`,
+        message: `${organization.name} iniciou teste grátis self-service (${billingMethod === "manual_boleto" ? "boleto" : "cartão"}).`,
         metadata: {
           adminUserId: user.id,
-          checkoutDeferred: input.deferCheckout === true,
-          checkoutSessionId: checkoutSession?.id ?? null,
+          paymentMethod: billingMethod,
+          trialDays,
+          trialEndsAt: trialEndsAt.toISOString(),
         },
       });
 
+      const appBaseUrl = getAppBaseUrl(req);
+      const supportWhatsappDisplay = process.env.VITE_SUPPORT_WHATSAPP_DISPLAY?.trim() || null;
+      void Promise.allSettled([
+        sendSignupWelcomeEmail({
+          to: input.email,
+          adminName: input.adminName,
+          organizationName: organization.name,
+          cnpj: normalizedCnpj,
+          username: usernameValue,
+          paymentMethod: billingMethod,
+          trialDays,
+          trialEndsAt,
+          loginUrl: `${appBaseUrl}/login`,
+          supportWhatsappDisplay,
+        }),
+        sendSignupCommercialAlertEmail({
+          organizationName: organization.name,
+          cnpj: normalizedCnpj,
+          adminName: input.adminName,
+          email: input.email,
+          phone: input.phone,
+          username: usernameValue,
+          paymentMethod: billingMethod,
+          trialDays,
+          trialEndsAt,
+          adminUrl: `${appBaseUrl}/admin`,
+        }),
+      ]).then((results) => {
+        for (const result of results) {
+          if (result.status === "rejected") {
+            console.error("[email] falha ao enviar e-mail de cadastro", result.reason);
+          }
+        }
+      });
+
       res.status(201).json({
-        url: checkoutSession?.url,
-        clientSecret: checkoutSession?.client_secret,
-        checkoutPath: input.deferCheckout === true ? "/checkout" : undefined,
-        trialDays: getStripeTrialDays(),
+        redirectPath: "/onboarding",
+        trialDays,
+        trialEndsAt: trialEndsAt.toISOString(),
+        paymentMethod: billingMethod,
         user: req.session.user,
       });
     } catch (error: any) {

@@ -243,7 +243,14 @@ export async function ensureDatabaseCompatibility() {
       ADD COLUMN IF NOT EXISTS billing_method text DEFAULT 'stripe',
       ADD COLUMN IF NOT EXISTS manual_billing_due_day integer,
       ADD COLUMN IF NOT EXISTS payment_grace_days integer DEFAULT 10,
-      ADD COLUMN IF NOT EXISTS manual_access_until timestamp;
+      ADD COLUMN IF NOT EXISTS manual_access_until timestamp,
+      ADD COLUMN IF NOT EXISTS trial_reminder_sent_for text;
+  `);
+
+  await pool.query(`
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS password_reset_token_hash text,
+      ADD COLUMN IF NOT EXISTS password_reset_expires_at timestamp;
   `);
 
   await pool.query(`

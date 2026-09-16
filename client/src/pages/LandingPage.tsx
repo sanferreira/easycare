@@ -359,9 +359,9 @@ const segmentCards: CardItem[] = [
 ];
 
 const paymentSteps = [
-  "O cliente cadastra a própria instituição.",
-  "A assinatura é ativada no checkout seguro da Stripe com 7 dias grátis.",
-  "Quando a Stripe confirma o trial, o acesso da organização é liberado.",
+  "O cliente cadastra a própria instituição e escolhe cartão ou boleto.",
+  "O teste de 7 dias é liberado na hora, sem depender do pagamento.",
+  "Depois do trial, a cobrança segue por cartão (Stripe) ou boleto com a equipe EasyCare.",
 ];
 
 const planFeatures = [
@@ -376,7 +376,7 @@ const planFeatures = [
 const faqs = [
   {
     question: "Meus dados e os dados dos pacientes ficam seguros?",
-    answer: "Sim. O EasyCare trabalha com acesso por perfil, sessões protegidas e rotina de auditoria para registros importantes. Dados de pagamento ficam na Stripe; o EasyCare guarda apenas o status da assinatura.",
+    answer: "Sim. O EasyCare trabalha com acesso por perfil, sessões protegidas e rotina de auditoria para registros importantes. Dados de cartão ficam na Stripe; boleto é tratado com a equipe comercial. O EasyCare guarda o status do acesso e da assinatura.",
   },
   {
     question: "O EasyCare ajuda na LGPD?",
@@ -384,7 +384,7 @@ const faqs = [
   },
   {
     question: "O teste grátis cobra algo no começo?",
-    answer: "Não. A instituição pode iniciar com 7 dias grátis. Depois do período gratuito, a cobrança segue o plano escolhido no checkout seguro da Stripe.",
+    answer: "Não. Você cadastra a instituição, escolhe se prefere pagar com cartão ou boleto depois, e já entra com 7 dias grátis. A cobrança só acontece após o período de teste.",
   },
   {
     question: "Posso cancelar quando quiser?",
@@ -413,9 +413,9 @@ function TrialCtaPanel() {
     <div className="rounded-md border border-[#D8E7F5] bg-white p-5 shadow-sm sm:p-6">
       <div className="grid gap-4">
         {[
-          ["1", "Cadastre a instituição e o administrador."],
-          ["2", "Ative o trial na Stripe sem cobrança imediata."],
-          ["3", "Entre no sistema e teste a rotina por 7 dias."],
+          ["1", "Cadastre a instituição e escolha cartão ou boleto."],
+          ["2", "O teste de 7 dias é liberado na hora."],
+          ["3", "Entre no sistema e configure a rotina da operação."],
         ].map(([step, text]) => (
           <div key={step} className="grid grid-cols-[40px_1fr] gap-3 rounded-md bg-[#F7FBFC] p-4">
             <span className="flex h-10 w-10 items-center justify-center rounded-md bg-[#0B5CAB] text-sm font-extrabold text-white">
@@ -980,7 +980,7 @@ export default function LandingPage() {
               <SectionHeading
                 eyebrow="Plano"
                 title="Planos para cada tamanho de operação."
-                text="Escolha mensal, semestral ou anual, todos com 7 dias grátis, acesso completo e ativação segura pela Stripe."
+                text="Escolha mensal, semestral ou anual, todos com 7 dias grátis e acesso completo. Depois do teste, pague com cartão ou boleto."
               />
               <div className="mt-7 flex flex-col gap-3 sm:flex-row">
                 <Button asChild className="h-12 rounded-md bg-[#0B5CAB] px-6 text-white hover:bg-[#084B8A]">
@@ -1000,11 +1000,11 @@ export default function LandingPage() {
                 <div className="mt-4 flex flex-wrap items-end gap-3">
                   <h3 className="text-4xl font-extrabold tracking-normal text-[#05203C]">7 dias grátis</h3>
                   <span className="mb-1 rounded-md bg-[#EAF5FF] px-2 py-1 text-xs font-bold text-[#0B5CAB]">
-                    valor no checkout
+                    sem cobrança inicial
                   </span>
                 </div>
                 <p className="mt-3 text-sm leading-6 text-[#53657A]">
-                  Mensal para até 30 pacientes, semestral para até 40 e anual para até 60. Os valores aparecem no checkout seguro antes da confirmação.
+                  Mensal para até 30 pacientes, semestral para até 40 e anual para até 60. No cadastro você já entra no teste; cartão ou boleto ficam para depois.
                 </p>
                 <div className="mt-5 grid gap-2">
                   {planFeatures.map((feature) => (
@@ -1024,10 +1024,10 @@ export default function LandingPage() {
             <div>
               <p className="text-sm font-extrabold uppercase text-[#86D7FF]">Pagamento e acesso</p>
               <h2 className="mt-3 text-3xl font-extrabold leading-tight tracking-normal text-white sm:text-4xl">
-                O acesso acompanha a assinatura.
+                Teste agora. Pague depois.
               </h2>
               <p className="mt-4 text-base leading-7 text-white/72">
-                Cliente em dia entra no sistema. Assinatura pendente fica limitada à cobrança até regularizar.
+                O acesso começa no cadastro. Depois do trial, cartão ou boleto mantêm a assinatura em dia.
               </p>
               <Button asChild className="mt-7 h-12 rounded-md bg-white px-6 text-[#05203C] hover:bg-[#EAF5FF]">
                 <Link href="/signup">
@@ -1099,10 +1099,10 @@ export default function LandingPage() {
                 Comece com sua própria instituição.
               </h2>
               <p className="mt-4 text-base leading-7 text-[#30465F]">
-                O cadastro é self-service. Você cria a instituição, ativa o trial de 7 dias pela Stripe e já entra para testar o sistema.
+                O cadastro é self-service. Você cria a instituição, escolhe cartão ou boleto para depois e já entra com 7 dias grátis.
               </p>
               <div className="mt-7 grid gap-3 text-sm font-semibold text-[#30465F]">
-                {["7 dias grátis", "Checkout seguro pela Stripe", "Suporte pelo WhatsApp na implantação"].map((item) => (
+                {["7 dias grátis liberados na hora", "Cartão ou boleto após o teste", "Suporte pelo WhatsApp na implantação"].map((item) => (
                   <span key={item} className="inline-flex items-center gap-2">
                     <CheckCircle2 className="h-4 w-4 text-[#24A148]" />
                     {item}

@@ -1,5 +1,5 @@
-import { useMemo, useRef } from "react";
-import { Link } from "wouter";
+import { useMemo } from "react";
+import { Link, useLocation } from "wouter";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
@@ -8,8 +8,10 @@ import {
   ArrowRight,
   CheckCircle2,
   CreditCard,
+  FileText,
   Loader2,
   MessageCircle,
+  Rocket,
   ShieldCheck,
 } from "lucide-react";
 
@@ -27,7 +29,7 @@ import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/queryClient";
 import { buildSupportWhatsappUrl, supportWhatsappDisplay } from "@/lib/contact";
 import { maskCnpj } from "@/lib/masks";
-import { useStripePublicConfig } from "@/lib/stripe-public-config";
+import { cn } from "@/lib/utils";
 
 const signupSchema = z.object({
   organizationName: z.string().trim().min(2, "Informe o nome da instituição."),
@@ -43,6 +45,9 @@ const signupSchema = z.object({
     .regex(/^[a-zA-Z0-9._-]+$/, "Use apenas letras, números, ponto, hífen ou underline."),
   password: z.string().min(8, "A senha deve ter pelo menos 8 caracteres."),
   confirmPassword: z.string().min(8, "Confirme a senha."),
+  paymentMethod: z.enum(["stripe", "manual_boleto"], {
+    required_error: "Escolha cartão ou boleto.",
+  }),
 }).refine((value) => value.password === value.confirmPassword, {
   message: "As senhas não conferem.",
   path: ["confirmPassword"],
@@ -51,9 +56,10 @@ const signupSchema = z.object({
 type SignupValues = z.infer<typeof signupSchema>;
 
 type SignupResponse = {
-  url?: string;
-  checkoutPath?: string;
+  redirectPath?: string;
   trialDays: number;
+  paymentMethod: "stripe" | "manual_boleto";
+  user?: unknown;
 };
 
 const inputClassName =
@@ -69,9 +75,7 @@ async function parseSignupResponse(res: Response): Promise<SignupResponse> {
 
 export default function Signup() {
   const { toast } = useToast();
-  const checkoutWindowRef = useRef<Window | null>(null);
-  const stripeConfigQuery = useStripePublicConfig();
-  const embeddedCheckoutConfigured = stripeConfigQuery.embeddedCheckoutConfigured;
+  const [, setLocation] = useLocation();
   const supportUrl = useMemo(
     () => buildSupportWhatsappUrl("Olá! Quero ajuda para começar meu teste grátis do EasyCare."),
     [],
@@ -88,8 +92,11 @@ export default function Signup() {
       username: "",
       password: "",
       confirmPassword: "",
+      paymentMethod: undefined,
     },
   });
+  const selectedPaymentMethod = form.watch("paymentMethod");
+
   const signupMutation = useMutation({
     mutationFn: async (values: SignupValues) => {
       const { confirmPassword: _confirmPassword, ...payload } = values;
@@ -97,49 +104,22 @@ export default function Signup() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({
-          ...payload,
-          deferCheckout: embeddedCheckoutConfigured,
-        }),
+        body: JSON.stringify(payload),
       });
       return parseSignupResponse(res);
     },
     onSuccess: (data) => {
       queryClient.clear();
-      if (data.checkoutPath) {
-        const checkoutWindow = checkoutWindowRef.current;
-        if (checkoutWindow && !checkoutWindow.closed) {
-          checkoutWindow.location.href = data.checkoutPath;
-          checkoutWindow.focus();
-          checkoutWindow.opener = null;
-          checkoutWindowRef.current = null;
-          return;
-        }
-
-        const openedWindow = window.open(data.checkoutPath, "_blank");
-        if (openedWindow) {
-          openedWindow.opener = null;
-          return;
-        }
-
-        window.location.assign(data.checkoutPath);
-        return;
-      }
-      if (data.url) {
-        window.location.assign(data.url);
-        return;
+      if (data.user) {
+        queryClient.setQueryData(["auth-user"], data.user);
       }
       toast({
-        title: "Checkout não iniciado",
-        description: "A Stripe não retornou uma sessão de checkout.",
-        variant: "destructive",
+        title: "Teste grátis liberado",
+        description: `Seus ${data.trialDays} dias já começaram. Bem-vindo ao EasyCare.`,
       });
+      setLocation(data.redirectPath || "/onboarding");
     },
     onError: (error: Error) => {
-      if (checkoutWindowRef.current && !checkoutWindowRef.current.closed) {
-        checkoutWindowRef.current.close();
-      }
-      checkoutWindowRef.current = null;
       toast({
         title: "Cadastro não concluído",
         description: error.message,
@@ -149,10 +129,6 @@ export default function Signup() {
   });
 
   function onSubmit(values: SignupValues) {
-    if (embeddedCheckoutConfigured) {
-      checkoutWindowRef.current = window.open("/checkout?wait=signup", "_blank");
-    }
-
     signupMutation.mutate({
       ...values,
       username: values.username.trim().toLowerCase(),
@@ -210,12 +186,12 @@ export default function Signup() {
               Cadastre sua instituição e comece hoje.
             </h1>
             <p className="mt-5 max-w-full break-words text-base leading-8 text-white/68 sm:text-lg">
-              Crie a conta da instituição, configure o acesso do administrador e entre no ambiente seguro da Stripe para ativar o período gratuito.
+              Informe os dados, escolha se prefere pagar com cartão ou boleto depois do teste e entre no sistema na hora. Sem cobrança nos primeiros 7 dias.
             </p>
             <div className="mt-8 grid gap-3 text-sm font-semibold text-white/72">
               {[
-                "Sem instalação e sem contrato manual.",
-                "Assinatura mensal com teste grátis pela Stripe.",
+                "Acesso liberado imediatamente após o cadastro.",
+                "Cartão ou boleto — você escolhe como pagar depois.",
                 "Suporte pelo WhatsApp durante a implantação.",
               ].map((item) => (
                 <span key={item} className="inline-flex items-center gap-2">
@@ -242,7 +218,7 @@ export default function Signup() {
                 <div className="mb-6">
                   <h2 className="text-2xl font-extrabold tracking-normal text-[#25314B]">Começar teste grátis</h2>
                   <p className="mt-2 max-w-full break-words text-sm leading-6 text-[#65758B]">
-                    O checkout confirma a assinatura com 7 dias sem cobrança.
+                    Preencha os dados e escolha a forma de pagamento para depois do trial.
                   </p>
                 </div>
 
@@ -367,22 +343,73 @@ export default function Signup() {
                           </FormItem>
                         )}
                       />
+
+                      <FormField
+                        control={form.control}
+                        name="paymentMethod"
+                        render={({ field }) => (
+                          <FormItem className="sm:col-span-2">
+                            <FormLabel className="text-sm font-bold text-[#354258]">
+                              Como prefere pagar depois do teste?
+                            </FormLabel>
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              <button
+                                type="button"
+                                onClick={() => field.onChange("stripe")}
+                                className={cn(
+                                  "rounded-md border px-4 py-3 text-left transition",
+                                  selectedPaymentMethod === "stripe"
+                                    ? "border-[#0B5CAB] bg-[#EAF5FF] shadow-[0_0_0_3px_rgba(11,92,171,0.12)]"
+                                    : "border-[#C7D6E6] bg-white hover:border-[#0B5CAB]/50",
+                                )}
+                              >
+                                <span className="inline-flex items-center gap-2 text-sm font-extrabold text-[#05203C]">
+                                  <CreditCard className="h-4 w-4 text-[#0B5CAB]" />
+                                  Cartão de crédito
+                                </span>
+                                <span className="mt-1 block text-xs leading-5 text-[#65758B]">
+                                  Ative a assinatura online quando o teste terminar.
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => field.onChange("manual_boleto")}
+                                className={cn(
+                                  "rounded-md border px-4 py-3 text-left transition",
+                                  selectedPaymentMethod === "manual_boleto"
+                                    ? "border-[#0B5CAB] bg-[#EAF5FF] shadow-[0_0_0_3px_rgba(11,92,171,0.12)]"
+                                    : "border-[#C7D6E6] bg-white hover:border-[#0B5CAB]/50",
+                                )}
+                              >
+                                <span className="inline-flex items-center gap-2 text-sm font-extrabold text-[#05203C]">
+                                  <FileText className="h-4 w-4 text-[#0B5CAB]" />
+                                  Boleto
+                                </span>
+                                <span className="mt-1 block text-xs leading-5 text-[#65758B]">
+                                  Nossa equipe envia o boleto para manter o acesso.
+                                </span>
+                              </button>
+                            </div>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
                     </div>
 
                     <Button
                       type="submit"
-                      disabled={signupMutation.isPending || stripeConfigQuery.isLoading}
+                      disabled={signupMutation.isPending}
                       className="h-12 w-full rounded-md border border-[#0A559F] bg-[#0B5CAB] font-bold text-white shadow-[0_12px_24px_rgba(11,92,171,0.18)] transition hover:bg-[#084B8A]"
                     >
                       {signupMutation.isPending ? (
                         <>
                           <Loader2 className="h-4 w-4 animate-spin" />
-                          Preparando checkout...
+                          Liberando seu teste...
                         </>
                       ) : (
                         <>
-                          <CreditCard className="h-4 w-4" />
-                          Ativar 7 dias grátis
+                          <Rocket className="h-4 w-4" />
+                          Começar 7 dias grátis
                           <ArrowRight className="h-4 w-4" />
                         </>
                       )}

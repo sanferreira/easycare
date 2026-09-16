@@ -202,9 +202,19 @@ export default function Login() {
                     name="password"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel className="text-sm font-bold text-[#354258]">
-                          Senha
-                        </FormLabel>
+                        <div className="flex items-center justify-between gap-3">
+                          <FormLabel className="text-sm font-bold text-[#354258]">
+                            Senha
+                          </FormLabel>
+                          {isTeamMode ? (
+                            <Link
+                              href="/esqueci-a-senha"
+                              className="text-xs font-bold text-[#0B5CAB] transition hover:text-[#084B8A]"
+                            >
+                              Esqueci a senha
+                            </Link>
+                          ) : null}
+                        </div>
                         <FormControl>
                           <div className="relative">
                             <Input
