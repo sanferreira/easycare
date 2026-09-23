@@ -16,6 +16,7 @@ import {
   KanbanSquare,
   Rocket,
   SlidersHorizontal,
+  Pill,
 } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "@/hooks/use-auth";
@@ -29,6 +30,7 @@ const allNavItems = [
   { href: "/app", label: "Dashboard", icon: LayoutDashboard },
   { href: "/residents", label: "Pacientes", icon: Users },
   { href: "/prontuario", label: "Prontuário", icon: FileText },
+  { href: "/farmacia", label: "Farmácia", icon: Pill },
   { href: "/staff", label: "Equipe", icon: UserCheck },
   { href: "/escalas", label: "Escalas", icon: Calendar },
   { href: "/ponto-eletronico", label: "Ponto", icon: Clock3 },
@@ -41,8 +43,8 @@ const allNavItems = [
 const onboardingItem = { href: "/onboarding", label: "Primeiros passos", icon: Rocket };
 
 const superAdminItems = [
-  { href: "/admin", label: "Organizacoes", icon: Building2 },
-  { href: "/crm", label: "CRM", icon: KanbanSquare },
+  { href: "/admin", label: "Contas", icon: Building2 },
+  { href: "/crm", label: "CRM (vagas)", icon: KanbanSquare },
   { href: "/audit", label: "Auditoria", icon: ClipboardList },
 ];
 

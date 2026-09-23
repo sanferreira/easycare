@@ -79,6 +79,8 @@ app.use((req, res, next) => {
   startMedicationNotificationWorker();
   const { startTrialReminderWorker } = await import("./trial-reminders");
   startTrialReminderWorker();
+  const { startCommercialDigestWorker } = await import("./commercial-digest");
+  startCommercialDigestWorker();
 
   // Keep API failures in JSON (avoid Vite HTML fallback on unknown API routes in development).
   app.use("/api/*", (req, res) => {

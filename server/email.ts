@@ -373,3 +373,53 @@ export async function sendTrialEndingCommercialEmail(input: TrialEndingCommercia
 
   return { sent: true as const };
 }
+
+export type CommercialDigestEmailInput = {
+  needsAction: number;
+  trialEnding: number;
+  billingRisk: number;
+  withoutPlan: number;
+  churning: number;
+  estimatedMrrFormatted?: string | null;
+  adminUrl: string;
+};
+
+export async function sendCommercialDigestEmail(input: CommercialDigestEmailInput) {
+  const resend = getResendClient();
+  const commercialEmail = getCommercialEmail();
+  if (!resend || !commercialEmail) {
+    return { sent: false as const, reason: !resend ? "not_configured" as const : "missing_recipient" as const };
+  }
+
+  const { error } = await resend.emails.send({
+    from: getFromEmail(),
+    to: commercialEmail,
+    subject: `Digest Contas EasyCare — ${input.needsAction} precisam de ação`,
+    html: emailShell("Digest comercial", `
+      <p style="margin:0 0 16px;color:#53657A;font-size:14px;line-height:1.6;">
+        Resumo diário das contas EasyCare que pedem atenção.
+      </p>
+      <div style="margin:20px 0;padding:16px;border-radius:10px;background:#F7FBFC;border:1px solid #D8E7F5;">
+        <p style="margin:0;color:#53657A;font-size:13px;line-height:1.8;">
+          <strong>Precisam de ação:</strong> ${input.needsAction}<br/>
+          <strong>Trial vencendo:</strong> ${input.trialEnding}<br/>
+          <strong>Risco de cobrança:</strong> ${input.billingRisk}<br/>
+          <strong>Sem plano:</strong> ${input.withoutPlan}<br/>
+          <strong>Churn / cancelando:</strong> ${input.churning}<br/>
+          ${input.estimatedMrrFormatted ? `<strong>MRR estimado (acordos):</strong> ${escapeHtml(input.estimatedMrrFormatted)}<br/>` : ""}
+        </p>
+      </div>
+      <p style="margin:24px 0 0;">
+        <a href="${escapeHtml(input.adminUrl)}" style="display:inline-block;background:#0B5CAB;color:#ffffff;text-decoration:none;font-weight:700;padding:12px 18px;border-radius:8px;">
+          Abrir Contas
+        </a>
+      </p>
+    `),
+  });
+
+  if (error) {
+    throw new Error(error.message || "Falha ao enviar digest comercial.");
+  }
+
+  return { sent: true as const };
+}

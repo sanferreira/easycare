@@ -29,8 +29,81 @@ export const organizations = pgTable("organizations", {
   paymentGraceDays: integer("payment_grace_days").default(10),
   manualAccessUntil: timestamp("manual_access_until"),
   trialReminderSentFor: text("trial_reminder_sent_for"), // ISO date of manualAccessUntil already reminded
+  // Commercial hub (superadmin Contas)
+  lifecycleStage: text("lifecycle_stage").default("trial"), // trial | onboarding | active | at_risk | churning | churned | special
+  commercialOwnerUserId: integer("commercial_owner_user_id"),
+  tags: text("tags").default("[]"), // JSON string array
+  nextFollowUpAt: timestamp("next_follow_up_at"),
+  commercialNotes: text("commercial_notes"),
+  churnReason: text("churn_reason"),
+  // Custom Stripe plan (price_data) — no Dashboard product required
+  customPlanEnabled: boolean("custom_plan_enabled").default(false),
+  customPlanLabel: text("custom_plan_label"),
+  customPlanAmountCents: integer("custom_plan_amount_cents"),
+  customPlanInterval: text("custom_plan_interval").default("month"), // month | year
+  customPlanIntervalCount: integer("custom_plan_interval_count").default(1),
+  customPlanPatientLimit: integer("custom_plan_patient_limit"),
   createdAt: timestamp("created_at").defaultNow(),
 });
+
+// ===== COMMERCIAL CONTACTS (EasyCare SaaS accounts) =====
+export const commercialContacts = pgTable("commercial_contacts", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull(),
+  name: text("name").notNull(),
+  role: text("role"), // admin | financeiro | decisor | outro
+  email: text("email"),
+  phone: text("phone"),
+  isPrimary: boolean("is_primary").default(false),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => ({
+  orgIdx: index("commercial_contacts_org_idx").on(table.organizationId),
+}));
+
+// ===== COMMERCIAL ACTIVITIES =====
+export const commercialActivities = pgTable("commercial_activities", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull(),
+  type: text("type").notNull().default("note"), // note | call | whatsapp | email | system
+  body: text("body").notNull(),
+  actorUserId: integer("actor_user_id"),
+  metadata: text("metadata"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => ({
+  orgCreatedIdx: index("commercial_activities_org_created_idx").on(table.organizationId, table.createdAt),
+}));
+
+// ===== COMMERCIAL TASKS =====
+export const commercialTasks = pgTable("commercial_tasks", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull(),
+  title: text("title").notNull(),
+  dueAt: timestamp("due_at"),
+  status: text("status").notNull().default("open"), // open | done
+  assigneeUserId: integer("assignee_user_id"),
+  queue: text("queue"), // trial_ending | billing_risk | boleto | etc
+  dedupeKey: text("dedupe_key"),
+  createdAt: timestamp("created_at").defaultNow(),
+  completedAt: timestamp("completed_at"),
+}, (table) => ({
+  orgStatusIdx: index("commercial_tasks_org_status_idx").on(table.organizationId, table.status),
+  dedupeIdx: index("commercial_tasks_dedupe_idx").on(table.dedupeKey),
+}));
+
+// ===== MANUAL BILLING CYCLES (boleto manual ledger) =====
+export const manualBillingCycles = pgTable("manual_billing_cycles", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull(),
+  periodYm: text("period_ym").notNull(), // YYYY-MM
+  dueDate: date("due_date").notNull(),
+  amountCents: integer("amount_cents"),
+  status: text("status").notNull().default("pending"), // pending | paid | overdue | waived
+  paidAt: timestamp("paid_at"),
+  note: text("note"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => ({
+  orgPeriodUnique: uniqueIndex("manual_billing_cycles_org_period_unique").on(table.organizationId, table.periodYm),
+}));
 
 // ===== USERS =====
 export const users = pgTable("users", {
@@ -45,6 +118,7 @@ export const users = pgTable("users", {
   phone: text("phone"),
   active: boolean("active").default(true),
   isSuperAdmin: boolean("is_super_admin").default(false),
+  lastLoginAt: timestamp("last_login_at"),
   passwordResetTokenHash: text("password_reset_token_hash"),
   passwordResetExpiresAt: timestamp("password_reset_expires_at"),
 }, (table) => ({
@@ -274,6 +348,9 @@ export const medications = pgTable("medications", {
   notes: text("notes"),
   status: text("status").notNull().default("active"),
   nextDue: timestamp("next_due"),
+  pharmacyItemId: integer("pharmacy_item_id"),
+  unitsPerDose: real("units_per_dose").notNull().default(1),
+  stockScope: text("stock_scope").notNull().default("org"), // org | resident
 });
 
 // ===== MEDICATION ADMINISTRATIONS =====
@@ -288,6 +365,55 @@ export const medicationAdministrations = pgTable("medication_administrations", {
   status: text("status").notNull().default("given"), // given | skipped | refused | late
   notes: text("notes"),
 });
+
+// ===== PHARMACY / STOCK =====
+export const pharmacyItems = pgTable("pharmacy_items", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull(),
+  name: text("name").notNull(),
+  activeIngredient: text("active_ingredient"),
+  form: text("form"),
+  strength: text("strength"),
+  unit: text("unit").notNull().default("cp"), // cp | ml | ampola | ...
+  minStock: real("min_stock").notNull().default(0),
+  controlled: boolean("controlled").notNull().default(false),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const pharmacyLots = pgTable("pharmacy_lots", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull(),
+  itemId: integer("item_id").notNull(),
+  scope: text("scope").notNull().default("org"), // org | resident
+  residentId: integer("resident_id"),
+  lotCode: text("lot_code"),
+  expiryDate: date("expiry_date"),
+  quantityOnHand: real("quantity_on_hand").notNull().default(0),
+  receivedAt: timestamp("received_at").defaultNow(),
+  source: text("source").notNull().default("purchase"), // purchase | family | donation | other
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const pharmacyMovements = pgTable("pharmacy_movements", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull(),
+  type: text("type").notNull(), // in | out | adjust | waste
+  itemId: integer("item_id").notNull(),
+  lotId: integer("lot_id"),
+  quantity: real("quantity").notNull(),
+  scope: text("scope").notNull().default("org"), // org | resident
+  residentId: integer("resident_id"),
+  staffId: integer("staff_id"),
+  medicationAdministrationId: integer("medication_administration_id"),
+  reason: text("reason"),
+  stockShortage: boolean("stock_shortage").notNull().default(false),
+  occurredAt: timestamp("occurred_at").defaultNow(),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => ({
+  adminUnique: uniqueIndex("pharmacy_movements_admin_unique").on(table.medicationAdministrationId),
+}));
 
 // ===== STAFF =====
 export const staff = pgTable("staff", {
@@ -514,11 +640,33 @@ export const organizationsRelations = relations(organizations, ({ many }) => ({
   contracts: many(contracts),
   accountsPayable: many(accountsPayable),
   crmOpportunities: many(crmOpportunities),
+  commercialContacts: many(commercialContacts),
+  commercialActivities: many(commercialActivities),
+  commercialTasks: many(commercialTasks),
+  manualBillingCycles: many(manualBillingCycles),
   timeClockLocations: many(timeClockLocations),
   timeClockEntries: many(timeClockEntries),
   timeClockAdjustmentRequests: many(timeClockAdjustmentRequests),
   timeClockAuditLogs: many(timeClockAuditLogs),
   timeClockClosures: many(timeClockClosures),
+}));
+
+export const commercialContactsRelations = relations(commercialContacts, ({ one }) => ({
+  organization: one(organizations, { fields: [commercialContacts.organizationId], references: [organizations.id] }),
+}));
+
+export const commercialActivitiesRelations = relations(commercialActivities, ({ one }) => ({
+  organization: one(organizations, { fields: [commercialActivities.organizationId], references: [organizations.id] }),
+  actor: one(users, { fields: [commercialActivities.actorUserId], references: [users.id] }),
+}));
+
+export const commercialTasksRelations = relations(commercialTasks, ({ one }) => ({
+  organization: one(organizations, { fields: [commercialTasks.organizationId], references: [organizations.id] }),
+  assignee: one(users, { fields: [commercialTasks.assigneeUserId], references: [users.id] }),
+}));
+
+export const manualBillingCyclesRelations = relations(manualBillingCycles, ({ one }) => ({
+  organization: one(organizations, { fields: [manualBillingCycles.organizationId], references: [organizations.id] }),
 }));
 
 export const usersRelations = relations(users, ({ one, many }) => ({
@@ -568,11 +716,36 @@ export const shiftAssignmentsRelations = relations(shiftAssignments, ({ one }) =
 export const medicationsRelations = relations(medications, ({ one, many }) => ({
   resident: one(residents, { fields: [medications.residentId], references: [residents.id] }),
   administrations: many(medicationAdministrations),
+  pharmacyItem: one(pharmacyItems, { fields: [medications.pharmacyItemId], references: [pharmacyItems.id] }),
 }));
 
 export const medicationAdministrationsRelations = relations(medicationAdministrations, ({ one }) => ({
   medication: one(medications, { fields: [medicationAdministrations.medicationId], references: [medications.id] }),
   resident: one(residents, { fields: [medicationAdministrations.residentId], references: [residents.id] }),
+}));
+
+export const pharmacyItemsRelations = relations(pharmacyItems, ({ one, many }) => ({
+  organization: one(organizations, { fields: [pharmacyItems.organizationId], references: [organizations.id] }),
+  lots: many(pharmacyLots),
+  movements: many(pharmacyMovements),
+}));
+
+export const pharmacyLotsRelations = relations(pharmacyLots, ({ one, many }) => ({
+  organization: one(organizations, { fields: [pharmacyLots.organizationId], references: [organizations.id] }),
+  item: one(pharmacyItems, { fields: [pharmacyLots.itemId], references: [pharmacyItems.id] }),
+  resident: one(residents, { fields: [pharmacyLots.residentId], references: [residents.id] }),
+  movements: many(pharmacyMovements),
+}));
+
+export const pharmacyMovementsRelations = relations(pharmacyMovements, ({ one }) => ({
+  organization: one(organizations, { fields: [pharmacyMovements.organizationId], references: [organizations.id] }),
+  item: one(pharmacyItems, { fields: [pharmacyMovements.itemId], references: [pharmacyItems.id] }),
+  lot: one(pharmacyLots, { fields: [pharmacyMovements.lotId], references: [pharmacyLots.id] }),
+  resident: one(residents, { fields: [pharmacyMovements.residentId], references: [residents.id] }),
+  administration: one(medicationAdministrations, {
+    fields: [pharmacyMovements.medicationAdministrationId],
+    references: [medicationAdministrations.id],
+  }),
 }));
 
 export const occurrencesRelations = relations(occurrences, ({ one }) => ({
@@ -653,6 +826,9 @@ export const insertPushSubscriptionSchema = createInsertSchema(pushSubscriptions
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true, createdAt: true });
 export const insertResidentSchema = createInsertSchema(residents).omit({ id: true });
 export const insertMedicationSchema = createInsertSchema(medications).omit({ id: true });
+export const insertPharmacyItemSchema = createInsertSchema(pharmacyItems).omit({ id: true, createdAt: true });
+export const insertPharmacyLotSchema = createInsertSchema(pharmacyLots).omit({ id: true, createdAt: true });
+export const insertPharmacyMovementSchema = createInsertSchema(pharmacyMovements).omit({ id: true, createdAt: true });
 export const insertStaffSchema = createInsertSchema(staff).omit({ id: true });
 export const insertOccurrenceSchema = createInsertSchema(occurrences).omit({ id: true, createdAt: true });
 export const insertShiftAssignmentSchema = createInsertSchema(shiftAssignments).omit({ id: true, createdAt: true });
@@ -665,6 +841,10 @@ export const insertMonthlyFeeSchema = createInsertSchema(monthlyFees).omit({ id:
 export const insertAccountPayableSchema = createInsertSchema(accountsPayable).omit({ id: true, createdAt: true });
 export const insertMedicationAdministrationSchema = createInsertSchema(medicationAdministrations).omit({ id: true });
 export const insertCrmOpportunitySchema = createInsertSchema(crmOpportunities).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertCommercialContactSchema = createInsertSchema(commercialContacts).omit({ id: true, createdAt: true });
+export const insertCommercialActivitySchema = createInsertSchema(commercialActivities).omit({ id: true, createdAt: true });
+export const insertCommercialTaskSchema = createInsertSchema(commercialTasks).omit({ id: true, createdAt: true, completedAt: true });
+export const insertManualBillingCycleSchema = createInsertSchema(manualBillingCycles).omit({ id: true, createdAt: true });
 export const insertTimeClockLocationSchema = createInsertSchema(timeClockLocations).omit({ id: true, createdAt: true });
 export const insertTimeClockEntrySchema = createInsertSchema(timeClockEntries).omit({ id: true, createdAt: true });
 export const insertTimeClockAdjustmentRequestSchema = createInsertSchema(timeClockAdjustmentRequests).omit({ id: true, createdAt: true });
@@ -718,6 +898,9 @@ export type PushSubscriptionRecord = typeof pushSubscriptions.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type Resident = typeof residents.$inferSelect;
 export type Medication = typeof medications.$inferSelect;
+export type PharmacyItem = typeof pharmacyItems.$inferSelect;
+export type PharmacyLot = typeof pharmacyLots.$inferSelect;
+export type PharmacyMovement = typeof pharmacyMovements.$inferSelect;
 export type StaffMember = typeof staff.$inferSelect;
 export type Occurrence = typeof occurrences.$inferSelect;
 export type ShiftAssignment = typeof shiftAssignments.$inferSelect;
@@ -730,6 +913,10 @@ export type MonthlyFee = typeof monthlyFees.$inferSelect;
 export type AccountPayable = typeof accountsPayable.$inferSelect;
 export type MedicationAdministration = typeof medicationAdministrations.$inferSelect;
 export type CrmOpportunity = typeof crmOpportunities.$inferSelect;
+export type CommercialContact = typeof commercialContacts.$inferSelect;
+export type CommercialActivity = typeof commercialActivities.$inferSelect;
+export type CommercialTask = typeof commercialTasks.$inferSelect;
+export type ManualBillingCycle = typeof manualBillingCycles.$inferSelect;
 export type TimeClockLocation = typeof timeClockLocations.$inferSelect;
 export type TimeClockEntry = typeof timeClockEntries.$inferSelect;
 export type UpdateTimeClockEntryRequest = Partial<InsertTimeClockEntry>;
@@ -744,6 +931,9 @@ export type InsertPushSubscription = z.infer<typeof insertPushSubscriptionSchema
 export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
 export type InsertResident = z.infer<typeof insertResidentSchema>;
 export type InsertMedication = z.infer<typeof insertMedicationSchema>;
+export type InsertPharmacyItem = z.infer<typeof insertPharmacyItemSchema>;
+export type InsertPharmacyLot = z.infer<typeof insertPharmacyLotSchema>;
+export type InsertPharmacyMovement = z.infer<typeof insertPharmacyMovementSchema>;
 export type InsertStaff = z.infer<typeof insertStaffSchema>;
 export type InsertOccurrence = z.infer<typeof insertOccurrenceSchema>;
 export type InsertShiftAssignment = z.infer<typeof insertShiftAssignmentSchema>;
@@ -756,6 +946,10 @@ export type InsertMonthlyFee = z.infer<typeof insertMonthlyFeeSchema>;
 export type InsertAccountPayable = z.infer<typeof insertAccountPayableSchema>;
 export type InsertMedicationAdministration = z.infer<typeof insertMedicationAdministrationSchema>;
 export type InsertCrmOpportunity = z.infer<typeof insertCrmOpportunitySchema>;
+export type InsertCommercialContact = z.infer<typeof insertCommercialContactSchema>;
+export type InsertCommercialActivity = z.infer<typeof insertCommercialActivitySchema>;
+export type InsertCommercialTask = z.infer<typeof insertCommercialTaskSchema>;
+export type InsertManualBillingCycle = z.infer<typeof insertManualBillingCycleSchema>;
 export type InsertTimeClockLocation = z.infer<typeof insertTimeClockLocationSchema>;
 export type InsertTimeClockEntry = z.infer<typeof insertTimeClockEntrySchema>;
 export type InsertTimeClockAdjustmentRequest = z.infer<typeof insertTimeClockAdjustmentRequestSchema>;
@@ -770,6 +964,8 @@ export type CrmOpportunityFormInput = z.infer<typeof crmOpportunityFormSchema>;
 
 export type UpdateResidentRequest = Partial<InsertResident>;
 export type UpdateMedicationRequest = Partial<InsertMedication>;
+export type UpdatePharmacyItemRequest = Partial<InsertPharmacyItem>;
+export type UpdatePharmacyLotRequest = Partial<InsertPharmacyLot>;
 export type UpdateStaffRequest = Partial<InsertStaff>;
 export type UpdateShiftAssignmentRequest = Partial<InsertShiftAssignment>;
 export type UpdateOccurrenceRequest = Partial<InsertOccurrence>;

@@ -563,9 +563,17 @@ function AdminDialog({ open, onOpenChange, medications, currentUserName, current
       }
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (result: { stockWarning?: string | null }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/medication-administrations"] });
-      toast({ title: "Administracao registrada com sucesso" });
+      if (result?.stockWarning) {
+        toast({
+          variant: "destructive",
+          title: "Saldo insuficiente — dose registrada mesmo assim",
+          description: result.stockWarning,
+        });
+      } else {
+        toast({ title: "Administracao registrada com sucesso" });
+      }
       form.reset({ medicationId: undefined, staffId: undefined, status: "given", notes: "" });
       onOpenChange(false);
     },

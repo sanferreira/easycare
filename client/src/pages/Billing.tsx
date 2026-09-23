@@ -36,9 +36,19 @@ type BillingStatus = {
   stripeCancelAtPeriodEnd: boolean;
   stripeCancelAt: string | null;
   stripePriceId: string | null;
-  billingPlan: "monthly" | "semiannual" | "annual" | null;
+  billingPlan: "monthly" | "semiannual" | "annual" | "custom" | null;
   capacity: number | null;
   planPatientLimit: number | null;
+  customPlan?: {
+    enabled: boolean;
+    label: string | null;
+    amountCents: number | null;
+    formattedAmount: string | null;
+    interval: string | null;
+    intervalCount: number | null;
+    patientLimit: number | null;
+    migrationHint?: boolean;
+  } | null;
   subscriptionCurrentPeriodEnd: string | null;
   subscriptionUpdatedAt: string | null;
   manualAccessUntil: string | null;
@@ -159,6 +169,7 @@ function formatLongDate(value?: string | null) {
 function billingPlanLabel(plan?: BillingStatus["billingPlan"]) {
   if (plan === "annual") return "Anual";
   if (plan === "semiannual") return "Semestral";
+  if (plan === "custom") return "Acordo especial";
   if (plan === "monthly") return "Mensal";
   return null;
 }
@@ -311,9 +322,14 @@ export default function Billing() {
   const isPaymentIssue = isStripePaymentIssue(data?.stripeSubscriptionStatus ?? null);
   const billingAccessState = resolveBillingAccessState(data);
   const organizationName = data?.organizationName ?? user.organizationName ?? "EasyCare";
-  const planName = billingPlanLabel(data?.billingPlan);
+  const planName = billingPlanLabel(data?.billingPlan) || data?.customPlan?.label || null;
   const patientLimit = data?.capacity ?? data?.planPatientLimit ?? 50;
-  const planCapacityLabel = planName ? `${planName} · até ${patientLimit} pacientes` : `Até ${patientLimit} pacientes`;
+  const planCapacityLabel = data?.customPlan?.enabled && data.customPlan.formattedAmount
+    ? `${data.customPlan.label || "Acordo especial"} · ${data.customPlan.formattedAmount} · até ${patientLimit} pacientes`
+    : planName
+      ? `${planName} · até ${patientLimit} pacientes`
+      : `Até ${patientLimit} pacientes`;
+  const customMigrationHint = Boolean(data?.customPlan?.migrationHint);
   const stripeLabel = data?.billingMethod === "manual_boleto"
     ? `Boleto${data?.manualBillingDueDay ? ` · dia ${data.manualBillingDueDay}` : ""}`
     : data?.stripeCancelAtPeriodEnd
@@ -408,6 +424,12 @@ export default function Billing() {
     `Olá, preciso de ajuda com a assinatura da organização ${organizationName}.`,
   );
 
+  const migrationBanner = customMigrationHint ? (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+      Seu acordo especial encerrou na configuração. Cancele a renovação da assinatura atual e, ao fim do período, escolha um plano padrão no checkout.
+    </div>
+  ) : null;
+
   function openCheckoutTab() {
     const checkoutWindow = window.open("/checkout", "_blank");
     if (checkoutWindow) {
@@ -420,6 +442,7 @@ export default function Billing() {
   return (
     <AppShell>
       <div className="mx-auto max-w-[1380px] space-y-4">
+        {migrationBanner}
         <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
           <div className="grid xl:grid-cols-[minmax(0,1fr)_360px]">
             <div className="p-5 lg:p-6">

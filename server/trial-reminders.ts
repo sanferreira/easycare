@@ -1,6 +1,7 @@
 import { storage } from "./storage";
 import { resolveAppPublicUrl } from "./app-url";
 import { sendTrialEndingCommercialEmail, sendTrialEndingEmail } from "./email";
+import { isManualTrialEndingSoon, isStripeTrialEndingSoon, isBillingRisk } from "@shared/commercial";
 
 let started = false;
 let timer: NodeJS.Timeout | null = null;
@@ -25,8 +26,24 @@ function daysUntil(date: Date, now = new Date()) {
   return Math.max(0, Math.ceil(ms / (24 * 60 * 60 * 1000)));
 }
 
-function trialKey(date: Date) {
-  return date.toISOString();
+function trialKey(prefix: string, date: Date) {
+  return `${prefix}:${date.toISOString()}`;
+}
+
+async function ensureQueueTask(
+  organizationId: number,
+  queue: string,
+  title: string,
+  dueAt: Date,
+) {
+  await storage.createCommercialTask({
+    organizationId,
+    title,
+    dueAt,
+    status: "open",
+    queue,
+    dedupeKey: `${queue}-${organizationId}-${dueAt.toISOString().slice(0, 10)}`,
+  });
 }
 
 async function processTrialReminders() {
@@ -35,22 +52,45 @@ async function processTrialReminders() {
   try {
     const lookAheadDays = parseInteger(process.env.TRIAL_REMINDER_DAYS_BEFORE, 3, 1, 14);
     const now = new Date();
-    const horizon = new Date(now.getTime() + lookAheadDays * 24 * 60 * 60 * 1000);
     const organizations = await storage.getOrganizations(true);
     const appBaseUrl = resolveAppPublicUrl();
     const supportWhatsappDisplay = process.env.VITE_SUPPORT_WHATSAPP_DISPLAY?.trim() || null;
 
     for (const organization of organizations) {
-      if (!organization.manualAccessUntil) continue;
-      if (organization.stripeSubscriptionStatus === "active" || organization.stripeSubscriptionStatus === "trialing") {
-        continue;
+      // Auto CS tasks for risk queues
+      if (isBillingRisk(organization)) {
+        await ensureQueueTask(
+          organization.id,
+          "billing_risk",
+          `Cobrança em risco — ${organization.name}`,
+          now,
+        );
       }
 
-      const accessUntil = new Date(organization.manualAccessUntil);
-      if (Number.isNaN(accessUntil.getTime())) continue;
-      if (accessUntil.getTime() < now.getTime() || accessUntil.getTime() > horizon.getTime()) continue;
+      let trialEndsAt: Date | null = null;
+      let trialKind: "manual" | "stripe" | null = null;
 
-      const reminderKey = trialKey(accessUntil);
+      if (isManualTrialEndingSoon(organization, lookAheadDays) && organization.manualAccessUntil) {
+        trialEndsAt = new Date(organization.manualAccessUntil);
+        trialKind = "manual";
+      } else if (
+        isStripeTrialEndingSoon(organization, lookAheadDays)
+        && organization.subscriptionCurrentPeriodEnd
+      ) {
+        trialEndsAt = new Date(organization.subscriptionCurrentPeriodEnd);
+        trialKind = "stripe";
+      }
+
+      if (!trialEndsAt || !trialKind || Number.isNaN(trialEndsAt.getTime())) continue;
+
+      await ensureQueueTask(
+        organization.id,
+        "trial_ending",
+        `Trial ${trialKind === "stripe" ? "Stripe" : "manual"} vencendo — ${organization.name}`,
+        trialEndsAt,
+      );
+
+      const reminderKey = trialKey(trialKind, trialEndsAt);
       if (organization.trialReminderSentFor === reminderKey) continue;
 
       const users = await storage.getUsersByOrganization(organization.id);
@@ -58,13 +98,13 @@ async function processTrialReminders() {
         || users.find((user) => user.active !== false && user.email);
       if (!admin?.email) continue;
 
-      const daysLeft = Math.max(1, daysUntil(accessUntil, now));
+      const daysLeft = Math.max(1, daysUntil(trialEndsAt, now));
       await sendTrialEndingEmail({
         to: admin.email,
         adminName: admin.name,
         organizationName: organization.name,
         paymentMethod: organization.billingMethod,
-        trialEndsAt: accessUntil,
+        trialEndsAt,
         daysLeft,
         billingUrl: `${appBaseUrl}/billing`,
         supportWhatsappDisplay,
@@ -75,9 +115,16 @@ async function processTrialReminders() {
         email: organization.email || admin.email,
         phone: organization.phone || admin.phone,
         paymentMethod: organization.billingMethod,
-        trialEndsAt: accessUntil,
+        trialEndsAt,
         daysLeft,
-        adminUrl: `${appBaseUrl}/admin`,
+        adminUrl: `${appBaseUrl}/admin/orgs/${organization.id}`,
+      });
+
+      await storage.createCommercialActivity({
+        organizationId: organization.id,
+        type: "system",
+        body: `Lembrete automático de trial ${trialKind} enviado (${daysLeft} dia(s) restantes).`,
+        actorUserId: null,
       });
 
       await storage.updateOrganization(organization.id, {

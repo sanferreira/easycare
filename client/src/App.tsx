@@ -26,11 +26,13 @@ import Residents from "@/pages/Residents";
 import Staff from "@/pages/Staff";
 import Escalas from "@/pages/Escalas";
 import Admin from "@/pages/Admin";
+import AdminAccount from "@/pages/AdminAccount";
 import Prontuario from "@/pages/Prontuario";
 import PontoEletronico from "@/pages/PontoEletronico";
 import Financeiro from "@/pages/Financeiro";
 import Crm from "@/pages/Crm";
 import EnvironmentSettings from "@/pages/EnvironmentSettings";
+import Farmacia from "@/pages/Farmacia";
 import Notificacoes from "@/pages/Notificacoes";
 import FamilyPortalInvite from "@/pages/FamilyPortalInvite";
 import FamilyPortalLogin from "@/pages/FamilyPortalLogin";
@@ -146,6 +148,9 @@ function Router() {
       <Route path="/prontuario">
         <PrivateRoute component={Prontuario} route="/prontuario" />
       </Route>
+      <Route path="/farmacia">
+        <PrivateRoute component={Farmacia} route="/farmacia" />
+      </Route>
       <Route path="/financeiro">
         <PrivateRoute component={Financeiro} route="/financeiro" />
       </Route>
@@ -157,6 +162,9 @@ function Router() {
       </Route>
       <Route path="/notificações">
         <PrivateRoute component={Notificacoes} />
+      </Route>
+      <Route path="/admin/orgs/:id">
+        <PrivateRoute component={AdminAccount} superAdminOnly />
       </Route>
       <Route path="/admin">
         <PrivateRoute component={Admin} superAdminOnly />

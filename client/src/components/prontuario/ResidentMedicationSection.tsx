@@ -35,6 +35,15 @@ import type { Medication } from "@shared/schema";
 
 type MedicationWithResident = Medication & { residentName?: string };
 type StaffOption = { id: number; name: string; role?: string | null; active?: boolean | null };
+type PharmacyItemOption = {
+  id: number;
+  name: string;
+  unit: string;
+  minStock: number;
+  quantityOnHand: number;
+  active: boolean;
+};
+const NO_PHARMACY_ITEM = "__none__";
 
 type MedicationDoseScheduleItem = {
   key: string;
@@ -80,6 +89,9 @@ const medicationFormSchema = z.object({
   notes: z.string().optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional(),
+  pharmacyItemId: z.string().optional(),
+  unitsPerDose: z.string().optional(),
+  stockScope: z.enum(["org", "resident"]).default("org"),
 });
 
 const doseActionSchema = z.object({
@@ -252,6 +264,9 @@ export function ResidentMedicationSection({
       notes: "",
       startDate: "",
       endDate: "",
+      pharmacyItemId: NO_PHARMACY_ITEM,
+      unitsPerDose: "1",
+      stockScope: "org",
     },
   });
   const watchedFrequency = medicationForm.watch("frequency");
@@ -266,6 +281,17 @@ export function ResidentMedicationSection({
     enabled: residentId > 0,
     queryFn: () => fetchJsonOrThrow(`/api/medications?residentId=${residentId}`, "Erro ao carregar medicações."),
   });
+
+  const pharmacyItemsQuery = useQuery<PharmacyItemOption[]>({
+    queryKey: ["/api/pharmacy/items", "active"],
+    queryFn: () => fetchJsonOrThrow("/api/pharmacy/items?activeOnly=true", "Erro ao carregar catálogo de farmácia."),
+  });
+
+  const pharmacyById = useMemo(() => {
+    const map = new Map<number, PharmacyItemOption>();
+    for (const item of pharmacyItemsQuery.data ?? []) map.set(item.id, item);
+    return map;
+  }, [pharmacyItemsQuery.data]);
 
   const scheduleQuery = useQuery<MedicationDoseScheduleResponse>({
     queryKey: ["/api/residents", residentId, "medication-dose-schedule", range.from, range.to],
@@ -448,6 +474,7 @@ export function ResidentMedicationSection({
       if (frequencyNeedsBaseTime(data.frequency) && !scheduleTime) {
         throw new Error("Informe o horário base para esta frequência.");
       }
+      const unitsPerDose = Number(data.unitsPerDose ?? "1");
       return fetchJsonOrThrow("/api/medications", "Erro ao cadastrar medicação.", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -463,6 +490,12 @@ export function ResidentMedicationSection({
           notes: data.notes?.trim() || null,
           startDate: data.startDate?.trim() || null,
           endDate: data.endDate?.trim() || null,
+          pharmacyItemId:
+            !data.pharmacyItemId || data.pharmacyItemId === NO_PHARMACY_ITEM
+              ? null
+              : Number(data.pharmacyItemId),
+          unitsPerDose: Number.isFinite(unitsPerDose) && unitsPerDose > 0 ? unitsPerDose : 1,
+          stockScope: data.stockScope === "resident" ? "resident" : "org",
         }),
       });
     },
@@ -482,6 +515,7 @@ export function ResidentMedicationSection({
       if (frequencyNeedsBaseTime(data.frequency) && !scheduleTime) {
         throw new Error("Informe o horário base para esta frequência.");
       }
+      const unitsPerDose = Number(data.unitsPerDose ?? "1");
       return fetchJsonOrThrow(`/api/medications/${id}`, "Erro ao atualizar medicação.", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -497,6 +531,12 @@ export function ResidentMedicationSection({
           notes: data.notes?.trim() || null,
           startDate: data.startDate?.trim() || null,
           endDate: data.endDate?.trim() || null,
+          pharmacyItemId:
+            !data.pharmacyItemId || data.pharmacyItemId === NO_PHARMACY_ITEM
+              ? null
+              : Number(data.pharmacyItemId),
+          unitsPerDose: Number.isFinite(unitsPerDose) && unitsPerDose > 0 ? unitsPerDose : 1,
+          stockScope: data.stockScope === "resident" ? "resident" : "org",
         }),
       });
     },
@@ -520,7 +560,7 @@ export function ResidentMedicationSection({
   });
 
   const registerDose = useMutation({
-    mutationFn: async (data: z.infer<typeof doseActionSchema>) => {
+    mutationFn: async (data: z.infer<typeof doseActionSchema>): Promise<{ stockWarning?: string | null }> => {
       if (!selectedDose) throw new Error("Nenhuma dose selecionada.");
       return fetchJsonOrThrow(`/api/residents/${residentId}/medication-dose-records`, "Erro ao registrar dose.", {
         method: "POST",
@@ -535,11 +575,19 @@ export function ResidentMedicationSection({
         }),
       });
     },
-    onSuccess: () => {
+    onSuccess: (result: { stockWarning?: string | null }) => {
       invalidateMedicationQueries();
       setIsDoseDialogOpen(false);
       setSelectedDose(null);
-      toast({ title: "Administracao registrada com sucesso" });
+      if (result?.stockWarning) {
+        toast({
+          variant: "destructive",
+          title: "Saldo insuficiente — dose registrada mesmo assim",
+          description: result.stockWarning,
+        });
+      } else {
+        toast({ title: "Administracao registrada com sucesso" });
+      }
     },
     onError: (error: Error) => toast({ variant: "destructive", title: error.message }),
   });
@@ -557,6 +605,9 @@ export function ResidentMedicationSection({
       notes: "",
       startDate: "",
       endDate: "",
+      pharmacyItemId: NO_PHARMACY_ITEM,
+      unitsPerDose: "1",
+      stockScope: "org",
     });
     setIsMedicationDialogOpen(true);
   };
@@ -591,6 +642,9 @@ export function ResidentMedicationSection({
       notes: medication.notes || "",
       startDate: medication.startDate || "",
       endDate: medication.endDate || "",
+      pharmacyItemId: medication.pharmacyItemId ? String(medication.pharmacyItemId) : NO_PHARMACY_ITEM,
+      unitsPerDose: String(medication.unitsPerDose ?? 1),
+      stockScope: medication.stockScope === "resident" ? "resident" : "org",
     });
     setIsMedicationDialogOpen(true);
   };
@@ -655,7 +709,42 @@ export function ResidentMedicationSection({
                         focusMedicationId === medication.id && "bg-primary/5 ring-1 ring-inset ring-primary/25",
                       )}
                     >
-                      <TableCell className="font-medium">{medication.name}</TableCell>
+                      <TableCell className="font-medium">
+                        <div className="flex flex-col gap-1">
+                          <span>{medication.name}</span>
+                          {medication.pharmacyItemId ? (
+                            (() => {
+                              const stock = pharmacyById.get(medication.pharmacyItemId);
+                              if (!stock) {
+                                return (
+                                  <Badge variant="outline" className="w-fit text-[10px]">
+                                    Estoque vinculado
+                                  </Badge>
+                                );
+                              }
+                              if (stock.quantityOnHand <= 0) {
+                                return (
+                                  <Badge variant="destructive" className="w-fit text-[10px]">
+                                    Sem estoque
+                                  </Badge>
+                                );
+                              }
+                              if (stock.minStock > 0 && stock.quantityOnHand < stock.minStock) {
+                                return (
+                                  <Badge className="w-fit bg-amber-100 text-amber-900 hover:bg-amber-100 text-[10px]">
+                                    Abaixo do mínimo
+                                  </Badge>
+                                );
+                              }
+                              return (
+                                <Badge variant="outline" className="w-fit text-[10px]">
+                                  Estoque: {stock.quantityOnHand} {stock.unit}
+                                </Badge>
+                              );
+                            })()
+                          ) : null}
+                        </div>
+                      </TableCell>
                       <TableCell>{medication.dosage}</TableCell>
                       <TableCell>{getFrequencyLabel(medication.frequency)}</TableCell>
                       <TableCell>{MED_STATUS[medication.status] ?? medication.status}</TableCell>
@@ -1069,6 +1158,59 @@ export function ResidentMedicationSection({
                   <FormControl><Textarea {...field} value={field.value ?? ""} rows={3} /></FormControl>
                 </FormItem>
               )} />
+
+              <div className="rounded-lg border border-border/70 bg-muted/30 p-3 space-y-3">
+                <p className="text-xs font-medium text-muted-foreground">Estoque (opcional)</p>
+                <FormField control={medicationForm.control} name="pharmacyItemId" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Item do catálogo</FormLabel>
+                    <Select onValueChange={field.onChange} value={field.value || NO_PHARMACY_ITEM}>
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Sem vínculo de estoque" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value={NO_PHARMACY_ITEM}>Sem vínculo</SelectItem>
+                        {(pharmacyItemsQuery.data ?? []).map((item) => (
+                          <SelectItem key={item.id} value={String(item.id)}>
+                            {item.name} ({item.quantityOnHand} {item.unit})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <FormField control={medicationForm.control} name="unitsPerDose" render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Unidades por dose</FormLabel>
+                      <FormControl>
+                        <Input type="number" min={0.01} step="0.01" {...field} value={field.value ?? "1"} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+                  <FormField control={medicationForm.control} name="stockScope" render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Baixa de</FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value}>
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="org">Estoque da casa</SelectItem>
+                          <SelectItem value="resident">Caixa do residente</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+                </div>
+              </div>
 
               <div className="flex justify-end gap-2">
                 <Button type="button" variant="outline" onClick={() => setIsMedicationDialogOpen(false)}>Cancelar</Button>

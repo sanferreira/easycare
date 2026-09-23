@@ -2,6 +2,7 @@ export const MODULE_ROUTE_VALUES = [
   "/",
   "/residents",
   "/prontuario",
+  "/farmacia",
   "/staff",
   "/escalas",
   "/ponto-eletronico",
@@ -33,10 +34,10 @@ export const APP_ROLE_VALUES = [
 export type AppRole = (typeof APP_ROLE_VALUES)[number];
 
 export const DEFAULT_ROLE_ROUTES: Record<string, ModuleRoute[]> = {
-  admin: ["/", "/residents", "/prontuario", "/staff", "/escalas", "/ponto-eletronico", "/occurrences", "/financeiro", "/crm", "/environment", "/audit"],
-  enfermeiro: ["/", "/residents", "/prontuario", "/escalas", "/ponto-eletronico", "/occurrences"],
-  medico: ["/", "/residents", "/prontuario", "/ponto-eletronico", "/occurrences"],
-  tecnico_enfermagem: ["/", "/residents", "/prontuario", "/escalas", "/ponto-eletronico", "/occurrences"],
+  admin: ["/", "/residents", "/prontuario", "/farmacia", "/staff", "/escalas", "/ponto-eletronico", "/occurrences", "/financeiro", "/crm", "/environment", "/audit"],
+  enfermeiro: ["/", "/residents", "/prontuario", "/farmacia", "/escalas", "/ponto-eletronico", "/occurrences"],
+  medico: ["/", "/residents", "/prontuario", "/farmacia", "/ponto-eletronico", "/occurrences"],
+  tecnico_enfermagem: ["/", "/residents", "/prontuario", "/farmacia", "/escalas", "/ponto-eletronico", "/occurrences"],
   cuidador: ["/", "/residents", "/escalas", "/ponto-eletronico", "/occurrences"],
   fisioterapeuta: ["/", "/residents", "/prontuario", "/ponto-eletronico", "/occurrences"],
   nutricionista: ["/", "/residents", "/prontuario", "/ponto-eletronico", "/occurrences"],

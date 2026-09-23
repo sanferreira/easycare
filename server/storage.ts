@@ -2,7 +2,9 @@ import { db } from "./db";
 import {
   users, organizations, notifications, pushSubscriptions, auditLogs, residents, medications, staff, occurrences, shiftAssignments,
   medicalRecords, comorbidities, familyMembers, patientDocuments, contracts, monthlyFees, accountsPayable, medicationAdministrations, crmOpportunities,
+  commercialContacts, commercialActivities, commercialTasks, manualBillingCycles,
   timeClockLocations, timeClockEntries, timeClockAdjustmentRequests, timeClockAuditLogs, timeClockClosures,
+  pharmacyItems, pharmacyLots, pharmacyMovements,
   type User, type InsertUser,
   type Organization, type InsertOrganization,
   type AppNotification, type InsertNotification,
@@ -21,7 +23,14 @@ import {
   type MonthlyFee, type InsertMonthlyFee, type UpdateMonthlyFeeRequest,
   type AccountPayable, type InsertAccountPayable, type UpdateAccountPayableRequest,
   type MedicationAdministration, type InsertMedicationAdministration,
+  type PharmacyItem, type InsertPharmacyItem, type UpdatePharmacyItemRequest,
+  type PharmacyLot, type InsertPharmacyLot, type UpdatePharmacyLotRequest,
+  type PharmacyMovement, type InsertPharmacyMovement,
   type CrmOpportunity, type InsertCrmOpportunity, type UpdateCrmOpportunityRequest,
+  type CommercialContact, type InsertCommercialContact,
+  type CommercialActivity, type InsertCommercialActivity,
+  type CommercialTask, type InsertCommercialTask,
+  type ManualBillingCycle, type InsertManualBillingCycle,
   type TimeClockLocation, type InsertTimeClockLocation, type UpdateTimeClockLocationRequest,
   type TimeClockEntry, type InsertTimeClockEntry, type UpdateTimeClockEntryRequest,
   type TimeClockAdjustmentRequest, type InsertTimeClockAdjustmentRequest, type UpdateTimeClockAdjustmentRequest,
@@ -32,6 +41,7 @@ import {
 import { eq, like, desc, sql, and, gte, lte, ilike, asc, inArray, getTableColumns, isNull, or } from "drizzle-orm";
 import { aliasedTable } from "drizzle-orm/alias";
 import { hashPassword, isPasswordHash } from "./security";
+import { syncPharmacyStockForAdministration } from "./pharmacy-stock";
 
 const normalizePortalUsername = (username: string) => username.trim().toLowerCase();
 const DEFAULT_PAYMENT_GRACE_DAYS = 10;
@@ -278,6 +288,13 @@ export interface IStorage {
   // Organizations
   getOrganizations(includeInactive?: boolean): Promise<Organization[]>;
   getOrganization(id: number): Promise<Organization | undefined>;
+  getOrganizationsOnboardingSummariesBatch(): Promise<Array<{
+    organizationId: number;
+    completed: number;
+    total: number;
+    percent: number;
+    checks: Record<string, boolean>;
+  }>>;
   getOrganizationByCnpj(cnpj: string): Promise<Organization | undefined>;
   getOrganizationByStripeCustomerId(customerId: string): Promise<Organization | undefined>;
   getOrganizationByStripeSubscriptionId(subscriptionId: string): Promise<Organization | undefined>;
@@ -395,7 +412,7 @@ export interface IStorage {
 
   // Medication Administrations
   getMedicationAdministrations(orgId: number, residentId?: number, medicationId?: number): Promise<(MedicationAdministration & { medicationName?: string; residentName?: string; administeredByName?: string })[]>;
-  createMedicationAdministration(admin: InsertMedicationAdministration): Promise<MedicationAdministration>;
+  createMedicationAdministration(admin: InsertMedicationAdministration): Promise<MedicationAdministration & { stockWarning?: string | null }>;
   upsertMedicationAdministrationForDose(input: {
     organizationId: number;
     medicationId: number;
@@ -405,7 +422,41 @@ export interface IStorage {
     administeredAt: Date;
     status: "given" | "skipped" | "refused" | "late";
     notes: string | null;
-  }): Promise<MedicationAdministration>;
+  }): Promise<MedicationAdministration & { stockWarning?: string | null }>;
+
+  // Pharmacy
+  getPharmacyItems(orgId: number, opts?: { activeOnly?: boolean }): Promise<(PharmacyItem & { quantityOnHand: number })[]>;
+  getPharmacyItem(orgId: number, id: number): Promise<PharmacyItem | undefined>;
+  createPharmacyItem(item: InsertPharmacyItem): Promise<PharmacyItem>;
+  updatePharmacyItem(orgId: number, id: number, updates: UpdatePharmacyItemRequest): Promise<PharmacyItem>;
+  getPharmacyLots(orgId: number, opts?: { itemId?: number; scope?: string; residentId?: number; includeEmpty?: boolean }): Promise<(PharmacyLot & { itemName?: string; residentName?: string })[]>;
+  createPharmacyEntry(input: {
+    organizationId: number;
+    itemId: number;
+    scope: "org" | "resident";
+    residentId?: number | null;
+    quantity: number;
+    lotCode?: string | null;
+    expiryDate?: string | null;
+    source?: string;
+    notes?: string | null;
+    lotId?: number | null;
+    staffId?: number | null;
+  }): Promise<{ lot: PharmacyLot; movement: PharmacyMovement }>;
+  adjustPharmacyLot(input: {
+    organizationId: number;
+    lotId: number;
+    quantityDelta: number;
+    type: "adjust" | "waste";
+    reason?: string | null;
+    staffId?: number | null;
+  }): Promise<{ lot: PharmacyLot; movement: PharmacyMovement }>;
+  getPharmacyMovements(orgId: number, opts?: { itemId?: number; residentId?: number; limit?: number }): Promise<(PharmacyMovement & { itemName?: string; lotCode?: string | null; residentName?: string })[]>;
+  getPharmacyAlerts(orgId: number): Promise<{
+    belowMinimum: Array<{ itemId: number; name: string; minStock: number; quantityOnHand: number; unit: string }>;
+    expiringSoon: Array<{ lotId: number; itemId: number; itemName: string; lotCode: string | null; expiryDate: string; quantityOnHand: number; scope: string; residentName?: string }>;
+    expired: Array<{ lotId: number; itemId: number; itemName: string; lotCode: string | null; expiryDate: string; quantityOnHand: number; scope: string; residentName?: string }>;
+  }>;
 
   // Staff
   getStaff(orgId: number): Promise<StaffMember[]>;
@@ -491,6 +542,22 @@ export interface IStorage {
   deleteCrmOpportunity(orgId: number, id: number): Promise<void>;
   reassignCrmOpportunityStages(orgId: number, fromStages: string[], toStage: string): Promise<number>;
 
+  // Commercial hub (SaaS Contas)
+  getCommercialContacts(orgId: number): Promise<CommercialContact[]>;
+  createCommercialContact(item: InsertCommercialContact): Promise<CommercialContact>;
+  updateCommercialContact(orgId: number, id: number, updates: Partial<InsertCommercialContact>): Promise<CommercialContact>;
+  deleteCommercialContact(orgId: number, id: number): Promise<void>;
+  getCommercialActivities(orgId: number, limit?: number): Promise<(CommercialActivity & { actorName?: string | null })[]>;
+  createCommercialActivity(item: InsertCommercialActivity): Promise<CommercialActivity>;
+  getCommercialTasks(orgId: number, query?: { status?: string }): Promise<CommercialTask[]>;
+  getOpenCommercialTasksByDedupeKey(dedupeKey: string): Promise<CommercialTask | undefined>;
+  createCommercialTask(item: InsertCommercialTask): Promise<CommercialTask>;
+  updateCommercialTask(orgId: number, id: number, updates: Partial<InsertCommercialTask> & { completedAt?: Date | null }): Promise<CommercialTask>;
+  getManualBillingCycles(orgId: number): Promise<ManualBillingCycle[]>;
+  upsertManualBillingCycle(item: InsertManualBillingCycle): Promise<ManualBillingCycle>;
+  updateManualBillingCycle(orgId: number, id: number, updates: Partial<InsertManualBillingCycle>): Promise<ManualBillingCycle>;
+  getSuperAdminUsers(): Promise<User[]>;
+
   // Stats
   getDashboardStats(orgId: number): Promise<DashboardStats>;
 }
@@ -506,6 +573,102 @@ export class DatabaseStorage implements IStorage {
     const [org] = await db.select().from(organizations).where(eq(organizations.id, id));
     return org;
   }
+
+  async getOrganizationsOnboardingSummariesBatch(): Promise<Array<{
+    organizationId: number;
+    completed: number;
+    total: number;
+    percent: number;
+    checks: Record<string, boolean>;
+  }>> {
+    const orgs = await this.getOrganizations(true);
+    if (orgs.length === 0) return [];
+
+    const [
+      staffRows,
+      residentRows,
+      shiftRows,
+      locationRows,
+      medicationRows,
+      contractRows,
+      familyRows,
+    ] = await Promise.all([
+      db.select({
+        organizationId: staff.organizationId,
+        count: sql<number>`count(*)::int`,
+      }).from(staff)
+        .where(sql`${staff.active} IS DISTINCT FROM false`)
+        .groupBy(staff.organizationId),
+      db.select({
+        organizationId: residents.organizationId,
+        count: sql<number>`count(*)::int`,
+      }).from(residents)
+        .where(eq(residents.status, "active"))
+        .groupBy(residents.organizationId),
+      db.select({
+        organizationId: shiftAssignments.organizationId,
+        count: sql<number>`count(*)::int`,
+      }).from(shiftAssignments)
+        .groupBy(shiftAssignments.organizationId),
+      db.select({
+        organizationId: timeClockLocations.organizationId,
+        count: sql<number>`count(*)::int`,
+      }).from(timeClockLocations)
+        .groupBy(timeClockLocations.organizationId),
+      db.select({
+        organizationId: medications.organizationId,
+        count: sql<number>`count(*)::int`,
+      }).from(medications)
+        .where(eq(medications.status, "active"))
+        .groupBy(medications.organizationId),
+      db.select({
+        organizationId: contracts.organizationId,
+        count: sql<number>`count(*)::int`,
+      }).from(contracts)
+        .where(eq(contracts.status, "active"))
+        .groupBy(contracts.organizationId),
+      db.select({
+        organizationId: familyMembers.organizationId,
+        count: sql<number>`count(*)::int`,
+      }).from(familyMembers)
+        .where(sql`${familyMembers.portalAccess} = true OR ${familyMembers.portalInvitedAt} IS NOT NULL`)
+        .groupBy(familyMembers.organizationId),
+    ]);
+
+    const toMap = (rows: { organizationId: number; count: number }[]) =>
+      new Map(rows.map((row) => [row.organizationId, Number(row.count) || 0]));
+
+    const staffMap = toMap(staffRows);
+    const residentsMap = toMap(residentRows);
+    const shiftsMap = toMap(shiftRows);
+    const locationsMap = toMap(locationRows);
+    const medsMap = toMap(medicationRows);
+    const contractsMap = toMap(contractRows);
+    const familyMap = toMap(familyRows);
+
+    return orgs.map((org) => {
+      const checks = {
+        billing: org.status === "active",
+        staff: (staffMap.get(org.id) ?? 0) > 0,
+        residents: (residentsMap.get(org.id) ?? 0) > 0,
+        shifts: (shiftsMap.get(org.id) ?? 0) > 0,
+        timeClock: (locationsMap.get(org.id) ?? 0) > 0,
+        clinical: (medsMap.get(org.id) ?? 0) > 0,
+        finance: (contractsMap.get(org.id) ?? 0) > 0,
+        familyPortal: (familyMap.get(org.id) ?? 0) > 0,
+      };
+      const total = Object.keys(checks).length;
+      const completed = Object.values(checks).filter(Boolean).length;
+      return {
+        organizationId: org.id,
+        completed,
+        total,
+        percent: Math.round((completed / total) * 100),
+        checks,
+      };
+    });
+  }
+
   async getOrganizationByCnpj(cnpj: string): Promise<Organization | undefined> {
     const trimmed = cnpj.trim();
     if (!trimmed) return undefined;
@@ -1168,6 +1331,9 @@ export class DatabaseStorage implements IStorage {
       notes: medications.notes,
       status: medications.status,
       nextDue: medications.nextDue,
+      pharmacyItemId: medications.pharmacyItemId,
+      unitsPerDose: medications.unitsPerDose,
+      stockScope: medications.stockScope,
       residentName: residents.name,
     }).from(medications).leftJoin(residents, eq(medications.residentId, residents.id)).where(and(...filters)).orderBy(medications.name) as any;
   }
@@ -1209,9 +1375,10 @@ export class DatabaseStorage implements IStorage {
       .where(and(...filters))
       .orderBy(desc(medicationAdministrations.administeredAt)) as any;
   }
-  async createMedicationAdministration(admin: InsertMedicationAdministration): Promise<MedicationAdministration> {
+  async createMedicationAdministration(admin: InsertMedicationAdministration): Promise<MedicationAdministration & { stockWarning?: string | null }> {
     const [newAdmin] = await db.insert(medicationAdministrations).values(admin).returning();
-    return newAdmin;
+    const stock = await syncPharmacyStockForAdministration({ administration: newAdmin });
+    return { ...newAdmin, stockWarning: stock.stockWarning ?? null };
   }
   async upsertMedicationAdministrationForDose(input: {
     organizationId: number;
@@ -1222,7 +1389,7 @@ export class DatabaseStorage implements IStorage {
     administeredAt: Date;
     status: "given" | "skipped" | "refused" | "late";
     notes: string | null;
-  }): Promise<MedicationAdministration> {
+  }): Promise<MedicationAdministration & { stockWarning?: string | null }> {
     const toleranceInMs = 30 * 1000;
     const scheduledFrom = new Date(input.scheduledFor.getTime() - toleranceInMs);
     const scheduledTo = new Date(input.scheduledFor.getTime() + toleranceInMs);
@@ -1240,6 +1407,7 @@ export class DatabaseStorage implements IStorage {
 
     const existing = existingMatches[0];
     if (existing) {
+      const previousStatus = existing.status;
       const [updated] = await db.update(medicationAdministrations)
         .set({
           staffId: input.staffId,
@@ -1253,7 +1421,11 @@ export class DatabaseStorage implements IStorage {
           eq(medicationAdministrations.organizationId, input.organizationId),
         ))
         .returning();
-      return updated;
+      const stock = await syncPharmacyStockForAdministration({
+        administration: updated,
+        previousStatus,
+      });
+      return { ...updated, stockWarning: stock.stockWarning ?? null };
     }
 
     const [created] = await db.insert(medicationAdministrations)
@@ -1268,7 +1440,330 @@ export class DatabaseStorage implements IStorage {
         notes: input.notes,
       })
       .returning();
+    const stock = await syncPharmacyStockForAdministration({ administration: created });
+    return { ...created, stockWarning: stock.stockWarning ?? null };
+  }
+
+  // --- Pharmacy ---
+  async getPharmacyItems(orgId: number, opts?: { activeOnly?: boolean }): Promise<(PharmacyItem & { quantityOnHand: number })[]> {
+    const filters: any[] = [eq(pharmacyItems.organizationId, orgId)];
+    if (opts?.activeOnly) filters.push(eq(pharmacyItems.active, true));
+
+    const items = await db.select().from(pharmacyItems).where(and(...filters)).orderBy(pharmacyItems.name);
+    if (items.length === 0) return [];
+
+    const totals = await db
+      .select({
+        itemId: pharmacyLots.itemId,
+        quantityOnHand: sql<number>`coalesce(sum(${pharmacyLots.quantityOnHand}), 0)`,
+      })
+      .from(pharmacyLots)
+      .where(and(eq(pharmacyLots.organizationId, orgId), inArray(pharmacyLots.itemId, items.map((i) => i.id))))
+      .groupBy(pharmacyLots.itemId);
+
+    const byItem = new Map(totals.map((row) => [row.itemId, Number(row.quantityOnHand) || 0]));
+    return items.map((item) => ({
+      ...item,
+      quantityOnHand: byItem.get(item.id) ?? 0,
+    }));
+  }
+
+  async getPharmacyItem(orgId: number, id: number): Promise<PharmacyItem | undefined> {
+    const [item] = await db
+      .select()
+      .from(pharmacyItems)
+      .where(and(eq(pharmacyItems.id, id), eq(pharmacyItems.organizationId, orgId)));
+    return item;
+  }
+
+  async createPharmacyItem(item: InsertPharmacyItem): Promise<PharmacyItem> {
+    const [created] = await db.insert(pharmacyItems).values(item).returning();
     return created;
+  }
+
+  async updatePharmacyItem(orgId: number, id: number, updates: UpdatePharmacyItemRequest): Promise<PharmacyItem> {
+    const [updated] = await db
+      .update(pharmacyItems)
+      .set(updates)
+      .where(and(eq(pharmacyItems.id, id), eq(pharmacyItems.organizationId, orgId)))
+      .returning();
+    return updated;
+  }
+
+  async getPharmacyLots(
+    orgId: number,
+    opts?: { itemId?: number; scope?: string; residentId?: number; includeEmpty?: boolean },
+  ): Promise<(PharmacyLot & { itemName?: string; residentName?: string })[]> {
+    const filters: any[] = [eq(pharmacyLots.organizationId, orgId)];
+    if (opts?.itemId) filters.push(eq(pharmacyLots.itemId, opts.itemId));
+    if (opts?.scope) filters.push(eq(pharmacyLots.scope, opts.scope));
+    if (opts?.residentId) filters.push(eq(pharmacyLots.residentId, opts.residentId));
+    if (!opts?.includeEmpty) filters.push(sql`${pharmacyLots.quantityOnHand} > 0`);
+
+    return await db
+      .select({
+        id: pharmacyLots.id,
+        organizationId: pharmacyLots.organizationId,
+        itemId: pharmacyLots.itemId,
+        scope: pharmacyLots.scope,
+        residentId: pharmacyLots.residentId,
+        lotCode: pharmacyLots.lotCode,
+        expiryDate: pharmacyLots.expiryDate,
+        quantityOnHand: pharmacyLots.quantityOnHand,
+        receivedAt: pharmacyLots.receivedAt,
+        source: pharmacyLots.source,
+        notes: pharmacyLots.notes,
+        createdAt: pharmacyLots.createdAt,
+        itemName: pharmacyItems.name,
+        residentName: residents.name,
+      })
+      .from(pharmacyLots)
+      .leftJoin(pharmacyItems, eq(pharmacyLots.itemId, pharmacyItems.id))
+      .leftJoin(residents, eq(pharmacyLots.residentId, residents.id))
+      .where(and(...filters))
+      .orderBy(
+        sql`${pharmacyLots.expiryDate} ASC NULLS LAST`,
+        asc(pharmacyLots.receivedAt),
+      ) as any;
+  }
+
+  async createPharmacyEntry(input: {
+    organizationId: number;
+    itemId: number;
+    scope: "org" | "resident";
+    residentId?: number | null;
+    quantity: number;
+    lotCode?: string | null;
+    expiryDate?: string | null;
+    source?: string;
+    notes?: string | null;
+    lotId?: number | null;
+    staffId?: number | null;
+  }): Promise<{ lot: PharmacyLot; movement: PharmacyMovement }> {
+    const quantity = Number(input.quantity);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      throw new Error("Quantidade de entrada inválida.");
+    }
+
+    const item = await this.getPharmacyItem(input.organizationId, input.itemId);
+    if (!item) throw new Error("Item de farmácia não encontrado.");
+
+    if (input.scope === "resident" && (!input.residentId || input.residentId <= 0)) {
+      throw new Error("Paciente obrigatório para caixa do residente.");
+    }
+
+    let lot: PharmacyLot | undefined;
+    if (input.lotId) {
+      const [existingLot] = await db
+        .select()
+        .from(pharmacyLots)
+        .where(and(eq(pharmacyLots.id, input.lotId), eq(pharmacyLots.organizationId, input.organizationId)));
+      if (!existingLot) throw new Error("Lote não encontrado.");
+      if (existingLot.itemId !== input.itemId) throw new Error("Lote não pertence ao item informado.");
+      const [updated] = await db
+        .update(pharmacyLots)
+        .set({ quantityOnHand: Number(existingLot.quantityOnHand) + quantity })
+        .where(and(eq(pharmacyLots.id, existingLot.id), eq(pharmacyLots.organizationId, input.organizationId)))
+        .returning();
+      lot = updated;
+    } else {
+      const [created] = await db
+        .insert(pharmacyLots)
+        .values({
+          organizationId: input.organizationId,
+          itemId: input.itemId,
+          scope: input.scope,
+          residentId: input.scope === "resident" ? input.residentId ?? null : null,
+          lotCode: input.lotCode?.trim() || null,
+          expiryDate: input.expiryDate || null,
+          quantityOnHand: quantity,
+          receivedAt: new Date(),
+          source: input.source || "purchase",
+          notes: input.notes?.trim() || null,
+        })
+        .returning();
+      lot = created;
+    }
+
+    const [movement] = await db
+      .insert(pharmacyMovements)
+      .values({
+        organizationId: input.organizationId,
+        type: "in",
+        itemId: input.itemId,
+        lotId: lot.id,
+        quantity,
+        scope: input.scope,
+        residentId: input.scope === "resident" ? input.residentId ?? null : null,
+        staffId: input.staffId ?? null,
+        reason: input.notes?.trim() || "Entrada de estoque",
+        stockShortage: false,
+        occurredAt: new Date(),
+      })
+      .returning();
+
+    return { lot, movement };
+  }
+
+  async adjustPharmacyLot(input: {
+    organizationId: number;
+    lotId: number;
+    quantityDelta: number;
+    type: "adjust" | "waste";
+    reason?: string | null;
+    staffId?: number | null;
+  }): Promise<{ lot: PharmacyLot; movement: PharmacyMovement }> {
+    const delta = Number(input.quantityDelta);
+    if (!Number.isFinite(delta) || delta === 0) {
+      throw new Error("Informe a quantidade do ajuste.");
+    }
+    if (input.type === "waste" && delta > 0) {
+      throw new Error("Descarte deve reduzir o estoque (quantidade negativa).");
+    }
+
+    const [existingLot] = await db
+      .select()
+      .from(pharmacyLots)
+      .where(and(eq(pharmacyLots.id, input.lotId), eq(pharmacyLots.organizationId, input.organizationId)));
+    if (!existingLot) throw new Error("Lote não encontrado.");
+
+    const nextQty = Number(existingLot.quantityOnHand) + delta;
+    if (nextQty < 0) throw new Error("Saldo do lote insuficiente para este ajuste.");
+
+    const [lot] = await db
+      .update(pharmacyLots)
+      .set({ quantityOnHand: nextQty })
+      .where(and(eq(pharmacyLots.id, existingLot.id), eq(pharmacyLots.organizationId, input.organizationId)))
+      .returning();
+
+    const [movement] = await db
+      .insert(pharmacyMovements)
+      .values({
+        organizationId: input.organizationId,
+        type: input.type,
+        itemId: existingLot.itemId,
+        lotId: existingLot.id,
+        quantity: Math.abs(delta),
+        scope: existingLot.scope,
+        residentId: existingLot.residentId,
+        staffId: input.staffId ?? null,
+        reason: input.reason?.trim() || (input.type === "waste" ? "Descarte" : "Ajuste de estoque"),
+        stockShortage: false,
+        occurredAt: new Date(),
+      })
+      .returning();
+
+    return { lot, movement };
+  }
+
+  async getPharmacyMovements(
+    orgId: number,
+    opts?: { itemId?: number; residentId?: number; limit?: number },
+  ): Promise<(PharmacyMovement & { itemName?: string; lotCode?: string | null; residentName?: string })[]> {
+    const filters: any[] = [eq(pharmacyMovements.organizationId, orgId)];
+    if (opts?.itemId) filters.push(eq(pharmacyMovements.itemId, opts.itemId));
+    if (opts?.residentId) filters.push(eq(pharmacyMovements.residentId, opts.residentId));
+
+    return await db
+      .select({
+        id: pharmacyMovements.id,
+        organizationId: pharmacyMovements.organizationId,
+        type: pharmacyMovements.type,
+        itemId: pharmacyMovements.itemId,
+        lotId: pharmacyMovements.lotId,
+        quantity: pharmacyMovements.quantity,
+        scope: pharmacyMovements.scope,
+        residentId: pharmacyMovements.residentId,
+        staffId: pharmacyMovements.staffId,
+        medicationAdministrationId: pharmacyMovements.medicationAdministrationId,
+        reason: pharmacyMovements.reason,
+        stockShortage: pharmacyMovements.stockShortage,
+        occurredAt: pharmacyMovements.occurredAt,
+        createdAt: pharmacyMovements.createdAt,
+        itemName: pharmacyItems.name,
+        lotCode: pharmacyLots.lotCode,
+        residentName: residents.name,
+      })
+      .from(pharmacyMovements)
+      .leftJoin(pharmacyItems, eq(pharmacyMovements.itemId, pharmacyItems.id))
+      .leftJoin(pharmacyLots, eq(pharmacyMovements.lotId, pharmacyLots.id))
+      .leftJoin(residents, eq(pharmacyMovements.residentId, residents.id))
+      .where(and(...filters))
+      .orderBy(desc(pharmacyMovements.occurredAt), desc(pharmacyMovements.id))
+      .limit(opts?.limit && opts.limit > 0 ? Math.min(opts.limit, 500) : 200) as any;
+  }
+
+  async getPharmacyAlerts(orgId: number) {
+    const items = await this.getPharmacyItems(orgId, { activeOnly: true });
+    const belowMinimum = items
+      .filter((item) => Number(item.minStock) > 0 && Number(item.quantityOnHand) < Number(item.minStock))
+      .map((item) => ({
+        itemId: item.id,
+        name: item.name,
+        minStock: Number(item.minStock),
+        quantityOnHand: Number(item.quantityOnHand),
+        unit: item.unit,
+      }));
+
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    const limit = new Date(today);
+    limit.setDate(limit.getDate() + 30);
+    const limitStr = `${limit.getFullYear()}-${String(limit.getMonth() + 1).padStart(2, "0")}-${String(limit.getDate()).padStart(2, "0")}`;
+
+    const lots = await db
+      .select({
+        lotId: pharmacyLots.id,
+        itemId: pharmacyLots.itemId,
+        itemName: pharmacyItems.name,
+        lotCode: pharmacyLots.lotCode,
+        expiryDate: pharmacyLots.expiryDate,
+        quantityOnHand: pharmacyLots.quantityOnHand,
+        scope: pharmacyLots.scope,
+        residentName: residents.name,
+      })
+      .from(pharmacyLots)
+      .leftJoin(pharmacyItems, eq(pharmacyLots.itemId, pharmacyItems.id))
+      .leftJoin(residents, eq(pharmacyLots.residentId, residents.id))
+      .where(
+        and(
+          eq(pharmacyLots.organizationId, orgId),
+          sql`${pharmacyLots.quantityOnHand} > 0`,
+          sql`${pharmacyLots.expiryDate} is not null`,
+        ),
+      );
+
+    const expired = lots
+      .filter((lot) => lot.expiryDate && String(lot.expiryDate) < todayStr)
+      .map((lot) => ({
+        lotId: lot.lotId,
+        itemId: lot.itemId,
+        itemName: lot.itemName || "",
+        lotCode: lot.lotCode,
+        expiryDate: String(lot.expiryDate),
+        quantityOnHand: Number(lot.quantityOnHand),
+        scope: lot.scope,
+        residentName: lot.residentName || undefined,
+      }));
+
+    const expiringSoon = lots
+      .filter((lot) => {
+        if (!lot.expiryDate) return false;
+        const expiry = String(lot.expiryDate);
+        return expiry >= todayStr && expiry <= limitStr;
+      })
+      .map((lot) => ({
+        lotId: lot.lotId,
+        itemId: lot.itemId,
+        itemName: lot.itemName || "",
+        lotCode: lot.lotCode,
+        expiryDate: String(lot.expiryDate),
+        quantityOnHand: Number(lot.quantityOnHand),
+        scope: lot.scope,
+        residentName: lot.residentName || undefined,
+      }));
+
+    return { belowMinimum, expiringSoon, expired };
   }
 
   // --- Staff ---
@@ -1918,6 +2413,151 @@ export class DatabaseStorage implements IStorage {
       .returning({ id: crmOpportunities.id });
 
     return moved.length;
+  }
+
+  // --- Commercial hub ---
+  async getCommercialContacts(orgId: number): Promise<CommercialContact[]> {
+    return await db.select().from(commercialContacts)
+      .where(eq(commercialContacts.organizationId, orgId))
+      .orderBy(desc(commercialContacts.isPrimary), asc(commercialContacts.name));
+  }
+
+  async createCommercialContact(item: InsertCommercialContact): Promise<CommercialContact> {
+    if (item.isPrimary) {
+      await db.update(commercialContacts)
+        .set({ isPrimary: false })
+        .where(eq(commercialContacts.organizationId, item.organizationId));
+    }
+    const [created] = await db.insert(commercialContacts).values(item).returning();
+    return created;
+  }
+
+  async updateCommercialContact(orgId: number, id: number, updates: Partial<InsertCommercialContact>): Promise<CommercialContact> {
+    if (updates.isPrimary) {
+      await db.update(commercialContacts)
+        .set({ isPrimary: false })
+        .where(eq(commercialContacts.organizationId, orgId));
+    }
+    const [updated] = await db.update(commercialContacts)
+      .set(updates)
+      .where(and(eq(commercialContacts.id, id), eq(commercialContacts.organizationId, orgId)))
+      .returning();
+    if (!updated) throw new Error("Contato comercial não encontrado.");
+    return updated;
+  }
+
+  async deleteCommercialContact(orgId: number, id: number): Promise<void> {
+    await db.delete(commercialContacts)
+      .where(and(eq(commercialContacts.id, id), eq(commercialContacts.organizationId, orgId)));
+  }
+
+  async getCommercialActivities(orgId: number, limit = 50): Promise<(CommercialActivity & { actorName?: string | null })[]> {
+    const rows = await db.select({
+      id: commercialActivities.id,
+      organizationId: commercialActivities.organizationId,
+      type: commercialActivities.type,
+      body: commercialActivities.body,
+      actorUserId: commercialActivities.actorUserId,
+      metadata: commercialActivities.metadata,
+      createdAt: commercialActivities.createdAt,
+      actorName: users.name,
+    }).from(commercialActivities)
+      .leftJoin(users, eq(commercialActivities.actorUserId, users.id))
+      .where(eq(commercialActivities.organizationId, orgId))
+      .orderBy(desc(commercialActivities.createdAt))
+      .limit(Math.min(Math.max(limit, 1), 200));
+    return rows;
+  }
+
+  async createCommercialActivity(item: InsertCommercialActivity): Promise<CommercialActivity> {
+    const [created] = await db.insert(commercialActivities).values(item).returning();
+    return created;
+  }
+
+  async getCommercialTasks(orgId: number, query?: { status?: string }): Promise<CommercialTask[]> {
+    const filters = [eq(commercialTasks.organizationId, orgId)];
+    if (query?.status) filters.push(eq(commercialTasks.status, query.status));
+    return await db.select().from(commercialTasks)
+      .where(and(...filters))
+      .orderBy(asc(commercialTasks.status), asc(commercialTasks.dueAt), desc(commercialTasks.createdAt));
+  }
+
+  async getOpenCommercialTasksByDedupeKey(dedupeKey: string): Promise<CommercialTask | undefined> {
+    const [row] = await db.select().from(commercialTasks)
+      .where(and(eq(commercialTasks.dedupeKey, dedupeKey), eq(commercialTasks.status, "open")))
+      .limit(1);
+    return row;
+  }
+
+  async createCommercialTask(item: InsertCommercialTask): Promise<CommercialTask> {
+    if (item.dedupeKey) {
+      const existing = await this.getOpenCommercialTasksByDedupeKey(item.dedupeKey);
+      if (existing) return existing;
+    }
+    const [created] = await db.insert(commercialTasks).values(item).returning();
+    return created;
+  }
+
+  async updateCommercialTask(
+    orgId: number,
+    id: number,
+    updates: Partial<InsertCommercialTask> & { completedAt?: Date | null },
+  ): Promise<CommercialTask> {
+    const [updated] = await db.update(commercialTasks)
+      .set(updates)
+      .where(and(eq(commercialTasks.id, id), eq(commercialTasks.organizationId, orgId)))
+      .returning();
+    if (!updated) throw new Error("Tarefa comercial não encontrada.");
+    return updated;
+  }
+
+  async getManualBillingCycles(orgId: number): Promise<ManualBillingCycle[]> {
+    return await db.select().from(manualBillingCycles)
+      .where(eq(manualBillingCycles.organizationId, orgId))
+      .orderBy(desc(manualBillingCycles.periodYm));
+  }
+
+  async upsertManualBillingCycle(item: InsertManualBillingCycle): Promise<ManualBillingCycle> {
+    const existing = await db.select().from(manualBillingCycles)
+      .where(and(
+        eq(manualBillingCycles.organizationId, item.organizationId),
+        eq(manualBillingCycles.periodYm, item.periodYm),
+      ))
+      .limit(1);
+    if (existing[0]) {
+      const [updated] = await db.update(manualBillingCycles)
+        .set({
+          dueDate: item.dueDate,
+          amountCents: item.amountCents,
+          status: item.status,
+          paidAt: item.paidAt,
+          note: item.note,
+        })
+        .where(eq(manualBillingCycles.id, existing[0].id))
+        .returning();
+      return updated;
+    }
+    const [created] = await db.insert(manualBillingCycles).values(item).returning();
+    return created;
+  }
+
+  async updateManualBillingCycle(
+    orgId: number,
+    id: number,
+    updates: Partial<InsertManualBillingCycle>,
+  ): Promise<ManualBillingCycle> {
+    const [updated] = await db.update(manualBillingCycles)
+      .set(updates)
+      .where(and(eq(manualBillingCycles.id, id), eq(manualBillingCycles.organizationId, orgId)))
+      .returning();
+    if (!updated) throw new Error("Ciclo de boleto não encontrado.");
+    return updated;
+  }
+
+  async getSuperAdminUsers(): Promise<User[]> {
+    return await db.select().from(users)
+      .where(eq(users.isSuperAdmin, true))
+      .orderBy(asc(users.name));
   }
 
   // --- Dashboard Stats ---

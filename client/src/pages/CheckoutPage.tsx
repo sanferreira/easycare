@@ -30,7 +30,7 @@ type BillingStatus = {
   checkoutConfigured: boolean;
 };
 
-type BillingPlanId = "monthly" | "semiannual" | "annual";
+type BillingPlanId = "monthly" | "semiannual" | "annual" | "custom";
 
 type BillingPlanOption = {
   id: BillingPlanId;
@@ -57,6 +57,7 @@ type BillingPlanSavings = {
 
 type BillingPlansResponse = {
   plans: BillingPlanOption[];
+  customPlan?: (BillingPlanOption & { enabled?: boolean }) | null;
   savings: {
     amount: number;
     percent: number | null;
@@ -200,10 +201,25 @@ export default function CheckoutPage() {
   const monthlyPlan = billingPlansQuery.data?.plans.find((plan) => plan.id === "monthly") ?? null;
   const semiannualPlan = billingPlansQuery.data?.plans.find((plan) => plan.id === "semiannual") ?? null;
   const annualPlan = billingPlansQuery.data?.plans.find((plan) => plan.id === "annual") ?? null;
+  const customPlan = billingPlansQuery.data?.customPlan ?? null;
+  const hasCustomPlan = Boolean(customPlan?.configured && customPlan.formattedAmount);
+
   const selectedPlanOption =
-    selectedPlan === "annual" ? annualPlan : selectedPlan === "semiannual" ? semiannualPlan : monthlyPlan;
+    selectedPlan === "custom"
+      ? customPlan
+      : selectedPlan === "annual"
+        ? annualPlan
+        : selectedPlan === "semiannual"
+          ? semiannualPlan
+          : monthlyPlan;
   const selectedPlanName =
-    selectedPlan === "annual" ? "Anual à vista" : selectedPlan === "semiannual" ? "Semestral" : "Mensal";
+    selectedPlan === "custom"
+      ? (customPlan?.name || "Acordo especial")
+      : selectedPlan === "annual"
+        ? "Anual à vista"
+        : selectedPlan === "semiannual"
+          ? "Semestral"
+          : "Mensal";
   const semiannualSavings = billingPlansQuery.data?.savingsByPlan?.semiannual ?? null;
   const annualSavings = billingPlansQuery.data?.savingsByPlan?.annual ?? null;
   const billingPlansErrorMessage = billingPlansQuery.error instanceof Error
@@ -223,18 +239,39 @@ export default function CheckoutPage() {
     billingPlansQuery.data?.savings?.formattedAmount ??
     "R$ 500,80";
   const selectedPlanChargeNote =
-    selectedPlan === "annual"
-      ? `Depois do período gratuito, cobrança anual de ${annualPrice}.`
-      : selectedPlan === "semiannual"
-        ? `Depois do período gratuito, cobrança de ${semiannualPrice} referente a 6 meses.`
-        : `Depois do período gratuito, ${monthlyPrice}/mês.`;
+    selectedPlan === "custom"
+      ? `Cobrança do acordo especial: ${customPlan?.formattedAmount || "valor combinado"} a cada ${customPlan?.intervalCount || 1} ${customPlan?.interval === "year" ? "ano(s)" : "mês(es)"}.`
+      : selectedPlan === "annual"
+        ? `Depois do período gratuito, cobrança anual de ${annualPrice}.`
+        : selectedPlan === "semiannual"
+          ? `Depois do período gratuito, cobrança de ${semiannualPrice} referente a 6 meses.`
+          : `Depois do período gratuito, ${monthlyPrice}/mês.`;
   const trialBenefits = [
     { text: "7 dias grátis, sem cobrança inicial", icon: CalendarDays },
     { text: "Pagamento seguro processado pela Stripe", icon: ShieldCheck },
     { text: "Acesso liberado automaticamente", icon: Zap },
     { text: "Seus dados de pagamento não ficam armazenados no EasyCare", icon: LockKeyhole },
   ];
-  const planCards = [
+  const planCards = hasCustomPlan
+    ? [{
+      id: "custom" as BillingPlanId,
+      title: customPlan?.name || "Acordo especial",
+      subtitle: "Condição comercial exclusiva da sua organização.",
+      price: customPlan?.formattedAmount || "—",
+      suffix: customPlan?.interval === "year"
+        ? `a cada ${customPlan.intervalCount} ano(s)`
+        : `a cada ${customPlan?.intervalCount || 1} mês(es)`,
+      badge: "Especial",
+      detail: `Até ${customPlan?.patientLimit ?? "—"} pacientes`,
+      highlight: null as string | null,
+      footer: "Cartão ou boleto via Stripe",
+      patientLimit: customPlan?.patientLimit ?? 30,
+      icon: Tag,
+      tone: "green",
+      recommended: true,
+      configured: true,
+    }]
+    : [
     {
       id: "monthly" as BillingPlanId,
       title: "Mensal",
@@ -286,9 +323,13 @@ export default function CheckoutPage() {
   ];
 
   useEffect(() => {
+    if (hasCustomPlan) {
+      setSelectedPlan("custom");
+      return;
+    }
     if (planTouched || checkoutStarted || !billingPlansQuery.data) return;
     setSelectedPlan(annualPlan?.configured ? "annual" : semiannualPlan?.configured ? "semiannual" : "monthly");
-  }, [annualPlan?.configured, billingPlansQuery.data, checkoutStarted, planTouched, semiannualPlan?.configured]);
+  }, [annualPlan?.configured, billingPlansQuery.data, checkoutStarted, hasCustomPlan, planTouched, semiannualPlan?.configured]);
 
   const checkoutOptions = useMemo(
     () => ({

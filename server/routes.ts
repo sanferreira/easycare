@@ -13,6 +13,8 @@ import { pool } from "./db";
 import { getWebPushPublicKey, isWebPushConfigured, sendWebPushNotifications } from "./web-push";
 import { sendSignupCommercialAlertEmail, sendSignupWelcomeEmail, sendPasswordResetEmail } from "./email";
 import { resolveAppPublicUrl } from "./app-url";
+import { registerCommercialRoutes } from "./commercial-routes";
+import { formatCentsBRL } from "@shared/commercial";
 import {
   DEFAULT_ENVIRONMENT_SETTINGS,
   getShiftProfileRule,
@@ -269,12 +271,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     semiannual: 40,
     annual: 60,
   };
-  const parseBillingPlanInput = (value: unknown): BillingPlan =>
-    typeof value === "string" && BILLING_PLAN_VALUES.includes(value as BillingPlan)
+  const parseBillingPlanInput = (value: unknown): BillingPlan | "custom" => {
+    if (value === "custom") return "custom";
+    return typeof value === "string" && BILLING_PLAN_VALUES.includes(value as BillingPlan)
       ? value as BillingPlan
       : "monthly";
-  const getBillingPlanLabel = (plan: BillingPlan) =>
-    plan === "annual" ? "anual" : plan === "semiannual" ? "semestral" : "mensal";
+  };
+  const getBillingPlanLabel = (plan: BillingPlan | "custom") =>
+    plan === "annual" ? "anual" : plan === "semiannual" ? "semestral" : plan === "custom" ? "especial" : "mensal";
   const getBillingPlanPatientLimit = (plan: BillingPlan) => BILLING_PLAN_PATIENT_LIMITS[plan];
   const getBillingPlanForStripePriceId = (priceId?: string | null): BillingPlan | null => {
     const normalized = priceId?.trim();
@@ -641,18 +645,43 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       name: string;
       email?: string | null;
       stripeCustomerId?: string | null;
+      customPlanEnabled?: boolean | null;
+      customPlanLabel?: string | null;
+      customPlanAmountCents?: number | null;
+      customPlanInterval?: string | null;
+      customPlanIntervalCount?: number | null;
+      customPlanPatientLimit?: number | null;
+      capacity?: number | null;
     },
-    options?: { includeTrial?: boolean; embedded?: boolean; plan?: BillingPlan },
+    options?: { includeTrial?: boolean; embedded?: boolean; plan?: BillingPlan | "custom" },
   ) => {
     const stripe = getStripeClient();
     const baseUrl = getAppBaseUrl(req);
-    const plan = options?.plan ?? "monthly";
-    const priceId = getStripePriceIdForPlan(plan);
-    const patientLimit = getBillingPlanPatientLimit(plan);
+    const useCustom =
+      (Boolean(organization.customPlanEnabled)
+        && typeof organization.customPlanAmountCents === "number"
+        && organization.customPlanAmountCents > 0
+        && Boolean(organization.customPlanLabel?.trim()))
+      || options?.plan === "custom";
+
+    if (options?.plan === "custom" && !(
+      organization.customPlanEnabled
+      && organization.customPlanAmountCents
+      && organization.customPlanLabel?.trim()
+    )) {
+      throw new Error("Esta organização não tem acordo especial configurado.");
+    }
+
+    const plan = options?.plan && options.plan !== "custom" ? options.plan : "monthly";
+    const patientLimit = useCustom
+      ? (organization.customPlanPatientLimit ?? organization.capacity ?? getBillingPlanPatientLimit(plan))
+      : getBillingPlanPatientLimit(plan);
+    const billingPlanMeta = useCustom ? "custom" : plan;
+
     const subscriptionData: Stripe.Checkout.SessionCreateParams.SubscriptionData = {
       metadata: {
         organizationId: String(organization.id),
-        billingPlan: plan,
+        billingPlan: billingPlanMeta,
         patientLimit: String(patientLimit),
       },
     };
@@ -662,16 +691,36 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
     applyStripeRevenueShareToSubscriptionData(subscriptionData);
 
+    const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = useCustom
+      ? [{
+        price_data: {
+          currency: "brl",
+          unit_amount: organization.customPlanAmountCents!,
+          product_data: {
+            name: organization.customPlanLabel!.trim(),
+          },
+          recurring: {
+            interval: organization.customPlanInterval === "year" ? "year" : "month",
+            interval_count: Math.min(Math.max(organization.customPlanIntervalCount ?? 1, 1), 36),
+          },
+        },
+        quantity: 1,
+      }]
+      : [{ price: getStripePriceIdForPlan(plan), quantity: 1 }];
+
+    const priceIdForMeta = useCustom ? "price_data_custom" : getStripePriceIdForPlan(plan);
+
     const baseSessionParams: Stripe.Checkout.SessionCreateParams = {
       mode: "subscription",
       customer: organization.stripeCustomerId ?? undefined,
       customer_email: organization.stripeCustomerId ? undefined : organization.email ?? undefined,
       client_reference_id: String(organization.id),
-      line_items: [{ price: priceId, quantity: 1 }],
+      line_items: lineItems,
+      payment_method_types: ["card", "boleto"],
       metadata: {
         organizationId: String(organization.id),
-        billingPlan: plan,
-        stripePriceId: priceId,
+        billingPlan: billingPlanMeta,
+        stripePriceId: priceIdForMeta,
         patientLimit: String(patientLimit),
       },
       subscription_data: subscriptionData,
@@ -752,6 +801,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     { pattern: /^\/api\/residents\/[^/]+\/medication-dose-records(?:\/|$)/, route: "/prontuario" },
     { pattern: /^\/api\/medication-administrations(?:\/|$)/, route: "/prontuario" },
     { pattern: /^\/api\/medications(?:\/|$)/, route: "/prontuario" },
+    { pattern: /^\/api\/pharmacy(?:\/|$)/, route: "/farmacia" },
     { pattern: /^\/api\/staff(?:\/|$)/, route: "/staff" },
     { pattern: /^\/api\/shift-assignments(?:\/|$)/, route: "/escalas" },
     { pattern: /^\/api\/time-clock(?:\/|$)/, route: "/ponto-eletronico" },
@@ -916,6 +966,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!req.session.user?.isSuperAdmin) return res.status(403).json({ message: "Acesso restrito ao super-admin" });
     next();
   };
+
+  registerCommercialRoutes(app, {
+    requireAuth,
+    requireSuperAdmin,
+    logAudit,
+    parseManualAccessUntilInput,
+    parseBillingMethodInput,
+    parseNullableBoundedInteger,
+    DEFAULT_PAYMENT_GRACE_DAYS,
+  });
 
   // Middleware de controle de acesso por papel (RBAC)
   const requireRole = (...roles: string[]) => (req: Request, res: Response, next: NextFunction) => {
@@ -1319,8 +1379,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const customerId = getStripeCustomerId(subscription.customer);
     const subscriptionStatus = subscription.status ?? "unknown";
     const stripePriceId = getStripeSubscriptionPriceId(subscription) ?? organization.stripePriceId ?? null;
+    const billingPlanFromMeta = subscription.metadata?.billingPlan;
+    const isCustomPlan =
+      billingPlanFromMeta === "custom"
+      || Boolean(organization.customPlanEnabled);
     const billingPlan = getBillingPlanForStripePriceId(stripePriceId);
-    const planPatientLimit = billingPlan ? getBillingPlanPatientLimit(billingPlan) : null;
+    const planPatientLimit = isCustomPlan
+      ? (organization.customPlanPatientLimit ?? organization.capacity ?? null)
+      : (billingPlan ? getBillingPlanPatientLimit(billingPlan) : null);
     const subscriptionCancelAtPeriodEnd = Boolean(subscription.cancel_at_period_end);
     const nextOrgStatus = orgStatusForStripeSubscription(subscriptionStatus);
     const previousStatusWasGrace = isStripePaymentIssueStatus(organization.stripeSubscriptionStatus);
@@ -1329,6 +1395,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       nextStatusIsGrace && previousStatusWasGrace && organization.subscriptionUpdatedAt
         ? organization.subscriptionUpdatedAt
         : new Date();
+
+    const currentLifecycle = organization.lifecycleStage || null;
+    const preserveLifecycle =
+      currentLifecycle === "special"
+      || (currentLifecycle === "onboarding" && manualAccessIsCurrent(organization.manualAccessUntil));
+    let nextLifecycle: string | undefined;
+    if (!preserveLifecycle) {
+      if (subscriptionCancelAtPeriodEnd && (subscriptionStatus === "active" || subscriptionStatus === "trialing")) {
+        nextLifecycle = "churning";
+      } else if (subscriptionStatus === "canceled" || subscriptionStatus === "incomplete_expired") {
+        nextLifecycle = "churned";
+      } else if (isStripePaymentIssueStatus(subscriptionStatus)) {
+        nextLifecycle = "at_risk";
+      } else if (subscriptionStatus === "trialing") {
+        nextLifecycle = "trial";
+      } else if (subscriptionStatus === "active") {
+        nextLifecycle = organization.customPlanEnabled ? "special" : "active";
+      }
+    }
+
     return await storage.updateOrganization(organization.id, {
       stripeCustomerId: customerId ?? organization.stripeCustomerId ?? null,
       stripeSubscriptionId: subscription.id,
@@ -1339,6 +1425,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       subscriptionCurrentPeriodEnd: getStripeSubscriptionPeriodEnd(subscription),
       subscriptionUpdatedAt,
       ...(planPatientLimit ? { capacity: planPatientLimit } : {}),
+      ...(nextLifecycle ? { lifecycleStage: nextLifecycle } : {}),
       status: nextOrgStatus,
       active: nextOrgStatus === "active",
     });
@@ -1428,7 +1515,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const passwordCheck = verifyPassword(password, user.password);
       if (!passwordCheck.valid) return res.status(401).json({ message: "Usuário ou senha incorretos" });
       if (passwordCheck.needsRehash) {
-        await storage.updateUser(user.id, { password });
+        await storage.updateUser(user.id, { password, lastLoginAt: new Date() });
+      } else {
+        await storage.updateUser(user.id, { lastLoginAt: new Date() });
       }
 
       await regenerateSession(req);
@@ -1465,7 +1554,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const passwordCheck = verifyPassword(password, superAdmin.password);
     if (!passwordCheck.valid) return res.status(401).json({ message: "Usuário ou senha incorretos" });
     if (passwordCheck.needsRehash) {
-      await storage.updateUser(superAdmin.id, { password });
+      await storage.updateUser(superAdmin.id, { password, lastLoginAt: new Date() });
+    } else {
+      await storage.updateUser(superAdmin.id, { lastLoginAt: new Date() });
     }
 
     await regenerateSession(req);
@@ -1720,6 +1811,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: "Planos disponíveis apenas para organizações." });
       }
 
+      const organization = await storage.getOrganization(sessionUser.organizationId);
+      const customPlan =
+        organization?.customPlanEnabled
+        && organization.customPlanAmountCents
+        && organization.customPlanAmountCents > 0
+        && organization.customPlanLabel
+          ? {
+            id: "custom" as const,
+            name: organization.customPlanLabel,
+            configured: true,
+            patientLimit: organization.customPlanPatientLimit ?? organization.capacity ?? null,
+            amount: organization.customPlanAmountCents,
+            currency: "brl",
+            interval: organization.customPlanInterval === "year" ? "year" : "month",
+            intervalCount: organization.customPlanIntervalCount ?? 1,
+            formattedAmount: formatCentsBRL(organization.customPlanAmountCents),
+            enabled: true,
+          }
+          : null;
+
       if (!process.env.STRIPE_SECRET_KEY || !(process.env.STRIPE_MONTHLY_PRICE_ID || process.env.STRIPE_PRICE_ID)) {
         return res.json({
           plans: [
@@ -1727,6 +1838,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             { id: "semiannual", name: "Plano semestral", configured: false, patientLimit: getBillingPlanPatientLimit("semiannual"), amount: null, currency: "brl", interval: "month", intervalCount: 6, formattedAmount: null },
             { id: "annual", name: "Plano anual", configured: false, patientLimit: getBillingPlanPatientLimit("annual"), amount: null, currency: "brl", interval: "year", intervalCount: 1, formattedAmount: null },
           ],
+          customPlan,
           savings: null,
           savingsByPlan: { semiannual: null, annual: null },
         });
@@ -1795,6 +1907,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       res.json({
         plans: [monthlyPlan, semiannualPlan, annualPlan],
+        customPlan,
         savings: annualSavings
           ? {
             amount: annualSavings.amount,
@@ -1842,9 +1955,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       stripeCancelAtPeriodEnd: organization.stripeCancelAtPeriodEnd ?? false,
       stripeCancelAt: organization.stripeCancelAt ?? null,
       stripePriceId: organization.stripePriceId ?? null,
-      billingPlan: currentBillingPlan,
+      billingPlan: organization.customPlanEnabled ? "custom" : currentBillingPlan,
       capacity: organization.capacity ?? null,
-      planPatientLimit: currentBillingPlan ? getBillingPlanPatientLimit(currentBillingPlan) : null,
+      planPatientLimit: organization.customPlanEnabled
+        ? (organization.customPlanPatientLimit ?? organization.capacity ?? null)
+        : (currentBillingPlan ? getBillingPlanPatientLimit(currentBillingPlan) : null),
+      customPlan: organization.customPlanEnabled
+        ? {
+          enabled: true,
+          label: organization.customPlanLabel,
+          amountCents: organization.customPlanAmountCents,
+          formattedAmount: formatCentsBRL(organization.customPlanAmountCents),
+          interval: organization.customPlanInterval,
+          intervalCount: organization.customPlanIntervalCount,
+          patientLimit: organization.customPlanPatientLimit,
+          migrationHint: !organization.customPlanEnabled && Boolean(organization.stripeSubscriptionId),
+        }
+        : organization.stripeSubscriptionId && organization.stripePriceId && !currentBillingPlan
+          ? {
+            enabled: false,
+            label: null,
+            amountCents: null,
+            formattedAmount: null,
+            interval: null,
+            intervalCount: null,
+            patientLimit: null,
+            migrationHint: true,
+          }
+          : null,
       subscriptionCurrentPeriodEnd: organization.subscriptionCurrentPeriodEnd ?? null,
       subscriptionUpdatedAt: organization.subscriptionUpdatedAt ?? null,
       manualAccessUntil: organization.manualAccessUntil ?? null,
@@ -2518,9 +2656,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(summary);
   });
   app.get("/api/organizations/onboarding-summary", requireAuth, requireSuperAdmin, async (_req, res) => {
-    const organizations = await storage.getOrganizations(true);
-    const summaries = await Promise.all(organizations.map((organization) => getOrganizationOnboardingSummary(organization.id)));
-    res.json(summaries.filter(Boolean));
+    const summaries = await storage.getOrganizationsOnboardingSummariesBatch();
+    res.json(summaries);
   });
   app.get("/api/organizations/:id", requireAuth, requireSuperAdmin, async (req, res) => {
     const organization = await storage.getOrganization(Number(req.params.id));
@@ -2598,6 +2735,77 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.post("/api/organizations/:id/commercial/migrate-plan", requireAuth, requireSuperAdmin, async (req, res) => {
+    try {
+      const orgId = Number(req.params.id);
+      const organization = await storage.getOrganization(orgId);
+      if (!organization) {
+        return res.status(404).json({ message: "Organização não encontrada." });
+      }
+      if (!organization.stripeSubscriptionId) {
+        return res.status(400).json({ message: "Organização sem assinatura Stripe ativa para migrar." });
+      }
+
+      const input = z.object({
+        plan: z.enum(["monthly", "semiannual", "annual"]),
+        disableCustomPlan: z.boolean().optional().default(true),
+      }).parse(req.body ?? {});
+
+      const priceId = getStripePriceIdForPlan(input.plan);
+      const stripe = getStripeClient();
+      const subscription = await stripe.subscriptions.retrieve(organization.stripeSubscriptionId);
+      const itemId = subscription.items.data[0]?.id;
+      if (!itemId) {
+        return res.status(400).json({ message: "Assinatura Stripe sem item de preço para atualizar." });
+      }
+
+      const patientLimit = getBillingPlanPatientLimit(input.plan);
+      const updatedSubscription = await stripe.subscriptions.update(organization.stripeSubscriptionId, {
+        items: [{ id: itemId, price: priceId }],
+        proration_behavior: "none",
+        metadata: {
+          ...subscription.metadata,
+          organizationId: String(organization.id),
+          billingPlan: input.plan,
+          patientLimit: String(patientLimit),
+        },
+      });
+
+      if (input.disableCustomPlan) {
+        await storage.updateOrganization(orgId, {
+          customPlanEnabled: false,
+          lifecycleStage: "active",
+          capacity: patientLimit,
+        });
+      }
+
+      const synced = await syncStripeSubscriptionToOrganization(updatedSubscription);
+      await storage.createCommercialActivity({
+        organizationId: orgId,
+        type: "system",
+        body: `Plano migrado para ${getBillingPlanLabel(input.plan)} (sem prorata; vale no próximo ciclo).`,
+        actorUserId: req.session.user?.id ?? null,
+      });
+      await logAudit(req, {
+        action: "organization.plan_migrated",
+        entityType: "organization",
+        entityId: orgId,
+        organizationId: orgId,
+        message: `Assinatura migrada para plano ${input.plan}.`,
+        metadata: { plan: input.plan, priceId },
+      });
+
+      res.json({
+        ok: true,
+        organization: synced ?? await storage.getOrganization(orgId),
+        billingPlan: input.plan,
+      });
+    } catch (error) {
+      const message = toBillingClientErrorMessage(error, "Não foi possível migrar o plano agora.");
+      res.status(400).json({ message });
+    }
+  });
+
   app.post("/api/organizations/:id/trial/notify", requireAuth, requireSuperAdmin, async (req, res) => {
     try {
       const orgId = Number(req.params.id);
@@ -2670,6 +2878,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         });
         emailSent = true;
       }
+
+      await storage.createCommercialActivity({
+        organizationId: orgId,
+        type: "system",
+        body: input.grantDays
+          ? `Trial de ${input.grantDays} dias concedido até ${trialEndsAt.toLocaleDateString("pt-BR")}.${emailSent ? " E-mail enviado." : ""}`
+          : `E-mail de trial reenviado (vence ${trialEndsAt.toLocaleDateString("pt-BR")}).`,
+        actorUserId: req.session.user?.id ?? null,
+      });
 
       await logAudit(req, {
         action: input.grantDays ? "organization.trial_granted" : "organization.trial_email_resent",
@@ -2977,6 +3194,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         manualBillingDueDay,
         manualAccessUntil: trialEndsAt,
         paymentGraceDays: DEFAULT_PAYMENT_GRACE_DAYS,
+        lifecycleStage: "trial",
       });
       createdOrganizationId = organization.id;
 
@@ -2993,6 +3211,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         isSuperAdmin: false,
       });
       createdUserId = user.id;
+
+      await storage.createCommercialContact({
+        organizationId: organization.id,
+        name: input.adminName,
+        role: "admin",
+        email: input.email,
+        phone: input.phone,
+        isPrimary: true,
+      });
+      await storage.createCommercialActivity({
+        organizationId: organization.id,
+        type: "system",
+        body: `Signup self-service (${billingMethod === "manual_boleto" ? "boleto manual" : "Stripe"}). Trial até ${trialEndsAt.toLocaleDateString("pt-BR")}.`,
+        actorUserId: user.id,
+      });
+      const checkIn = new Date();
+      checkIn.setDate(checkIn.getDate() + 2);
+      checkIn.setHours(12, 0, 0, 0);
+      await storage.createCommercialTask({
+        organizationId: organization.id,
+        title: "Check-in D+2 pós-signup",
+        dueAt: checkIn,
+        status: "open",
+        queue: "trial_ending",
+        dedupeKey: `signup-checkin-${organization.id}`,
+      });
 
       const staffMember = await ensureStaffForOrganizationUser(organization.id, user, DEFAULT_ENVIRONMENT_SETTINGS);
       createdStaffId = staffMember.id;
@@ -3573,6 +3817,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const orgId = getOrgId(req);
       const payload = buildMedicationPayload(req.body);
+      if (payload.pharmacyItemId) {
+        const item = await storage.getPharmacyItem(orgId, payload.pharmacyItemId);
+        if (!item) throw new Error("Item de farmácia não encontrado.");
+      }
       res.status(201).json(await storage.createMedication({ ...payload, organizationId: orgId }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Dados de medicação inválidos.";
@@ -3583,6 +3831,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const orgId = getOrgId(req);
       const payload = buildMedicationPayload(req.body);
+      if (payload.pharmacyItemId) {
+        const item = await storage.getPharmacyItem(orgId, payload.pharmacyItemId);
+        if (!item) throw new Error("Item de farmácia não encontrado.");
+      }
       res.json(await storage.updateMedication(orgId, Number(req.params.id), payload));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Dados de medicação inválidos.";
@@ -3593,6 +3845,196 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const orgId = getOrgId(req);
     await storage.deleteMedication(orgId, Number(req.params.id));
     res.status(204).send();
+  });
+
+  // ===== PHARMACY / STOCK =====
+  const PHARMACY_WRITE_ROLES = MEDICATION_ROLES;
+  const PHARMACY_READ_ROLES = [
+    ...MEDICATION_ROLES,
+    "cuidador",
+    "fisioterapeuta",
+    "nutricionista",
+    "recepcionista",
+    "administrativo",
+  ];
+
+  app.get("/api/pharmacy/items", requireAuth, requireRole(...PHARMACY_READ_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      const activeOnly = req.query.activeOnly === "1" || req.query.activeOnly === "true";
+      res.json(await storage.getPharmacyItems(orgId, { activeOnly }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/pharmacy/items", requireAuth, requireRole(...PHARMACY_WRITE_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      const name = String(req.body?.name ?? "").trim();
+      if (name.length < 2) return res.status(400).json({ message: "Nome do item obrigatório." });
+      const minStock = Number(req.body?.minStock ?? 0);
+      const created = await storage.createPharmacyItem({
+        organizationId: orgId,
+        name,
+        activeIngredient:
+          typeof req.body?.activeIngredient === "string" && req.body.activeIngredient.trim()
+            ? req.body.activeIngredient.trim()
+            : null,
+        form: typeof req.body?.form === "string" && req.body.form.trim() ? req.body.form.trim() : null,
+        strength:
+          typeof req.body?.strength === "string" && req.body.strength.trim() ? req.body.strength.trim() : null,
+        unit: typeof req.body?.unit === "string" && req.body.unit.trim() ? req.body.unit.trim() : "cp",
+        minStock: Number.isFinite(minStock) && minStock >= 0 ? minStock : 0,
+        controlled: req.body?.controlled === true || req.body?.controlled === "true",
+        active: req.body?.active === false || req.body?.active === "false" ? false : true,
+      });
+      res.status(201).json(created);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.put("/api/pharmacy/items/:id", requireAuth, requireRole(...PHARMACY_WRITE_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      const updates: Record<string, unknown> = {};
+      if (typeof req.body?.name === "string") {
+        const name = req.body.name.trim();
+        if (name.length < 2) return res.status(400).json({ message: "Nome do item obrigatório." });
+        updates.name = name;
+      }
+      if (req.body?.activeIngredient !== undefined) {
+        updates.activeIngredient =
+          typeof req.body.activeIngredient === "string" && req.body.activeIngredient.trim()
+            ? req.body.activeIngredient.trim()
+            : null;
+      }
+      if (req.body?.form !== undefined) {
+        updates.form = typeof req.body.form === "string" && req.body.form.trim() ? req.body.form.trim() : null;
+      }
+      if (req.body?.strength !== undefined) {
+        updates.strength =
+          typeof req.body.strength === "string" && req.body.strength.trim() ? req.body.strength.trim() : null;
+      }
+      if (typeof req.body?.unit === "string" && req.body.unit.trim()) updates.unit = req.body.unit.trim();
+      if (req.body?.minStock !== undefined) {
+        const minStock = Number(req.body.minStock);
+        if (!Number.isFinite(minStock) || minStock < 0) {
+          return res.status(400).json({ message: "Estoque mínimo inválido." });
+        }
+        updates.minStock = minStock;
+      }
+      if (req.body?.controlled !== undefined) {
+        updates.controlled = req.body.controlled === true || req.body.controlled === "true";
+      }
+      if (req.body?.active !== undefined) {
+        updates.active = !(req.body.active === false || req.body.active === "false");
+      }
+      const updated = await storage.updatePharmacyItem(orgId, Number(req.params.id), updates as any);
+      if (!updated) return res.status(404).json({ message: "Item não encontrado." });
+      res.json(updated);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/pharmacy/lots", requireAuth, requireRole(...PHARMACY_READ_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      res.json(
+        await storage.getPharmacyLots(orgId, {
+          itemId: req.query.itemId ? Number(req.query.itemId) : undefined,
+          scope: typeof req.query.scope === "string" ? req.query.scope : undefined,
+          residentId: req.query.residentId ? Number(req.query.residentId) : undefined,
+          includeEmpty: req.query.includeEmpty === "1" || req.query.includeEmpty === "true",
+        }),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/pharmacy/entries", requireAuth, requireRole(...PHARMACY_WRITE_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      const itemId = Number(req.body?.itemId);
+      const quantity = Number(req.body?.quantity);
+      const scope = req.body?.scope === "resident" ? "resident" : "org";
+      if (!Number.isInteger(itemId) || itemId <= 0) {
+        return res.status(400).json({ message: "Item inválido." });
+      }
+      const result = await storage.createPharmacyEntry({
+        organizationId: orgId,
+        itemId,
+        scope,
+        residentId: req.body?.residentId ? Number(req.body.residentId) : null,
+        quantity,
+        lotCode: typeof req.body?.lotCode === "string" ? req.body.lotCode : null,
+        expiryDate: typeof req.body?.expiryDate === "string" && req.body.expiryDate.trim() ? req.body.expiryDate.trim() : null,
+        source:
+          typeof req.body?.source === "string" && ["purchase", "family", "donation", "other"].includes(req.body.source)
+            ? req.body.source
+            : scope === "resident"
+              ? "family"
+              : "purchase",
+        notes: typeof req.body?.notes === "string" ? req.body.notes : null,
+        lotId: req.body?.lotId ? Number(req.body.lotId) : null,
+        staffId: null,
+      });
+      res.status(201).json(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Falha na entrada de estoque.";
+      res.status(400).json({ message });
+    }
+  });
+
+  app.post("/api/pharmacy/adjustments", requireAuth, requireRole(...PHARMACY_WRITE_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      const lotId = Number(req.body?.lotId);
+      const quantityDelta = Number(req.body?.quantityDelta);
+      const type = req.body?.type === "waste" ? "waste" : "adjust";
+      if (!Number.isInteger(lotId) || lotId <= 0) {
+        return res.status(400).json({ message: "Lote inválido." });
+      }
+      const result = await storage.adjustPharmacyLot({
+        organizationId: orgId,
+        lotId,
+        quantityDelta,
+        type,
+        reason: typeof req.body?.reason === "string" ? req.body.reason : null,
+        staffId: null,
+      });
+      res.status(201).json(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Falha no ajuste de estoque.";
+      res.status(400).json({ message });
+    }
+  });
+
+  app.get("/api/pharmacy/movements", requireAuth, requireRole(...PHARMACY_READ_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      res.json(
+        await storage.getPharmacyMovements(orgId, {
+          itemId: req.query.itemId ? Number(req.query.itemId) : undefined,
+          residentId: req.query.residentId ? Number(req.query.residentId) : undefined,
+          limit: req.query.limit ? Number(req.query.limit) : undefined,
+        }),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/pharmacy/alerts", requireAuth, requireRole(...PHARMACY_READ_ROLES), async (req, res, next) => {
+    try {
+      const orgId = getOrgId(req);
+      res.json(await storage.getPharmacyAlerts(orgId));
+    } catch (error) {
+      next(error);
+    }
   });
 
   const MEDICATION_DATE_REGEX = /^\d{4}-(0[1-9]|1[0-2])-([0][1-9]|[12]\d|3[01])$/;
@@ -3749,6 +4191,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       notes: typeof body?.notes === "string" && body.notes.trim().length > 0 ? body.notes.trim() : null,
       startDate,
       endDate,
+      pharmacyItemId: (() => {
+        if (body?.pharmacyItemId === null || body?.pharmacyItemId === "" || body?.pharmacyItemId === undefined) {
+          return null;
+        }
+        const id = Number(body.pharmacyItemId);
+        if (!Number.isInteger(id) || id <= 0) throw new Error("Item de farmácia inválido.");
+        return id;
+      })(),
+      unitsPerDose: (() => {
+        const raw = body?.unitsPerDose;
+        if (raw === undefined || raw === null || raw === "") return 1;
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n <= 0) throw new Error("Unidades por dose inválidas.");
+        return n;
+      })(),
+      stockScope: body?.stockScope === "resident" ? "resident" : "org",
     };
   };
 

@@ -1,10 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { Link } from "wouter";
 import { queryClient } from "@/lib/queryClient";
 import { useConfirmDialog } from "@/hooks/use-confirm-dialog";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/use-auth";
 import { ROLE_LABELS } from "@/lib/permissions";
 import { DEFAULT_ENVIRONMENT_SETTINGS, normalizeEnvironmentSettings } from "@shared/environment";
+import {
+  isTrialEndingSoon as sharedTrialEnding,
+  isBillingRisk as sharedBillingRisk,
+  isWithoutPlan,
+  daysUntilDate as sharedDaysUntil,
+  DEFAULT_PAYMENT_GRACE_DAYS as SHARED_GRACE,
+  formatCentsBRL,
+} from "@shared/commercial";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,9 +31,9 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import {
-  AlertTriangle, Ban, Building2, ChevronDown, ChevronRight, Clock3, CreditCard,
+  AlertTriangle, Ban, Building2, CheckSquare, ChevronDown, ChevronRight, Clock3, CreditCard,
   ExternalLink, Eye, EyeOff, Gift, History, Mail, MessageCircle, Pencil, Plus, Power, RefreshCw, Search,
-  ShieldCheck, Trash2, UnlockKeyhole, UserPlus, Users,
+  ShieldCheck, StickyNote, Trash2, UnlockKeyhole, UserPlus, Users,
 } from "lucide-react";
 import { digitsOnly, maskCep, maskCnpj, maskPhoneBR } from "@/lib/masks";
 
@@ -51,6 +61,12 @@ interface Organization {
   manualBillingDueDay?: number | null;
   paymentGraceDays?: number | null;
   manualAccessUntil?: string | null;
+  customPlanEnabled?: boolean | null;
+  customPlanLabel?: string | null;
+  customPlanAmountCents?: number | null;
+  customPlanIntervalCount?: number | null;
+  lifecycleStage?: string | null;
+  commercialOwnerUserId?: number | null;
   active: boolean;
   createdAt: string;
 }
@@ -93,7 +109,7 @@ function isValidCnpj(value: string): boolean {
   return digitsOnly(value).length === 14;
 }
 
-const DEFAULT_PAYMENT_GRACE_DAYS = 10;
+const DEFAULT_PAYMENT_GRACE_DAYS = SHARED_GRACE;
 
 function paymentGraceDays(value?: number | null) {
   return Number.isInteger(value) && value! >= 0 ? Math.min(value!, 60) : DEFAULT_PAYMENT_GRACE_DAYS;
@@ -208,21 +224,15 @@ function getSubscriptionFilter(status?: string | null): SubscriptionFilter {
 }
 
 function daysUntilDate(value?: string | Date | null) {
-  if (!value) return null;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  return Math.ceil((date.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+  return sharedDaysUntil(value);
 }
 
-function isTrialEndingSoon(org: Pick<Organization, "stripeSubscriptionStatus" | "subscriptionCurrentPeriodEnd">) {
-  if (org.stripeSubscriptionStatus !== "trialing") return false;
-  const days = daysUntilDate(org.subscriptionCurrentPeriodEnd);
-  return days !== null && days >= 0 && days <= 7;
+function isTrialEndingSoon(org: Pick<Organization, "stripeSubscriptionStatus" | "subscriptionCurrentPeriodEnd" | "manualAccessUntil">) {
+  return sharedTrialEnding(org, 7);
 }
 
 function isBillingRisk(org: Pick<Organization, "status" | "active" | "stripeSubscriptionStatus" | "subscriptionUpdatedAt" | "paymentGraceDays" | "manualAccessUntil">) {
-  const orgStatus = resolveOrgStatus(org);
-  return orgStatus === "restricted" || getSubscriptionFilter(org.stripeSubscriptionStatus) === "past_due";
+  return sharedBillingRisk(org);
 }
 
 function manualBoletoDaysUntilDue(org: Pick<Organization, "billingMethod" | "manualBillingDueDay">) {
@@ -243,16 +253,19 @@ function isManualBoletoDueSoon(org: Pick<Organization, "billingMethod" | "manual
   return days >= -paymentGraceDays(org.paymentGraceDays) && days <= 7;
 }
 
-function isWithoutPlan(org: Pick<Organization, "stripeSubscriptionStatus" | "billingMethod" | "manualAccessUntil" | "stripeCustomerId" | "stripeSubscriptionId">) {
-  return !org.stripeSubscriptionStatus
-    && org.billingMethod !== "manual_boleto"
-    && !org.manualAccessUntil
-    && !org.stripeCustomerId
-    && !org.stripeSubscriptionId;
+function needsCommercialAction(org: Organization) {
+  return isTrialEndingSoon(org)
+    || isBillingRisk(org)
+    || isManualBoletoDueSoon(org)
+    || isWithoutPlan(org)
+    || Boolean(org.stripeCancelAtPeriodEnd);
 }
 
-function needsCommercialAction(org: Organization) {
-  return isTrialEndingSoon(org) || isBillingRisk(org) || isManualBoletoDueSoon(org) || isWithoutPlan(org);
+function trialEndDate(org: Organization) {
+  if (org.stripeSubscriptionStatus === "trialing" && org.subscriptionCurrentPeriodEnd) {
+    return org.subscriptionCurrentPeriodEnd;
+  }
+  return org.manualAccessUntil ?? null;
 }
 
 function normalizeSearchText(value?: string | null) {
@@ -1331,6 +1344,45 @@ export default function Admin() {
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<OrgStatus | "all">("all");
   const [subscriptionFilter, setSubscriptionFilter] = useState<SubscriptionFilter>("all");
+  const [ownerMeOnly, setOwnerMeOnly] = useState(false);
+  const { user: sessionUser } = useAuth();
+  const { toast } = useToast();
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const queue = params.get("queue") as SubscriptionFilter | null;
+    if (queue && ["needs_action", "trial_ending", "billing_risk", "manual_boleto", "trialing", "active", "past_due", "none", "problem", "all"].includes(queue)) {
+      setSubscriptionFilter(queue);
+    }
+    if (params.get("owner") === "me") setOwnerMeOnly(true);
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (subscriptionFilter === "all") {
+      params.delete("queue");
+    } else {
+      params.set("queue", subscriptionFilter);
+    }
+    if (ownerMeOnly) params.set("owner", "me");
+    else params.delete("owner");
+    const next = params.toString();
+    const path = next ? `/admin?${next}` : "/admin";
+    if (`${window.location.pathname}${window.location.search}` !== path) {
+      window.history.replaceState(null, "", path);
+    }
+  }, [subscriptionFilter, ownerMeOnly]);
+
+  const { data: commercialKpis } = useQuery({
+    queryKey: ["/api/admin/commercial-kpis"],
+    queryFn: async () => {
+      const res = await fetch("/api/admin/commercial-kpis", { credentials: "include" });
+      if (!res.ok) return null;
+      return res.json();
+    },
+    refetchInterval: 60000,
+  });
+
   const [orgForm, setOrgForm] = useState({
     name: "",
     cep: "",
@@ -1346,7 +1398,6 @@ export default function Admin() {
     paymentGraceDays: String(DEFAULT_PAYMENT_GRACE_DAYS),
   });
   const [isLookingUpOrgCep, setIsLookingUpOrgCep] = useState(false);
-  const { toast } = useToast();
   const hasValidOrgCnpj = isValidCnpj(orgForm.cnpj);
 
   const { data: organizations = [], isLoading } = useQuery<Organization[]>({
@@ -1387,13 +1438,51 @@ export default function Admin() {
     const noStripe = organizations.filter((org) => !org.stripeCustomerId && !org.stripeSubscriptionId).length;
     const billingRisk = organizations.filter(isBillingRisk).length;
     const needsAction = organizations.filter(needsCommercialAction).length;
-    return { total, active, restricted, inactive, trialing, trialEnding, paymentIssue, manualBoleto, cancellations, noStripe, billingRisk, needsAction };
-  }, [organizations]);
+    const myAccountsAtRisk = sessionUser?.id
+      ? organizations.filter((org) => org.commercialOwnerUserId === sessionUser.id && needsCommercialAction(org)).length
+      : 0;
+    return { total, active, restricted, inactive, trialing, trialEnding, paymentIssue, manualBoleto, cancellations, noStripe, billingRisk, needsAction, myAccountsAtRisk };
+  }, [organizations, sessionUser?.id]);
+
+  async function createQueueTask(org: Organization, queue: string, title: string) {
+    const res = await fetch(`/api/organizations/${org.id}/commercial/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        title,
+        queue,
+        dueAt: new Date().toISOString(),
+        dedupeKey: `${queue}-manual-${org.id}-${new Date().toISOString().slice(0, 10)}`,
+      }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      toast({ title: data?.message || "Erro ao criar tarefa", variant: "destructive" });
+      return;
+    }
+    toast({ title: "Tarefa criada", description: org.name });
+  }
+
+  async function createQueueNote(org: Organization, body: string) {
+    const res = await fetch(`/api/organizations/${org.id}/commercial/activities`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ type: "note", body }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      toast({ title: data?.message || "Erro ao registrar nota", variant: "destructive" });
+      return;
+    }
+    toast({ title: "Nota registrada", description: org.name });
+  }
 
   const commercialQueues = useMemo(() => {
     const trialEnding = organizations
       .filter(isTrialEndingSoon)
-      .sort((left, right) => (daysUntilDate(left.subscriptionCurrentPeriodEnd) ?? 99) - (daysUntilDate(right.subscriptionCurrentPeriodEnd) ?? 99))
+      .sort((left, right) => (daysUntilDate(trialEndDate(left)) ?? 99) - (daysUntilDate(trialEndDate(right)) ?? 99))
       .slice(0, 5);
     const billingRisk = organizations
       .filter(isBillingRisk)
@@ -1421,6 +1510,7 @@ export default function Admin() {
 
     return organizations.filter((org) => {
       const orgStatus = resolveOrgStatus(org);
+      if (ownerMeOnly && sessionUser?.id && org.commercialOwnerUserId !== sessionUser.id) return false;
       if (statusFilter !== "all" && orgStatus !== statusFilter) return false;
       if (subscriptionFilter === "needs_action") {
         if (!needsCommercialAction(org)) return false;
@@ -1448,7 +1538,7 @@ export default function Admin() {
       return textHaystack.includes(normalizedSearch)
         || (searchDigits.length > 0 && digitHaystack.includes(searchDigits));
     });
-  }, [organizations, searchTerm, statusFilter, subscriptionFilter]);
+  }, [organizations, searchTerm, statusFilter, subscriptionFilter, ownerMeOnly, sessionUser?.id]);
 
   const createOrgMutation = useMutation({
     mutationFn: async () => {
@@ -1526,11 +1616,11 @@ export default function Admin() {
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="text-3xl font-bold tracking-tight text-foreground font-display">Organizações</h1>
+            <h1 className="text-3xl font-bold tracking-tight text-foreground font-display">Contas</h1>
             <Badge className="bg-amber-500 text-white text-xs">Super Admin</Badge>
           </div>
           <p className="text-muted-foreground mt-1">
-            Gerencie todas as casas de repouso cadastradas no sistema
+            Hub comercial EasyCare — customer success, cobrança e implantação
           </p>
         </div>
         <Button onClick={() => setShowAddOrg(true)} className="gap-2 shrink-0" data-testid="button-add-org">
@@ -1539,7 +1629,7 @@ export default function Admin() {
         </Button>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
         {[
           { label: "Ativos", value: organizationStats.active, desc: `${organizationStats.total} contas no total`, icon: Building2, color: "text-emerald-600" },
           { label: "Trial", value: organizationStats.trialing, desc: `${organizationStats.trialEnding} vencendo`, icon: Clock3, color: "text-cyan-600" },
@@ -1547,6 +1637,9 @@ export default function Admin() {
           { label: "Boleto manual", value: organizationStats.manualBoleto, desc: "cobrança fora da Stripe", icon: CreditCard, color: "text-blue-600" },
           { label: "Restritos", value: organizationStats.restricted, desc: "acesso limitado", icon: Ban, color: "text-red-600" },
           { label: "Cancelamentos", value: organizationStats.cancellations, desc: "cancelado ou agendado", icon: Power, color: "text-slate-600" },
+          ...(commercialKpis?.estimatedMrrFormatted
+            ? [{ label: "MRR acordos", value: commercialKpis.estimatedMrrFormatted, desc: commercialKpis.trialToPaidRate != null ? `${commercialKpis.trialToPaidRate}% trial→pago no mês` : "estimado custom", icon: CreditCard, color: "text-violet-600" }]
+            : []),
         ].map((item) => {
           const Icon = item.icon;
           return (
@@ -1588,6 +1681,19 @@ export default function Admin() {
         </div>
       </button>
 
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant={ownerMeOnly ? "default" : "outline"}
+          size="sm"
+          onClick={() => setOwnerMeOnly((v) => !v)}
+        >
+          Minha fila{organizationStats.myAccountsAtRisk ? ` (${organizationStats.myAccountsAtRisk} em risco)` : ""}
+        </Button>
+        {ownerMeOnly && (
+          <p className="text-xs text-muted-foreground">Mostrando só contas com você como dono comercial.</p>
+        )}
+      </div>
+
       <div className="grid gap-4 xl:grid-cols-4">
         <Card className="rounded-lg border-cyan-200 bg-cyan-50/70 shadow-sm">
           <CardHeader className="pb-3">
@@ -1613,31 +1719,78 @@ export default function Admin() {
             {commercialQueues.trialEnding.length === 0 ? (
               <p className="text-sm text-cyan-800/70">Nenhum trial vencendo nos próximos 7 dias.</p>
             ) : commercialQueues.trialEnding.map((org) => {
-              const days = daysUntilDate(org.subscriptionCurrentPeriodEnd);
+              const days = daysUntilDate(trialEndDate(org));
               const message = trialEndingMessage(org, days);
               const whatsappUrl = buildWhatsappUrl(org.phone, message);
               const mailtoUrl = buildMailtoUrl(org.email, "Seu teste grátis EasyCare está vencendo", message);
               return (
                 <div key={`trial-ending-${org.id}`} className="flex items-center justify-between gap-3 rounded-md border border-cyan-200 bg-white px-3 py-2">
-                  <div className="min-w-0">
+                  <button type="button" className="min-w-0 text-left" onClick={() => window.location.href = `/admin/orgs/${org.id}`}>
                     <p className="truncate text-sm font-semibold text-cyan-950">{org.name}</p>
                     <p className="text-xs text-cyan-800/65">
+                      {org.stripeSubscriptionStatus === "trialing" ? "Trial Stripe" : "Trial manual"}
+                      {" · "}
                       {days === 0 ? "vence hoje" : `vence em ${days} dia${days === 1 ? "" : "s"}`}
                     </p>
-                  </div>
+                  </button>
                   <div className="flex shrink-0 gap-1">
+                    <Button asChild variant="outline" size="sm" className="h-8 text-xs">
+                      <Link href={`/admin/orgs/${org.id}`}>Abrir</Link>
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-cyan-700"
+                      title="Criar tarefa"
+                      onClick={() => createQueueTask(org, "trial_ending", `Follow-up trial — ${org.name}`)}
+                    >
+                      <CheckSquare className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-cyan-700"
+                      title="Registrar nota"
+                      onClick={() => createQueueNote(org, `Follow-up trial iniciado em ${new Date().toLocaleString("pt-BR")}.`)}
+                    >
+                      <StickyNote className="h-4 w-4" />
+                    </Button>
                     {mailtoUrl && (
-                      <Button asChild variant="ghost" size="icon" className="h-8 w-8 text-cyan-700">
-                        <a href={mailtoUrl} title="Enviar e-mail">
-                          <Mail className="h-4 w-4" />
-                        </a>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-cyan-700"
+                        onClick={async () => {
+                          await fetch(`/api/organizations/${org.id}/commercial/outreach`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            credentials: "include",
+                            body: JSON.stringify({ channel: "email", target: org.email }),
+                          });
+                          window.location.href = mailtoUrl;
+                        }}
+                        title="Enviar e-mail"
+                      >
+                        <Mail className="h-4 w-4" />
                       </Button>
                     )}
                     {whatsappUrl && (
-                      <Button asChild variant="ghost" size="icon" className="h-8 w-8 text-cyan-700">
-                        <a href={whatsappUrl} target="_blank" rel="noreferrer" title="Chamar no WhatsApp">
-                          <MessageCircle className="h-4 w-4" />
-                        </a>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-cyan-700"
+                        onClick={async () => {
+                          await fetch(`/api/organizations/${org.id}/commercial/outreach`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            credentials: "include",
+                            body: JSON.stringify({ channel: "whatsapp", target: org.phone }),
+                          });
+                          window.open(whatsappUrl, "_blank");
+                        }}
+                        title="Chamar no WhatsApp"
+                      >
+                        <MessageCircle className="h-4 w-4" />
                       </Button>
                     )}
                   </div>
@@ -1677,25 +1830,70 @@ export default function Admin() {
               const mailtoUrl = buildMailtoUrl(org.email, "Pendência de cobrança EasyCare", message);
               return (
                 <div key={`billing-risk-${org.id}`} className="flex items-center justify-between gap-3 rounded-md border border-orange-200 bg-white px-3 py-2">
-                  <div className="min-w-0">
+                  <button type="button" className="min-w-0 text-left" onClick={() => { window.location.href = `/admin/orgs/${org.id}`; }}>
                     <p className="truncate text-sm font-semibold text-orange-950">{org.name}</p>
                     <p className="text-xs text-orange-800/65">
                       {resolveOrgStatus(org) === "restricted" ? "acesso restrito" : getSubscriptionLabel(org.stripeSubscriptionStatus)}
                     </p>
-                  </div>
+                  </button>
                   <div className="flex shrink-0 gap-1">
+                    <Button asChild variant="outline" size="sm" className="h-8 text-xs">
+                      <Link href={`/admin/orgs/${org.id}`}>Abrir</Link>
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-orange-700"
+                      title="Criar tarefa"
+                      onClick={() => createQueueTask(org, "billing_risk", `Cobrança em risco — ${org.name}`)}
+                    >
+                      <CheckSquare className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-orange-700"
+                      title="Registrar nota"
+                      onClick={() => createQueueNote(org, `Follow-up cobrança em risco iniciado em ${new Date().toLocaleString("pt-BR")}.`)}
+                    >
+                      <StickyNote className="h-4 w-4" />
+                    </Button>
                     {mailtoUrl && (
-                      <Button asChild variant="ghost" size="icon" className="h-8 w-8 text-orange-700">
-                        <a href={mailtoUrl} title="Enviar e-mail">
-                          <Mail className="h-4 w-4" />
-                        </a>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-orange-700"
+                        title="Enviar e-mail"
+                        onClick={async () => {
+                          await fetch(`/api/organizations/${org.id}/commercial/outreach`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            credentials: "include",
+                            body: JSON.stringify({ channel: "email", target: org.email }),
+                          });
+                          window.location.href = mailtoUrl;
+                        }}
+                      >
+                        <Mail className="h-4 w-4" />
                       </Button>
                     )}
                     {whatsappUrl && (
-                      <Button asChild variant="ghost" size="icon" className="h-8 w-8 text-orange-700">
-                        <a href={whatsappUrl} target="_blank" rel="noreferrer" title="Chamar no WhatsApp">
-                          <MessageCircle className="h-4 w-4" />
-                        </a>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-orange-700"
+                        title="Chamar no WhatsApp"
+                        onClick={async () => {
+                          await fetch(`/api/organizations/${org.id}/commercial/outreach`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            credentials: "include",
+                            body: JSON.stringify({ channel: "whatsapp", target: org.phone }),
+                          });
+                          window.open(whatsappUrl, "_blank");
+                        }}
+                      >
+                        <MessageCircle className="h-4 w-4" />
                       </Button>
                     )}
                     {stripeUrl && (
@@ -1850,21 +2048,82 @@ export default function Admin() {
       </div>
 
       {isLoading ? (
-        <div className="grid gap-4">
-          {[1, 2].map((i) => <div key={i} className="h-32 bg-muted animate-pulse rounded-xl" />)}
-        </div>
+        <div className="h-40 bg-muted animate-pulse rounded-xl" />
       ) : filteredOrganizations.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-16 gap-3">
             <Building2 className="h-10 w-10 text-muted-foreground/40" />
-            <p className="text-muted-foreground">Nenhuma organização encontrada</p>
+            <p className="text-muted-foreground">Nenhuma conta encontrada</p>
             <Button variant="outline" onClick={() => setShowAddOrg(true)}>Nova organização</Button>
           </CardContent>
         </Card>
       ) : (
-        <div className="max-h-[calc(100vh-280px)] min-h-[280px] overflow-y-auto pr-1">
-          <div className="grid gap-4">
-            {filteredOrganizations.map((org) => <OrgCard key={org.id} org={org} onboarding={onboardingByOrgId.get(org.id)} />)}
+        <div className="rounded-lg border border-border overflow-hidden">
+          <div className="max-h-[calc(100vh-280px)] min-h-[280px] overflow-auto">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-muted/80 backdrop-blur text-left text-xs text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-2 font-medium">Conta</th>
+                  <th className="px-3 py-2 font-medium">Status</th>
+                  <th className="px-3 py-2 font-medium">Assinatura</th>
+                  <th className="px-3 py-2 font-medium">Implantação</th>
+                  <th className="px-3 py-2 font-medium">Plano</th>
+                  <th className="px-3 py-2 font-medium text-right">Ações</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredOrganizations.map((org) => {
+                  const orgStatus = resolveOrgStatus(org);
+                  const statusBadge = getOrgStatusBadge(orgStatus);
+                  const subBadge = getSubscriptionBadge(org.stripeSubscriptionStatus);
+                  const onboarding = onboardingByOrgId.get(org.id);
+                  return (
+                    <tr key={org.id} className="border-t border-border hover:bg-muted/40">
+                      <td className="px-3 py-2.5">
+                        <Link href={`/admin/orgs/${org.id}`} className="font-medium text-foreground hover:underline">
+                          {org.name}
+                        </Link>
+                        <p className="text-xs text-muted-foreground">{org.email || org.phone || org.cnpj}</p>
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <Badge className={`text-xs ${statusBadge.className}`}>{statusBadge.label}</Badge>
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <Badge className={`text-xs ${subBadge.className}`}>{subBadge.label}</Badge>
+                        {org.billingMethod === "manual_boleto" && (
+                          <span className="ml-1 text-xs text-muted-foreground">boleto</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        {onboarding ? (
+                          <div className="flex items-center gap-2 min-w-[100px]">
+                            <Progress value={onboarding.percent} className="h-1.5 flex-1" />
+                            <span className="text-xs tabular-nums">{onboarding.percent}%</span>
+                          </div>
+                        ) : "—"}
+                      </td>
+                      <td className="px-3 py-2.5 text-xs text-muted-foreground">
+                        {org.customPlanEnabled
+                          ? `${org.customPlanLabel || "Especial"} · ${formatCentsBRL(org.customPlanAmountCents) || ""}`
+                          : "Padrão"}
+                      </td>
+                      <td className="px-3 py-2.5 text-right">
+                        <div className="flex justify-end gap-1">
+                          <Button asChild size="sm" variant="outline" className="h-8 text-xs">
+                            <Link href={`/admin/orgs/${org.id}`}>Abrir</Link>
+                          </Button>
+                          <Button asChild size="icon" variant="ghost" className="h-8 w-8">
+                            <Link href={`/audit?organizationId=${org.id}`} title="Auditoria">
+                              <History className="h-4 w-4" />
+                            </Link>
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </div>
       )}

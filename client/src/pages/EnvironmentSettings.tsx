@@ -22,6 +22,7 @@ const MODULE_LABELS: Record<ModuleRoute, string> = {
   "/": "Dashboard",
   "/residents": "Pacientes",
   "/prontuario": "Prontuário",
+  "/farmacia": "Farmácia",
   "/staff": "Equipe",
   "/escalas": "Escalas",
   "/ponto-eletronico": "Ponto eletrônico",

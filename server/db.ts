@@ -250,7 +250,8 @@ export async function ensureDatabaseCompatibility() {
   await pool.query(`
     ALTER TABLE users
       ADD COLUMN IF NOT EXISTS password_reset_token_hash text,
-      ADD COLUMN IF NOT EXISTS password_reset_expires_at timestamp;
+      ADD COLUMN IF NOT EXISTS password_reset_expires_at timestamp,
+      ADD COLUMN IF NOT EXISTS last_login_at timestamp;
   `);
 
   await pool.query(`
@@ -780,5 +781,196 @@ export async function ensureDatabaseCompatibility() {
     UPDATE crm_opportunities
     SET stage = 'no_interest'
     WHERE stage = 'lost';
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+      ADD COLUMN IF NOT EXISTS lifecycle_stage text DEFAULT 'trial',
+      ADD COLUMN IF NOT EXISTS commercial_owner_user_id integer,
+      ADD COLUMN IF NOT EXISTS tags text DEFAULT '[]',
+      ADD COLUMN IF NOT EXISTS next_follow_up_at timestamp,
+      ADD COLUMN IF NOT EXISTS commercial_notes text,
+      ADD COLUMN IF NOT EXISTS churn_reason text,
+      ADD COLUMN IF NOT EXISTS custom_plan_enabled boolean DEFAULT false,
+      ADD COLUMN IF NOT EXISTS custom_plan_label text,
+      ADD COLUMN IF NOT EXISTS custom_plan_amount_cents integer,
+      ADD COLUMN IF NOT EXISTS custom_plan_interval text DEFAULT 'month',
+      ADD COLUMN IF NOT EXISTS custom_plan_interval_count integer DEFAULT 1,
+      ADD COLUMN IF NOT EXISTS custom_plan_patient_limit integer;
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS commercial_contacts (
+      id serial PRIMARY KEY,
+      organization_id integer NOT NULL,
+      name text NOT NULL,
+      role text,
+      email text,
+      phone text,
+      is_primary boolean DEFAULT false,
+      created_at timestamp DEFAULT now()
+    );
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS commercial_contacts_org_idx
+      ON commercial_contacts (organization_id);
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS commercial_activities (
+      id serial PRIMARY KEY,
+      organization_id integer NOT NULL,
+      type text NOT NULL DEFAULT 'note',
+      body text NOT NULL,
+      actor_user_id integer,
+      metadata text,
+      created_at timestamp DEFAULT now()
+    );
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS commercial_activities_org_created_idx
+      ON commercial_activities (organization_id, created_at);
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS commercial_tasks (
+      id serial PRIMARY KEY,
+      organization_id integer NOT NULL,
+      title text NOT NULL,
+      due_at timestamp,
+      status text NOT NULL DEFAULT 'open',
+      assignee_user_id integer,
+      queue text,
+      dedupe_key text,
+      created_at timestamp DEFAULT now(),
+      completed_at timestamp
+    );
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS commercial_tasks_org_status_idx
+      ON commercial_tasks (organization_id, status);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS commercial_tasks_dedupe_idx
+      ON commercial_tasks (dedupe_key);
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS manual_billing_cycles (
+      id serial PRIMARY KEY,
+      organization_id integer NOT NULL,
+      period_ym text NOT NULL,
+      due_date date NOT NULL,
+      amount_cents integer,
+      status text NOT NULL DEFAULT 'pending',
+      paid_at timestamp,
+      note text,
+      created_at timestamp DEFAULT now()
+    );
+  `);
+
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS manual_billing_cycles_org_period_unique
+      ON manual_billing_cycles (organization_id, period_ym);
+  `);
+
+  await pool.query(`
+    ALTER TABLE medications
+      ADD COLUMN IF NOT EXISTS pharmacy_item_id integer,
+      ADD COLUMN IF NOT EXISTS units_per_dose real DEFAULT 1,
+      ADD COLUMN IF NOT EXISTS stock_scope text DEFAULT 'org';
+  `);
+
+  await pool.query(`
+    UPDATE medications
+    SET units_per_dose = 1
+    WHERE units_per_dose IS NULL;
+  `);
+
+  await pool.query(`
+    UPDATE medications
+    SET stock_scope = 'org'
+    WHERE stock_scope IS NULL OR btrim(stock_scope) = '';
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pharmacy_items (
+      id serial PRIMARY KEY,
+      organization_id integer NOT NULL,
+      name text NOT NULL,
+      active_ingredient text,
+      form text,
+      strength text,
+      unit text NOT NULL DEFAULT 'cp',
+      min_stock real NOT NULL DEFAULT 0,
+      controlled boolean NOT NULL DEFAULT false,
+      active boolean NOT NULL DEFAULT true,
+      created_at timestamp DEFAULT now()
+    );
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS pharmacy_items_org_idx
+      ON pharmacy_items (organization_id);
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pharmacy_lots (
+      id serial PRIMARY KEY,
+      organization_id integer NOT NULL,
+      item_id integer NOT NULL,
+      scope text NOT NULL DEFAULT 'org',
+      resident_id integer,
+      lot_code text,
+      expiry_date date,
+      quantity_on_hand real NOT NULL DEFAULT 0,
+      received_at timestamp DEFAULT now(),
+      source text NOT NULL DEFAULT 'purchase',
+      notes text,
+      created_at timestamp DEFAULT now()
+    );
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS pharmacy_lots_org_item_idx
+      ON pharmacy_lots (organization_id, item_id);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS pharmacy_lots_scope_resident_idx
+      ON pharmacy_lots (organization_id, scope, resident_id);
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pharmacy_movements (
+      id serial PRIMARY KEY,
+      organization_id integer NOT NULL,
+      type text NOT NULL,
+      item_id integer NOT NULL,
+      lot_id integer,
+      quantity real NOT NULL,
+      scope text NOT NULL DEFAULT 'org',
+      resident_id integer,
+      staff_id integer,
+      medication_administration_id integer,
+      reason text,
+      stock_shortage boolean NOT NULL DEFAULT false,
+      occurred_at timestamp DEFAULT now(),
+      created_at timestamp DEFAULT now()
+    );
+  `);
+
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS pharmacy_movements_admin_unique
+      ON pharmacy_movements (medication_administration_id);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS pharmacy_movements_org_item_idx
+      ON pharmacy_movements (organization_id, item_id);
   `);
 }
