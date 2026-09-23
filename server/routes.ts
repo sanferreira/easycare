@@ -13,7 +13,7 @@ import { pool } from "./db";
 import { getWebPushPublicKey, isWebPushConfigured, sendWebPushNotifications } from "./web-push";
 import { sendSignupCommercialAlertEmail, sendSignupWelcomeEmail, sendPasswordResetEmail } from "./email";
 import { resolveAppPublicUrl } from "./app-url";
-import { registerCommercialRoutes } from "./commercial-routes";
+import { registerCommercialRoutes, loadCommercialAccountPayload } from "./commercial-routes";
 import { formatCentsBRL } from "@shared/commercial";
 import {
   DEFAULT_ENVIRONMENT_SETTINGS,
@@ -2635,14 +2635,36 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // Hub Contas (/admin/orgs/:id) — registrar junto das rotas de organização
-  registerCommercialRoutes(app, {
-    requireAuth,
-    requireSuperAdmin,
-    logAudit,
-    parseManualAccessUntilInput,
-    parseBillingMethodInput,
-    parseNullableBoundedInteger,
-    DEFAULT_PAYMENT_GRACE_DAYS,
+  try {
+    registerCommercialRoutes(app, {
+      requireAuth,
+      requireSuperAdmin,
+      logAudit,
+      parseManualAccessUntilInput,
+      parseBillingMethodInput,
+      parseNullableBoundedInteger,
+      DEFAULT_PAYMENT_GRACE_DAYS,
+    });
+    console.log("[easycare] commercial hub routes registered");
+  } catch (error) {
+    console.error("[easycare] falha ao registrar commercial hub routes", error);
+  }
+
+  // Fallback explícito: garante GET/PUT commercial mesmo se o registro acima falhar
+  app.get("/api/organizations/:id/commercial", requireAuth, requireSuperAdmin, async (req, res) => {
+    try {
+      const orgId = Number(req.params.id);
+      if (!Number.isInteger(orgId) || orgId <= 0) {
+        return res.status(400).json({ message: "Organização inválida." });
+      }
+      const payload = await loadCommercialAccountPayload(orgId);
+      if (!payload) return res.status(404).json({ message: "Organização não encontrada." });
+      return res.json(payload);
+    } catch (error) {
+      console.error("[commercial-inline] load account", error);
+      const message = error instanceof Error ? error.message : "Erro ao carregar conta.";
+      return res.status(500).json({ message });
+    }
   });
 
   app.get("/api/onboarding/status", requireAuth, async (req, res) => {

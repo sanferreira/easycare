@@ -45,6 +45,66 @@ function parseOrgId(req: Request) {
   return orgId;
 }
 
+export async function loadCommercialAccountPayload(orgId: number) {
+  const organization = await storage.getOrganization(orgId);
+  if (!organization) return null;
+
+  const emptyOwners: { id: number; name: string; email?: string | null }[] = [];
+  const [contacts, activities, tasks, cycles, users, owners] = await Promise.all([
+    storage.getCommercialContacts(orgId).catch((err) => {
+      console.error("[commercial] contacts", err);
+      return [];
+    }),
+    storage.getCommercialActivities(orgId, 80).catch((err) => {
+      console.error("[commercial] activities", err);
+      return [];
+    }),
+    storage.getCommercialTasks(orgId).catch((err) => {
+      console.error("[commercial] tasks", err);
+      return [];
+    }),
+    storage.getManualBillingCycles(orgId).catch((err) => {
+      console.error("[commercial] billing-cycles", err);
+      return [];
+    }),
+    storage.getUsersByOrganization(orgId).then((list) =>
+      list.map((user) => {
+        const {
+          password: _password,
+          passwordResetTokenHash: _token,
+          passwordResetExpiresAt: _exp,
+          ...safe
+        } = user as typeof user & {
+          password?: unknown;
+          passwordResetTokenHash?: unknown;
+          passwordResetExpiresAt?: unknown;
+        };
+        return safe;
+      }),
+    ),
+    storage.getSuperAdminUsers()
+      .then((list) => list.map((u) => ({ id: u.id, name: u.name, email: u.email })))
+      .catch((err) => {
+        console.error("[commercial] owners", err);
+        return emptyOwners;
+      }),
+  ]);
+
+  return {
+    organization: {
+      ...organization,
+      tags: parseTags(organization.tags),
+      orgStatus: resolveOrgStatus(organization),
+    },
+    contacts,
+    activities,
+    tasks,
+    manualBillingCycles: cycles,
+    users,
+    owners,
+  };
+}
+
 export function registerCommercialRoutes(app: Express, helpers: RegisterHelpers) {
   const {
     requireAuth,
@@ -117,63 +177,9 @@ export function registerCommercialRoutes(app: Express, helpers: RegisterHelpers)
   app.get("/api/organizations/:id/commercial", requireAuth, requireSuperAdmin, async (req, res) => {
     try {
       const orgId = parseOrgId(req);
-      const organization = await storage.getOrganization(orgId);
-      if (!organization) return res.status(404).json({ message: "Organização não encontrada." });
-
-      const emptyOwners: { id: number; name: string; email?: string | null }[] = [];
-      const [contacts, activities, tasks, cycles, users, owners] = await Promise.all([
-        storage.getCommercialContacts(orgId).catch((err) => {
-          console.error("[commercial] contacts", err);
-          return [];
-        }),
-        storage.getCommercialActivities(orgId, 80).catch((err) => {
-          console.error("[commercial] activities", err);
-          return [];
-        }),
-        storage.getCommercialTasks(orgId).catch((err) => {
-          console.error("[commercial] tasks", err);
-          return [];
-        }),
-        storage.getManualBillingCycles(orgId).catch((err) => {
-          console.error("[commercial] billing-cycles", err);
-          return [];
-        }),
-        storage.getUsersByOrganization(orgId).then((list) =>
-          list.map((user) => {
-            const {
-              password: _password,
-              passwordResetTokenHash: _token,
-              passwordResetExpiresAt: _exp,
-              ...safe
-            } = user as typeof user & {
-              password?: unknown;
-              passwordResetTokenHash?: unknown;
-              passwordResetExpiresAt?: unknown;
-            };
-            return safe;
-          }),
-        ),
-        storage.getSuperAdminUsers()
-          .then((list) => list.map((u) => ({ id: u.id, name: u.name, email: u.email })))
-          .catch((err) => {
-            console.error("[commercial] owners", err);
-            return emptyOwners;
-          }),
-      ]);
-
-      res.json({
-        organization: {
-          ...organization,
-          tags: parseTags(organization.tags),
-          orgStatus: resolveOrgStatus(organization),
-        },
-        contacts,
-        activities,
-        tasks,
-        manualBillingCycles: cycles,
-        users,
-        owners,
-      });
+      const payload = await loadCommercialAccountPayload(orgId);
+      if (!payload) return res.status(404).json({ message: "Organização não encontrada." });
+      res.json(payload);
     } catch (error) {
       console.error("[commercial] load account", error);
       const message = error instanceof Error ? error.message : "Erro ao carregar conta.";

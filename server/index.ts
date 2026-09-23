@@ -120,6 +120,7 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
+      log("commercial hub: GET /api/organizations/:id/commercial");
     },
   );
 })();
