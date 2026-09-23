@@ -160,8 +160,22 @@ export default function AdminAccount() {
     enabled: Number.isInteger(orgId) && orgId > 0,
   });
 
+  const usersQuery = useQuery<any[]>({
+    queryKey: ["/api/organizations", orgId, "users"],
+    queryFn: async () => {
+      const res = await fetch(`/api/organizations/${orgId}/users`, { credentials: "include" });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        throw new Error(payload?.message || "Erro ao carregar usuários.");
+      }
+      return res.json();
+    },
+    enabled: Number.isInteger(orgId) && orgId > 0,
+  });
+
   const org = commercialQuery.data?.organization ?? orgFallbackQuery.data ?? null;
   const onboarding = onboardingQuery.data?.find((s) => s.organizationId === orgId);
+  const orgUsers = usersQuery.data ?? commercialQuery.data?.users ?? [];
 
   const [overviewForm, setOverviewForm] = useState({
     lifecycleStage: "trial" as LifecycleStage,
@@ -242,6 +256,7 @@ export default function AdminAccount() {
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/organizations", orgId, "commercial"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/organizations", orgId, "users"] });
     queryClient.invalidateQueries({ queryKey: ["/api/organizations"] });
   };
 
@@ -1080,10 +1095,16 @@ export default function AdminAccount() {
               </Button>
             </CardHeader>
             <CardContent className="space-y-2">
-              {(commercialQuery.data?.users || []).length === 0 ? (
+              {usersQuery.isLoading ? (
+                <p className="text-sm text-muted-foreground">Carregando usuários...</p>
+              ) : usersQuery.isError ? (
+                <p className="text-sm text-destructive">
+                  {usersQuery.error instanceof Error ? usersQuery.error.message : "Erro ao carregar usuários."}
+                </p>
+              ) : orgUsers.length === 0 ? (
                 <p className="text-sm text-muted-foreground">Nenhum usuário cadastrado.</p>
               ) : (
-                (commercialQuery.data?.users || []).map((u) => (
+                orgUsers.map((u) => (
                   <div key={u.id} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm group">
                     <div>
                       <p className="font-medium">{u.name} · @{u.username}</p>

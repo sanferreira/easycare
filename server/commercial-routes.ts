@@ -138,10 +138,21 @@ export function registerCommercialRoutes(app: Express, helpers: RegisterHelpers)
           console.error("[commercial] billing-cycles", err);
           return [];
         }),
-        storage.getUsersByOrganization(orgId).catch((err) => {
-          console.error("[commercial] users", err);
-          return [];
-        }),
+        storage.getUsersByOrganization(orgId).then((list) =>
+          list.map((user) => {
+            const {
+              password: _password,
+              passwordResetTokenHash: _token,
+              passwordResetExpiresAt: _exp,
+              ...safe
+            } = user as typeof user & {
+              password?: unknown;
+              passwordResetTokenHash?: unknown;
+              passwordResetExpiresAt?: unknown;
+            };
+            return safe;
+          }),
+        ),
         storage.getSuperAdminUsers()
           .then((list) => list.map((u) => ({ id: u.id, name: u.name, email: u.email })))
           .catch((err) => {

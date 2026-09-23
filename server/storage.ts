@@ -753,7 +753,45 @@ export class DatabaseStorage implements IStorage {
     return user;
   }
   async getUsersByOrganization(orgId: number): Promise<User[]> {
-    return await db.select().from(users).where(eq(users.organizationId, orgId));
+    try {
+      return await db
+        .select({
+          id: users.id,
+          organizationId: users.organizationId,
+          username: users.username,
+          password: users.password,
+          role: users.role,
+          name: users.name,
+          email: users.email,
+          phone: users.phone,
+          active: users.active,
+          isSuperAdmin: users.isSuperAdmin,
+          lastLoginAt: users.lastLoginAt,
+          passwordResetTokenHash: users.passwordResetTokenHash,
+          passwordResetExpiresAt: users.passwordResetExpiresAt,
+        })
+        .from(users)
+        .where(eq(users.organizationId, orgId))
+        .orderBy(asc(users.name));
+    } catch (error) {
+      console.error("[storage] getUsersByOrganization failed, fallback sem lastLoginAt", error);
+      return await db
+        .select({
+          id: users.id,
+          organizationId: users.organizationId,
+          username: users.username,
+          password: users.password,
+          role: users.role,
+          name: users.name,
+          email: users.email,
+          phone: users.phone,
+          active: users.active,
+          isSuperAdmin: users.isSuperAdmin,
+        })
+        .from(users)
+        .where(eq(users.organizationId, orgId))
+        .orderBy(asc(users.name)) as User[];
+    }
   }
   async createUser(user: InsertUser): Promise<User> {
     const normalizedPassword = user.password.trim();
