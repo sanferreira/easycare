@@ -120,19 +120,35 @@ export function registerCommercialRoutes(app: Express, helpers: RegisterHelpers)
       const organization = await storage.getOrganization(orgId);
       if (!organization) return res.status(404).json({ message: "Organização não encontrada." });
 
-      const [contacts, activities, tasks, cycles, users, onboardingList] = await Promise.all([
-        storage.getCommercialContacts(orgId),
-        storage.getCommercialActivities(orgId, 80),
-        storage.getCommercialTasks(orgId),
-        storage.getManualBillingCycles(orgId),
-        storage.getUsersByOrganization(orgId),
-        storage.getOrganizations(true).then(async () => {
-          // onboarding is fetched separately via existing endpoint; placeholder
-          return null;
+      const emptyOwners: { id: number; name: string; email?: string | null }[] = [];
+      const [contacts, activities, tasks, cycles, users, owners] = await Promise.all([
+        storage.getCommercialContacts(orgId).catch((err) => {
+          console.error("[commercial] contacts", err);
+          return [];
         }),
+        storage.getCommercialActivities(orgId, 80).catch((err) => {
+          console.error("[commercial] activities", err);
+          return [];
+        }),
+        storage.getCommercialTasks(orgId).catch((err) => {
+          console.error("[commercial] tasks", err);
+          return [];
+        }),
+        storage.getManualBillingCycles(orgId).catch((err) => {
+          console.error("[commercial] billing-cycles", err);
+          return [];
+        }),
+        storage.getUsersByOrganization(orgId).catch((err) => {
+          console.error("[commercial] users", err);
+          return [];
+        }),
+        storage.getSuperAdminUsers()
+          .then((list) => list.map((u) => ({ id: u.id, name: u.name, email: u.email })))
+          .catch((err) => {
+            console.error("[commercial] owners", err);
+            return emptyOwners;
+          }),
       ]);
-
-      void onboardingList;
 
       res.json({
         organization: {
@@ -145,13 +161,12 @@ export function registerCommercialRoutes(app: Express, helpers: RegisterHelpers)
         tasks,
         manualBillingCycles: cycles,
         users,
-        owners: await storage.getSuperAdminUsers().then((list) =>
-          list.map((u) => ({ id: u.id, name: u.name, email: u.email })),
-        ),
+        owners,
       });
     } catch (error) {
+      console.error("[commercial] load account", error);
       const message = error instanceof Error ? error.message : "Erro ao carregar conta.";
-      res.status(400).json({ message });
+      res.status(500).json({ message });
     }
   });
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams, useLocation } from "wouter";
+import { Link, useParams, useLocation, useRoute } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -97,9 +97,15 @@ function getRoleOptionsForOrganization(environmentSettings?: string | null) {
 }
 
 export default function AdminAccount() {
-  const params = useParams<{ id: string }>();
-  const orgId = Number(params.id);
-  const [, setLocation] = useLocation();
+  const params = useParams<{ id?: string }>();
+  const [, routeParams] = useRoute("/admin/orgs/:id");
+  const [location, setLocation] = useLocation();
+  const orgId = Number(
+    routeParams?.id
+    || params.id
+    || location.match(/\/admin\/orgs\/(\d+)/)?.[1]
+    || "",
+  );
   const { toast } = useToast();
   const { confirm, confirmDialog } = useConfirmDialog();
   const initialTab = typeof window !== "undefined"
@@ -111,10 +117,28 @@ export default function AdminAccount() {
     queryKey: ["/api/organizations", orgId, "commercial"],
     queryFn: async () => {
       const res = await fetch(`/api/organizations/${orgId}/commercial`, { credentials: "include" });
-      if (!res.ok) throw new Error((await res.json().catch(() => null))?.message || "Erro ao carregar conta");
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        throw new Error(payload?.message || `Erro ao carregar conta (${res.status})`);
+      }
       return res.json();
     },
     enabled: Number.isInteger(orgId) && orgId > 0,
+    retry: 1,
+  });
+
+  const orgFallbackQuery = useQuery({
+    queryKey: ["/api/organizations", orgId, "fallback"],
+    queryFn: async () => {
+      const res = await fetch(`/api/organizations/${orgId}`, { credentials: "include" });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        throw new Error(payload?.message || "Organização não encontrada.");
+      }
+      return res.json();
+    },
+    enabled: Number.isInteger(orgId) && orgId > 0 && commercialQuery.isError,
+    retry: false,
   });
 
   const onboardingQuery = useQuery<OnboardingSummary[]>({
@@ -136,7 +160,7 @@ export default function AdminAccount() {
     enabled: Number.isInteger(orgId) && orgId > 0,
   });
 
-  const org = commercialQuery.data?.organization;
+  const org = commercialQuery.data?.organization ?? orgFallbackQuery.data ?? null;
   const onboarding = onboardingQuery.data?.find((s) => s.organizationId === orgId);
 
   const [overviewForm, setOverviewForm] = useState({
@@ -562,14 +586,19 @@ export default function AdminAccount() {
     return <RedirectOrBack />;
   }
 
-  if (commercialQuery.isLoading) {
+  if (commercialQuery.isLoading || (commercialQuery.isError && orgFallbackQuery.isLoading)) {
     return <div className="p-8 text-muted-foreground">Carregando conta...</div>;
   }
 
   if (!org) {
+    const errorMessage =
+      (commercialQuery.error instanceof Error ? commercialQuery.error.message : null)
+      || (orgFallbackQuery.error instanceof Error ? orgFallbackQuery.error.message : null)
+      || "Conta não encontrada.";
     return (
       <div className="space-y-4 p-4">
-        <p>Conta não encontrada.</p>
+        <p className="font-medium text-foreground">Não foi possível abrir a conta.</p>
+        <p className="text-sm text-muted-foreground">{errorMessage}</p>
         <Button variant="outline" onClick={() => setLocation("/admin")}>Voltar</Button>
       </div>
     );
