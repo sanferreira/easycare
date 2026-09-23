@@ -967,16 +967,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     next();
   };
 
-  registerCommercialRoutes(app, {
-    requireAuth,
-    requireSuperAdmin,
-    logAudit,
-    parseManualAccessUntilInput,
-    parseBillingMethodInput,
-    parseNullableBoundedInteger,
-    DEFAULT_PAYMENT_GRACE_DAYS,
-  });
-
   // Middleware de controle de acesso por papel (RBAC)
   const requireRole = (...roles: string[]) => (req: Request, res: Response, next: NextFunction) => {
     const user = req.session.user;
@@ -2643,6 +2633,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const includeInactive = String(req.query.includeInactive || "").toLowerCase() === "true";
     res.json(await storage.getOrganizations(includeInactive));
   });
+
+  // Hub Contas (/admin/orgs/:id) — registrar junto das rotas de organização
+  registerCommercialRoutes(app, {
+    requireAuth,
+    requireSuperAdmin,
+    logAudit,
+    parseManualAccessUntilInput,
+    parseBillingMethodInput,
+    parseNullableBoundedInteger,
+    DEFAULT_PAYMENT_GRACE_DAYS,
+  });
+
   app.get("/api/onboarding/status", requireAuth, async (req, res) => {
     const organizationId = req.session.user?.organizationId;
     if (!organizationId || req.session.user?.isSuperAdmin) {

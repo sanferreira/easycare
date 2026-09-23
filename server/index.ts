@@ -83,7 +83,8 @@ app.use((req, res, next) => {
   startCommercialDigestWorker();
 
   // Keep API failures in JSON (avoid Vite HTML fallback on unknown API routes in development).
-  app.use("/api/*", (req, res) => {
+  app.use("/api", (req, res, next) => {
+    if (res.headersSent) return next();
     res.status(404).json({ message: `Rota API não encontrada: ${req.method} ${req.originalUrl}` });
   });
 
