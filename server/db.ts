@@ -905,6 +905,8 @@ export async function ensureDatabaseCompatibility() {
       active_ingredient text,
       form text,
       strength text,
+      strength_value real,
+      strength_unit text,
       unit text NOT NULL DEFAULT 'cp',
       min_stock real NOT NULL DEFAULT 0,
       controlled boolean NOT NULL DEFAULT false,
@@ -972,5 +974,96 @@ export async function ensureDatabaseCompatibility() {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS pharmacy_movements_org_item_idx
       ON pharmacy_movements (organization_id, item_id);
+  `);
+
+  await pool.query(`
+    ALTER TABLE pharmacy_items
+      ADD COLUMN IF NOT EXISTS strength_value real,
+      ADD COLUMN IF NOT EXISTS strength_unit text;
+  `);
+
+  await pool.query(`
+    UPDATE pharmacy_items
+    SET unit = lower(btrim(unit))
+    WHERE unit IS NOT NULL;
+  `);
+
+  // Best-effort normalize common stock unit aliases
+  await pool.query(`
+    UPDATE pharmacy_items SET unit = 'cp'
+    WHERE lower(btrim(unit)) IN ('comprimido', 'comprimidos', 'comp', 'comp.', 'tablet');
+  `);
+  await pool.query(`
+    UPDATE pharmacy_items SET unit = 'ml'
+    WHERE lower(btrim(unit)) IN ('mililitro', 'mililitros', 'ml.');
+  `);
+  await pool.query(`
+    UPDATE pharmacy_items SET unit = 'ampola'
+    WHERE lower(btrim(unit)) IN ('ampolas');
+  `);
+  await pool.query(`
+    UPDATE pharmacy_items SET unit = 'gota'
+    WHERE lower(btrim(unit)) IN ('gotas');
+  `);
+  await pool.query(`
+    UPDATE pharmacy_items SET unit = 'un'
+    WHERE unit IS NULL OR btrim(unit) = ''
+       OR lower(btrim(unit)) NOT IN ('cp', 'ml', 'ampola', 'gota', 'aplicacao', 'un');
+  `);
+
+  // Best-effort normalize common pharmaceutical forms
+  await pool.query(`
+    UPDATE pharmacy_items SET form = 'comprimido'
+    WHERE form IS NOT NULL AND lower(btrim(form)) IN ('comprimido', 'comprimidos', 'comp', 'comp.', 'tablet');
+  `);
+  await pool.query(`
+    UPDATE pharmacy_items SET form = 'capsula'
+    WHERE form IS NOT NULL AND lower(btrim(form)) IN ('capsula', 'cápsula', 'capsulas', 'cápsulas');
+  `);
+  await pool.query(`
+    UPDATE pharmacy_items SET form = 'xarope'
+    WHERE form IS NOT NULL AND lower(btrim(form)) IN ('xarope', 'xaropes', 'syrup');
+  `);
+  await pool.query(`
+    UPDATE pharmacy_items SET form = 'solucao_oral'
+    WHERE form IS NOT NULL AND lower(btrim(form)) IN ('solucao oral', 'solução oral', 'solucao_oral');
+  `);
+  await pool.query(`
+    UPDATE pharmacy_items SET form = 'ampola'
+    WHERE form IS NOT NULL AND lower(btrim(form)) IN ('ampola', 'ampolas');
+  `);
+  await pool.query(`
+    UPDATE pharmacy_items SET form = 'gotas'
+    WHERE form IS NOT NULL AND lower(btrim(form)) IN ('gota', 'gotas');
+  `);
+  await pool.query(`
+    UPDATE pharmacy_items SET form = 'outro'
+    WHERE form IS NOT NULL AND btrim(form) <> ''
+      AND lower(btrim(form)) NOT IN (
+        'comprimido', 'capsula', 'solucao_oral', 'xarope', 'gotas', 'ampola',
+        'injecao', 'creme', 'pomada', 'adesivo', 'inalacao', 'supositorio', 'outro'
+      );
+  `);
+
+  // Parse simple strength texts like "500 mg" into structured columns when empty
+  await pool.query(`
+    UPDATE pharmacy_items
+    SET
+      strength_value = replace(substring(btrim(strength) from '^([0-9]+([.,][0-9]+)?)'), ',', '.')::real,
+      strength_unit = CASE
+        WHEN lower(btrim(strength)) ~ 'mg/5\\s*ml' THEN 'mg_por_5ml'
+        WHEN lower(btrim(strength)) ~ 'mg/ml' THEN 'mg_por_ml'
+        WHEN lower(btrim(strength)) ~ '(^|[^a-z])(mcg|µg|ug)([^a-z]|$)' THEN 'mcg'
+        WHEN lower(btrim(strength)) ~ '(^|[^a-z])ui([^a-z]|$)' THEN 'UI'
+        WHEN lower(btrim(strength)) ~ '(^|[^a-z])meq([^a-z]|$)' THEN 'mEq'
+        WHEN position('%' in btrim(strength)) > 0 THEN 'percent'
+        WHEN lower(btrim(strength)) ~ '(^|[^a-z])g([^a-z]|$)' AND lower(btrim(strength)) !~ 'mg' THEN 'g'
+        WHEN lower(btrim(strength)) ~ '(^|[^a-z])mg([^a-z/]|$)' THEN 'mg'
+        ELSE NULL
+      END
+    WHERE strength IS NOT NULL
+      AND btrim(strength) <> ''
+      AND strength_value IS NULL
+      AND btrim(strength) ~ '^[0-9]+([.,][0-9]+)?';
   `);
 }

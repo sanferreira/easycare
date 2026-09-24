@@ -15,6 +15,25 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { fetchJsonOrThrow } from "@/lib/fetch-json";
+import {
+  formatPharmacyFormLabel,
+  formatPharmacyItemLabel,
+  formatPharmacyStrength,
+  formatStockUnitLabel,
+  PHARMACY_FORM_LABELS,
+  PHARMACY_FORM_VALUES,
+  STOCK_UNIT_LABELS,
+  STOCK_UNIT_VALUES,
+  STRENGTH_UNIT_LABELS,
+  STRENGTH_UNIT_VALUES,
+  type PharmacyForm,
+  type StockUnit,
+  type StrengthUnit,
+  isPharmacyForm,
+  isStockUnit,
+  isStrengthUnit,
+  parseStrengthText,
+} from "@shared/pharmacy";
 
 type PharmacyItemRow = {
   id: number;
@@ -22,6 +41,8 @@ type PharmacyItemRow = {
   activeIngredient: string | null;
   form: string | null;
   strength: string | null;
+  strengthValue: number | null;
+  strengthUnit: string | null;
   unit: string;
   minStock: number;
   controlled: boolean;
@@ -126,9 +147,10 @@ export default function Farmacia() {
   const [itemForm, setItemForm] = useState({
     name: "",
     activeIngredient: "",
-    form: "",
-    strength: "",
-    unit: "cp",
+    form: "" as "" | PharmacyForm,
+    strengthValue: "",
+    strengthUnit: "" as "" | StrengthUnit,
+    unit: "cp" as StockUnit,
     minStock: "0",
     controlled: false,
     active: true,
@@ -191,12 +213,25 @@ export default function Farmacia() {
 
   const saveItem = useMutation({
     mutationFn: async () => {
+      if (!itemForm.unit) throw new Error("Unidade de estoque obrigatória.");
+      const strengthValueRaw = itemForm.strengthValue.trim();
+      const strengthValue = strengthValueRaw ? Number(strengthValueRaw.replace(",", ".")) : null;
+      if (strengthValueRaw && (!Number.isFinite(strengthValue) || (strengthValue ?? 0) <= 0)) {
+        throw new Error("Concentração inválida.");
+      }
+      if (strengthValue != null && !itemForm.strengthUnit) {
+        throw new Error("Informe a unidade da concentração.");
+      }
+      if (itemForm.strengthUnit && strengthValue == null) {
+        throw new Error("Informe o valor da concentração.");
+      }
       const payload = {
         name: itemForm.name.trim(),
         activeIngredient: itemForm.activeIngredient.trim() || null,
-        form: itemForm.form.trim() || null,
-        strength: itemForm.strength.trim() || null,
-        unit: itemForm.unit.trim() || "cp",
+        form: itemForm.form || null,
+        strengthValue,
+        strengthUnit: itemForm.strengthUnit || null,
+        unit: itemForm.unit,
         minStock: Number(itemForm.minStock) || 0,
         controlled: itemForm.controlled,
         active: itemForm.active,
@@ -290,7 +325,8 @@ export default function Farmacia() {
       name: "",
       activeIngredient: "",
       form: "",
-      strength: "",
+      strengthValue: "",
+      strengthUnit: "",
       unit: "cp",
       minStock: "0",
       controlled: false,
@@ -301,12 +337,17 @@ export default function Farmacia() {
 
   const openEditItem = (item: PharmacyItemRow) => {
     setEditingItem(item);
+    const parsed =
+      item.strengthValue != null && item.strengthUnit
+        ? { strengthValue: item.strengthValue, strengthUnit: item.strengthUnit }
+        : parseStrengthText(item.strength);
     setItemForm({
       name: item.name,
       activeIngredient: item.activeIngredient || "",
-      form: item.form || "",
-      strength: item.strength || "",
-      unit: item.unit || "cp",
+      form: isPharmacyForm(item.form) ? item.form : item.form ? "outro" : "",
+      strengthValue: parsed.strengthValue != null ? String(parsed.strengthValue) : "",
+      strengthUnit: isStrengthUnit(parsed.strengthUnit) ? parsed.strengthUnit : "",
+      unit: isStockUnit(item.unit) ? item.unit : "un",
       minStock: String(item.minStock ?? 0),
       controlled: !!item.controlled,
       active: item.active !== false,
@@ -388,7 +429,7 @@ export default function Farmacia() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Item</TableHead>
-                    <TableHead>Unidade</TableHead>
+                    <TableHead>Estoque (baixa)</TableHead>
                     <TableHead>Saldo</TableHead>
                     <TableHead>Mínimo</TableHead>
                     <TableHead>Status</TableHead>
@@ -398,15 +439,26 @@ export default function Farmacia() {
                 <TableBody>
                   {(itemsQuery.data ?? []).map((item) => {
                     const below = item.minStock > 0 && item.quantityOnHand < item.minStock;
+                    const strengthText = formatPharmacyStrength(
+                      item.strengthValue,
+                      item.strengthUnit,
+                      item.strength,
+                    );
                     return (
                       <TableRow key={item.id}>
                         <TableCell>
                           <div className="font-medium">{item.name}</div>
                           <div className="text-xs text-muted-foreground">
-                            {[item.activeIngredient, item.form, item.strength].filter(Boolean).join(" · ") || "—"}
+                            {[
+                              item.activeIngredient,
+                              formatPharmacyFormLabel(item.form) || null,
+                              strengthText,
+                            ]
+                              .filter(Boolean)
+                              .join(" · ") || "—"}
                           </div>
                         </TableCell>
-                        <TableCell>{item.unit}</TableCell>
+                        <TableCell>{formatStockUnitLabel(item.unit)}</TableCell>
                         <TableCell>
                           <span className={below ? "text-amber-700 font-medium" : ""}>
                             {item.quantityOnHand}
@@ -624,7 +676,7 @@ export default function Farmacia() {
                   <ul className="space-y-1 text-sm">
                     {alertsQuery.data!.belowMinimum.map((row) => (
                       <li key={row.itemId}>
-                        {row.name}: {row.quantityOnHand} {row.unit} (mín. {row.minStock})
+                        {row.name}: {row.quantityOnHand} {formatStockUnitLabel(row.unit)} (mín. {row.minStock})
                       </li>
                     ))}
                   </ul>
@@ -681,24 +733,86 @@ export default function Farmacia() {
                 />
               </div>
               <div className="space-y-1">
-                <Label>Forma</Label>
-                <Input value={itemForm.form} onChange={(e) => setItemForm((s) => ({ ...s, form: e.target.value }))} />
+                <Label>Forma farmacêutica</Label>
+                <Select
+                  value={itemForm.form || "__none__"}
+                  onValueChange={(v) =>
+                    setItemForm((s) => ({ ...s, form: v === "__none__" ? "" : (v as PharmacyForm) }))
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecionar" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">—</SelectItem>
+                    {PHARMACY_FORM_VALUES.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {PHARMACY_FORM_LABELS[value]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div className="space-y-1">
-                <Label>Concentração</Label>
+            <div className="space-y-1">
+              <Label>Concentração (identidade clínica)</Label>
+              <div className="grid grid-cols-2 gap-3">
                 <Input
-                  value={itemForm.strength}
-                  onChange={(e) => setItemForm((s) => ({ ...s, strength: e.target.value }))}
+                  type="number"
+                  min={0.001}
+                  step="any"
+                  placeholder="Ex.: 500"
+                  value={itemForm.strengthValue}
+                  onChange={(e) => setItemForm((s) => ({ ...s, strengthValue: e.target.value }))}
                 />
+                <Select
+                  value={itemForm.strengthUnit || "__none__"}
+                  onValueChange={(v) =>
+                    setItemForm((s) => ({
+                      ...s,
+                      strengthUnit: v === "__none__" ? "" : (v as StrengthUnit),
+                    }))
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Unidade" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">—</SelectItem>
+                    {STRENGTH_UNIT_VALUES.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {STRENGTH_UNIT_LABELS[value]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <p className="text-xs text-muted-foreground">Opcional. Não entra no cálculo de estoque.</p>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label>Unidade do estoque (baixa) *</Label>
+                <Select
+                  value={itemForm.unit}
+                  onValueChange={(v) => setItemForm((s) => ({ ...s, unit: v as StockUnit }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {STOCK_UNIT_VALUES.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {STOCK_UNIT_LABELS[value]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Estoque e doses baixam nesta unidade. Ex.: xarope → ml; comprimido → cp.
+                </p>
               </div>
               <div className="space-y-1">
-                <Label>Unidade</Label>
-                <Input value={itemForm.unit} onChange={(e) => setItemForm((s) => ({ ...s, unit: e.target.value }))} />
-              </div>
-              <div className="space-y-1">
-                <Label>Mínimo</Label>
+                <Label>Estoque mínimo</Label>
                 <Input
                   type="number"
                   min={0}
@@ -753,7 +867,7 @@ export default function Farmacia() {
                     .filter((i) => i.active)
                     .map((item) => (
                       <SelectItem key={item.id} value={String(item.id)}>
-                        {item.name}
+                        {formatPharmacyItemLabel(item)}
                       </SelectItem>
                     ))}
                 </SelectContent>

@@ -28,6 +28,15 @@ import {
   type TimeClockSettings,
 } from "@shared/environment";
 import { NOTIFICATION_TYPES } from "@shared/notifications";
+import {
+  formatPharmacyStrength,
+  isPharmacyForm,
+  isStockUnit,
+  isStrengthUnit,
+  normalizePharmacyForm,
+  normalizeStockUnit,
+  parseStrengthText,
+} from "@shared/pharmacy";
 
 const SessionStore = connectPgSimple(session);
 
@@ -3898,6 +3907,46 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const name = String(req.body?.name ?? "").trim();
       if (name.length < 2) return res.status(400).json({ message: "Nome do item obrigatório." });
       const minStock = Number(req.body?.minStock ?? 0);
+
+      const formRaw = typeof req.body?.form === "string" ? req.body.form.trim() : "";
+      const form = formRaw ? (isPharmacyForm(formRaw) ? formRaw : normalizePharmacyForm(formRaw)) : null;
+
+      const unitRaw = typeof req.body?.unit === "string" ? req.body.unit.trim() : "";
+      if (!unitRaw) return res.status(400).json({ message: "Unidade de estoque obrigatória." });
+      const unit = isStockUnit(unitRaw) ? unitRaw : normalizeStockUnit(unitRaw);
+      if (!isStockUnit(unit)) return res.status(400).json({ message: "Unidade de estoque inválida." });
+
+      let strengthValue: number | null = null;
+      if (req.body?.strengthValue !== undefined && req.body?.strengthValue !== null && req.body?.strengthValue !== "") {
+        const parsed = Number(req.body.strengthValue);
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+          return res.status(400).json({ message: "Concentração inválida." });
+        }
+        strengthValue = parsed;
+      }
+      let strengthUnit: string | null =
+        typeof req.body?.strengthUnit === "string" && req.body.strengthUnit.trim()
+          ? req.body.strengthUnit.trim()
+          : null;
+      if (strengthUnit && !isStrengthUnit(strengthUnit)) {
+        return res.status(400).json({ message: "Unidade de concentração inválida." });
+      }
+      if (strengthValue != null && !strengthUnit) {
+        return res.status(400).json({ message: "Informe a unidade da concentração." });
+      }
+      if (strengthUnit && strengthValue == null) {
+        return res.status(400).json({ message: "Informe o valor da concentração." });
+      }
+
+      const strengthFromBody =
+        typeof req.body?.strength === "string" && req.body.strength.trim() ? req.body.strength.trim() : null;
+      if (strengthValue == null && strengthFromBody) {
+        const parsed = parseStrengthText(strengthFromBody);
+        strengthValue = parsed.strengthValue;
+        strengthUnit = parsed.strengthUnit;
+      }
+      const strength = formatPharmacyStrength(strengthValue, strengthUnit, strengthFromBody);
+
       const created = await storage.createPharmacyItem({
         organizationId: orgId,
         name,
@@ -3905,10 +3954,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           typeof req.body?.activeIngredient === "string" && req.body.activeIngredient.trim()
             ? req.body.activeIngredient.trim()
             : null,
-        form: typeof req.body?.form === "string" && req.body.form.trim() ? req.body.form.trim() : null,
-        strength:
-          typeof req.body?.strength === "string" && req.body.strength.trim() ? req.body.strength.trim() : null,
-        unit: typeof req.body?.unit === "string" && req.body.unit.trim() ? req.body.unit.trim() : "cp",
+        form,
+        strength,
+        strengthValue,
+        strengthUnit,
+        unit,
         minStock: Number.isFinite(minStock) && minStock >= 0 ? minStock : 0,
         controlled: req.body?.controlled === true || req.body?.controlled === "true",
         active: req.body?.active === false || req.body?.active === "false" ? false : true,
@@ -3935,13 +3985,58 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             : null;
       }
       if (req.body?.form !== undefined) {
-        updates.form = typeof req.body.form === "string" && req.body.form.trim() ? req.body.form.trim() : null;
+        const formRaw = typeof req.body.form === "string" ? req.body.form.trim() : "";
+        updates.form = formRaw
+          ? (isPharmacyForm(formRaw) ? formRaw : normalizePharmacyForm(formRaw))
+          : null;
       }
-      if (req.body?.strength !== undefined) {
-        updates.strength =
-          typeof req.body.strength === "string" && req.body.strength.trim() ? req.body.strength.trim() : null;
+
+      const touchesStrength =
+        req.body?.strengthValue !== undefined
+        || req.body?.strengthUnit !== undefined
+        || req.body?.strength !== undefined;
+
+      if (touchesStrength) {
+        let strengthValue: number | null = null;
+        if (req.body?.strengthValue !== undefined && req.body?.strengthValue !== null && req.body?.strengthValue !== "") {
+          const parsed = Number(req.body.strengthValue);
+          if (!Number.isFinite(parsed) || parsed <= 0) {
+            return res.status(400).json({ message: "Concentração inválida." });
+          }
+          strengthValue = parsed;
+        }
+        let strengthUnit: string | null =
+          typeof req.body?.strengthUnit === "string" && req.body.strengthUnit.trim()
+            ? req.body.strengthUnit.trim()
+            : null;
+        if (strengthUnit && !isStrengthUnit(strengthUnit)) {
+          return res.status(400).json({ message: "Unidade de concentração inválida." });
+        }
+        if (strengthValue != null && !strengthUnit) {
+          return res.status(400).json({ message: "Informe a unidade da concentração." });
+        }
+        if (strengthUnit && strengthValue == null) {
+          return res.status(400).json({ message: "Informe o valor da concentração." });
+        }
+        const strengthFromBody =
+          typeof req.body?.strength === "string" && req.body.strength.trim() ? req.body.strength.trim() : null;
+        if (strengthValue == null && strengthFromBody) {
+          const parsed = parseStrengthText(strengthFromBody);
+          strengthValue = parsed.strengthValue;
+          strengthUnit = parsed.strengthUnit;
+        }
+        updates.strengthValue = strengthValue;
+        updates.strengthUnit = strengthUnit;
+        updates.strength = formatPharmacyStrength(strengthValue, strengthUnit, strengthFromBody);
       }
-      if (typeof req.body?.unit === "string" && req.body.unit.trim()) updates.unit = req.body.unit.trim();
+
+      if (req.body?.unit !== undefined) {
+        const unitRaw = typeof req.body.unit === "string" ? req.body.unit.trim() : "";
+        if (!unitRaw) return res.status(400).json({ message: "Unidade de estoque obrigatória." });
+        const unit = isStockUnit(unitRaw) ? unitRaw : normalizeStockUnit(unitRaw);
+        if (!isStockUnit(unit)) return res.status(400).json({ message: "Unidade de estoque inválida." });
+        updates.unit = unit;
+      }
       if (req.body?.minStock !== undefined) {
         const minStock = Number(req.body.minStock);
         if (!Number.isFinite(minStock) || minStock < 0) {

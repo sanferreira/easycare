@@ -32,12 +32,17 @@ import { fetchJsonOrThrow } from "@/lib/fetch-json";
 import { downloadCsv } from "@/lib/csv";
 import { cn } from "@/lib/utils";
 import type { Medication } from "@shared/schema";
+import { formatPharmacyItemLabel, formatStockUnitLabel } from "@shared/pharmacy";
 
 type MedicationWithResident = Medication & { residentName?: string };
 type StaffOption = { id: number; name: string; role?: string | null; active?: boolean | null };
 type PharmacyItemOption = {
   id: number;
   name: string;
+  form?: string | null;
+  strength?: string | null;
+  strengthValue?: number | null;
+  strengthUnit?: string | null;
   unit: string;
   minStock: number;
   quantityOnHand: number;
@@ -270,6 +275,7 @@ export function ResidentMedicationSection({
     },
   });
   const watchedFrequency = medicationForm.watch("frequency");
+  const watchedPharmacyItemId = medicationForm.watch("pharmacyItemId");
 
   const doseActionForm = useForm<z.infer<typeof doseActionSchema>>({
     resolver: zodResolver(doseActionSchema),
@@ -1174,7 +1180,7 @@ export function ResidentMedicationSection({
                         <SelectItem value={NO_PHARMACY_ITEM}>Sem vínculo</SelectItem>
                         {(pharmacyItemsQuery.data ?? []).map((item) => (
                           <SelectItem key={item.id} value={String(item.id)}>
-                            {item.name} ({item.quantityOnHand} {item.unit})
+                            {formatPharmacyItemLabel(item)} · saldo {item.quantityOnHand}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -1183,15 +1189,44 @@ export function ResidentMedicationSection({
                   </FormItem>
                 )} />
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <FormField control={medicationForm.control} name="unitsPerDose" render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Unidades por dose</FormLabel>
-                      <FormControl>
-                        <Input type="number" min={0.01} step="0.01" {...field} value={field.value ?? "1"} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
+                  <FormField control={medicationForm.control} name="unitsPerDose" render={({ field }) => {
+                    const selected =
+                      watchedPharmacyItemId && watchedPharmacyItemId !== NO_PHARMACY_ITEM
+                        ? pharmacyById.get(Number(watchedPharmacyItemId))
+                        : undefined;
+                    const unitLabel = selected ? formatStockUnitLabel(selected.unit) : null;
+                    return (
+                      <FormItem>
+                        <FormLabel>
+                          {unitLabel
+                            ? `Unidades de estoque por dose (${selected?.unit})`
+                            : "Unidades de estoque por dose"}
+                        </FormLabel>
+                        <FormControl>
+                          <Input
+                            type="number"
+                            min={0.01}
+                            step="0.01"
+                            placeholder={
+                              selected?.unit === "ml"
+                                ? "ex.: 10 se a dose for 10 ml"
+                                : selected?.unit === "cp"
+                                  ? "ex.: 1 se a dose for 1 comprimido"
+                                  : "ex.: 1"
+                            }
+                            {...field}
+                            value={field.value ?? "1"}
+                          />
+                        </FormControl>
+                        {unitLabel ? (
+                          <p className="text-xs text-muted-foreground">
+                            Baixa FEFO nesta unidade: {unitLabel}.
+                          </p>
+                        ) : null}
+                        <FormMessage />
+                      </FormItem>
+                    );
+                  }} />
                   <FormField control={medicationForm.control} name="stockScope" render={({ field }) => (
                     <FormItem>
                       <FormLabel>Baixa de</FormLabel>

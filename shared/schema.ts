@@ -372,9 +372,11 @@ export const pharmacyItems = pgTable("pharmacy_items", {
   organizationId: integer("organization_id").notNull(),
   name: text("name").notNull(),
   activeIngredient: text("active_ingredient"),
-  form: text("form"),
-  strength: text("strength"),
-  unit: text("unit").notNull().default("cp"), // cp | ml | ampola | ...
+  form: text("form"), // comprimido | xarope | ...
+  strength: text("strength"), // display text, e.g. "500 mg"
+  strengthValue: real("strength_value"),
+  strengthUnit: text("strength_unit"), // mg | mg_por_ml | ...
+  unit: text("unit").notNull().default("cp"), // stock base unit: cp | ml | ampola | ...
   minStock: real("min_stock").notNull().default(0),
   controlled: boolean("controlled").notNull().default(false),
   active: boolean("active").notNull().default(true),
